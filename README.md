@@ -64,6 +64,9 @@ Sign-in is by user name and password (stored only as salted hashes in `data/user
 
 Every file starts with a plain-language overview, and every function has a comment explaining what it does and why.
 
+## Sound amp (for quiet recordings)
+A sound's settings have an **Amp** slider from 1 (off) to 4 (about +12 dB), for recordings that are quiet even with the card's volume slider at full. The sound plays at its volume times its amp (`level()` in `static/app.js`), a boosted card shows a small `×2.0` badge, and changing the amp takes effect at once on a sound that is playing. Very loud sounds boosted a lot can distort.
+
 ## Your own audio files (mp3s/ folder)
 Drop audio files (.mp3 .ogg .wav .m4a .opus .aac .flac) into `mp3s/`, or use **Browse...** in the add/edit sound dialog (it uploads the picked file into that folder). The server rescans the folder every 2 seconds, and the dialog's drop-down lists what is there. A sound using one is saved as `library:<file name>`; if the file goes missing the card shows "failed" and recovers by itself when the file comes back.
 

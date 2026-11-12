@@ -148,6 +148,9 @@
       <label>Start (s) <input name="start" type="number" min="0" step="0.1" placeholder="0"></label>
       <label>End (s) <input name="end" type="number" min="0" step="0.1" placeholder="end"></label>
       <label>Volume <input name="volume" type="range" min="0" max="1" step="0.01" value="1"></label>
+      <!-- amp: a boost for quiet recordings. The card's slider only goes up to full volume, so a sound that is quiet even at full
+           volume gets its extra here: 1 = no boost, up to 4 (about +12 dB). Very loud boosted sounds can distort. -->
+      <label>Amp (boost a quiet sound) <input name="amp" type="range" min="1" max="4" step="0.1" value="1"> <output class="ampout">×1</output></label>
     </div>
     <label class="check"><input name="loop" type="checkbox"> Loop this sound (a looping sound never advances along its chain)</label>
     <label class="check"><input name="restart" type="checkbox"> Always start from the beginning (otherwise resumes where it was stopped)</label>

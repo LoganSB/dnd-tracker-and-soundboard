@@ -46,6 +46,7 @@ Each row: the thing that changes, the components linked to it, and what must be 
 | The result-list size (10 / 20 / 50 / 100) | `Finder.pageSize` in `static/finder.js` (saved in localStorage `finder.pageSize`), used by `Finder.panel` and `UI.dataTable`; the compact pop-up is fixed at 6 | change it once in `Finder.pageSize`; the menu only appears when a list is longer than the choice |
 | The Fight Club file format (new character fields, export rules) | `fcformat.py` (encoder); `party._characters_from` / `_read_upload` / `_backup_download`; `FIGHTCLUB-FORMAT.md`; `test_fc.py` against a real `FightClub5.backup`; Dockerfile COPY | change the encoder and the rules doc together and re-run the byte-for-byte test |
 | A new way to import characters (another upload box, an API client) | `Importer.start` in `static/importer.js` (preview, choose, import each); `preview_import` / `import_party` in `party.py`; templates must load `importer.js` | call `Importer.start` instead of posting the file straight to `/api/party/import` |
+| A new per-sound setting (volume, amp, ...) | the sound dialog in `templates/index.html`; `openSoundDlg` (fill) and the submit handler (read) in `static/app.js`; the card (`soundEl`); `level()` / `applyVolume` if it changes the gain; the data-model comment at the top of `app.js`; README | add the field to every one of these |
 | A new postMessage type between frames | header comment of `templates/shell.html`; receiving page's message handler | document it and handle it |
 
 ## Notes

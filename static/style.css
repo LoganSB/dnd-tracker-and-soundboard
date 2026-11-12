@@ -2669,3 +2669,7 @@ body.canvaspage .flag {
 .importrow:last-child { border-bottom: 0; }
 .importrow:hover { background: var(--panel2); }
 .importrow.off { opacity: .6; cursor: not-allowed; }
+
+/* The amp badge on a sound card ("×2.0") beside its volume slider, and the readout in the sound's settings. */
+.snd .amp { font-size: .65rem; color: var(--warn); margin-left: .3rem; white-space: nowrap; }
+.ampout { margin-left: .4rem; color: var(--muted); font-size: .8rem; }

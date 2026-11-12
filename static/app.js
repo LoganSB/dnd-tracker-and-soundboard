@@ -57,7 +57,8 @@
 //           type,                                     //   "music" | "instant" | "clip"
 //           key,                                      //   optional keyboard shortcut (one lowercase letter)
 //           group,                                    //   id of the subsection it is in (absent = top of tile)
-//           volume,                                   //   0..1 per-sound volume
+//           volume,                                   //   0..1 per-sound volume (the slider on the card)
+//           amp,                                      //   optional 1..4: a boost for quiet recordings (set in the sound's settings)
 //           start, end,                               //   optional trim points in seconds
 //           loop, restart,                            //   loop forever / always restart instead of resuming
 //           repeatDelay,                              //   optional timer: seconds to wait after it finishes, then
@@ -465,6 +466,10 @@ const startOf = snd => +snd.start || 0;
 // otherwise play to the end of the decoded buffer. (Only valid for buffered sounds, which have e.buffer.)
 const endOf = (snd, e) => (+snd.end > startOf(snd) ? +snd.end : e.buffer.duration);
 
+// level(snd): the gain a sound plays at: its volume (0..1, the slider on the card) times its AMP (1..4, set in the sound's
+// settings to bring a quiet recording up to the others; 1 or missing = no boost). Every place that sets a sound's gain uses this.
+const level = snd => (snd.volume ?? 1) * (snd.amp > 1 ? Math.min(4, snd.amp) : 1);
+
 // fade(g, to, secs): smoothly move a GainNode's volume from where it is now to `to` over `secs`.
 // Web Audio schedules parameter changes on the audio clock, so the ramp is
 // glitch-free and runs without our code. We first cancel any ramp still
@@ -488,7 +493,7 @@ function startBuffer(snd, e, tile, from, fadeIn) {
   src.buffer = e.buffer;
   // `const a = 1, b = 2` declares several constants in one statement.
   const g = ctx.createGain(),
-    vol = snd.volume ?? 1,
+    vol = level(snd),
     now = ctx.currentTime;
   g.gain.setValueAtTime(fadeIn > 0 ? 0 : vol, now);
   if (fadeIn > 0) g.gain.linearRampToValueAtTime(vol, now + fadeIn);
@@ -559,7 +564,7 @@ function startStream(snd, e, tile, from, fadeIn) {
   try { a.currentTime = from; } catch (_) {}   // seeking can throw if not ready; ignore it
   e.gain.disconnect();                         // detach from any previous tile bus
   e.gain.connect(busFor(tile));
-  fade(e.gain, snd.volume ?? 1, fadeIn ?? 0.8);
+  fade(e.gain, level(snd), fadeIn ?? 0.8);
   // play() returns a Promise that may be rejected (e.g. blocked by autoplay policy); log instead of crashing.
   a.play().catch(err => console.error("play failed", err));
   e.playing = true;
@@ -663,11 +668,11 @@ function stopSound(snd, fast = false, { secs, reset = false } = {}) {
   render();
 }
 
-// applyVolume(snd): apply snd.volume to whatever is playing right now (called while the
-// per-sound slider is dragged). Cancels any fade in progress and sets the level immediately.
+// applyVolume(snd): apply the sound's level (volume x amp) to whatever is playing right now (called while the
+// per-sound slider is dragged, and when the amp is changed in the sound's settings). Cancels any fade in progress and sets the level immediately.
 function applyVolume(snd) {
   const e = engines.get(snd.id),
-    v = snd.volume ?? 1;
+    v = level(snd);
   if (!e) return;
   const t = ctx.currentTime;
   if (e.audio && e.playing) {
@@ -1592,7 +1597,7 @@ function soundEl(snd, tile, info, path) {
     title: snd.next ? "Output. Drag to re-link, click to unlink" : "Output. Drag onto another sound to play it next"
   });
   port.addEventListener("pointerdown", ev => startLink(ev, snd));
-  const vol = el("input", { type: "range", min: 0, max: 1, step: 0.01, value: snd.volume ?? 1, className: "svol", title: "Sound volume" });
+  const vol = el("input", { type: "range", min: 0, max: 1, step: 0.01, value: snd.volume ?? 1, className: "svol", title: snd.amp > 1 ? `Sound volume (amplified ×${snd.amp}, about +${(20 * Math.log10(snd.amp)).toFixed(0)} dB, set in the sound's settings)` : "Sound volume" });
   // Slider moved: store it, apply to any playing audio right away, and schedule a save.
   vol.oninput = () => {
     snd.volume = +vol.value;
@@ -1600,6 +1605,7 @@ function soundEl(snd, tile, info, path) {
     save();
   };
   const row = el("span", { className: "srow" }, vol);
+  if (snd.amp > 1) row.append(el("span", { className: "amp", textContent: `×${+snd.amp.toFixed(1)}`, title: "Amplified: this sound plays louder than its slider (set in its settings)" }));
   if (snd.key) row.append(el("span", { className: "kb", textContent: snd.key.toUpperCase() }));
   b.append(insCol, port, row);
   // pointerdown, not click: fires on press instead of release
@@ -1856,16 +1862,24 @@ function openSoundDlg(snd, tileId, groupId) {
     form.start.value = snd.start ?? "";
     form.end.value = snd.end ?? "";
     form.volume.value = snd.volume ?? 1;
+    form.amp.value = snd.amp > 1 ? snd.amp : 1;
     form.loop.checked = !!snd.loop;
     form.restart.checked = !!snd.restart;
     form.repeatDelay.value = snd.repeatDelay ?? "";
   }
+  showAmp();
   // Refresh the MP3-folder drop-down, then select the sound's current file in it (if it is one).
   refreshLibrary(true).then(() => {
     if (snd && snd.url.startsWith(LIBRARY_PREFIX)) $("#libSelect").value = snd.url.slice(LIBRARY_PREFIX.length);
   });
   dlg.showModal();
 }
+// showAmp(): the little readout beside the Amp slider: "×2.0 (+6 dB)". 20 x log10(gain) is the usual conversion to decibels.
+function showAmp() {
+  const a = +form.amp.value;
+  form.querySelector(".ampout").textContent = a > 1 ? `×${a.toFixed(1)} (+${(20 * Math.log10(a)).toFixed(0)} dB)` : "off";
+}
+form.amp.addEventListener("input", showAmp);
 $("#addSoundBtn").onclick = () => openSoundDlg(null, null);
 // Convenience: pasting a myinstants.com link switches the type to "instant" automatically. (/.../i is a regular expression literal; i = case-insensitive.)
 form.url.addEventListener("input", () => {
@@ -1975,6 +1989,8 @@ form.addEventListener("submit", ev => {
     start: num(f.start.value),
     end: num(f.end.value),
     volume: +f.volume.value,
+    // Amp: 1 (or less) means no boost and is not stored; the most is 4 (about +12 dB).
+    amp: +f.amp.value > 1 ? Math.min(4, +f.amp.value) : undefined,
     loop: f.loop.checked,
     restart: f.restart.checked,
     // Blank, zero or negative means "no repeat" (undefined fields are left out when saving).
@@ -1993,6 +2009,7 @@ form.addEventListener("submit", ev => {
     if (editing.url !== data.url || editing.type !== data.type) { stopSound(editing, true); engines.delete(editing.id); }
     cancelRepeat(editing);          // changed settings: any pending repeat timer starts over from the next play
     Object.assign(editing, data);   // copy all the form fields onto the existing sound object
+    applyVolume(editing);           // a sound that is playing right now takes the new amp at once
     if (!data.name) editing.autoName = true; else delete editing.autoName;
     if (old !== dest) {
       old.sounds.splice(old.sounds.indexOf(editing), 1);
