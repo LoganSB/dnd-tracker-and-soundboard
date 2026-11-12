@@ -1293,7 +1293,30 @@ $("#addSectionBtn").onclick = () => {
 // This page runs inside a frame of the app shell (shell.html), which keeps it loaded but hidden while you
 // look at other tabs. A hidden frame cannot measure layout, so when the shell shows this tab again it
 // sends { type: "shown" } and we redraw the cables.
-addEventListener("message", ev => { if (ev.data?.type === "shown") scheduleDraw(); });
+addEventListener("message", ev => {
+  if (ev.data?.type === "shown") scheduleDraw();
+  if (ev.data?.type === "focusNode") revealNode(ev.data.id);
+});
+
+// revealNode(id): jump to a card (asked for by the Encounters tab through the app shell, the same way the 🎯 buttons jump
+// to a sound on the soundboard). The card may have been added a moment ago from another page, so load the board fresh
+// first; open its section if collapsed; then Canvas.reveal centres on it and flashes it.
+async function revealNode(id) {
+  try {
+    if (!saveTimer && !drag) {
+      S = await api("/api/state");
+      myRevision = S.revision;
+      normalize();
+      render(true);
+    }
+    const loc = locate(id);
+    if (!loc) return;
+    const sec = C().sections.find(x => x.id === loc.tile.section);
+    if (sec?.collapsed) { sec.collapsed = false; save(); render(true); }
+    const card = cardEl(loc.item);
+    if (card) requestAnimationFrame(() => Canvas.reveal(card));
+  } catch (_) { /* server restarting: the normal poll will catch up */ }
+}
 // A drag that ends without a drop (Esc, outside the window) must never leave rendering frozen.
 // The third argument `true` registers it in the capture phase so it runs first.
 addEventListener("dragend", () => { drag = null; if (pendingRender) render(true); }, true);

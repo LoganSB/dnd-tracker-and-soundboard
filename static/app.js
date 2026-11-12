@@ -2230,11 +2230,7 @@ function revealSound(id) {
   }
   const card = cardEl(loc.snd);
   if (!card) return;
-  const p = Canvas.posIn(card);
-  if (Canvas.view.k < 0.7) Canvas.view.k = 0.9;   // zoomed far out: come in closer so the card is readable
-  Canvas.centerOn(p.x + card.offsetWidth / 2, p.y + card.offsetHeight / 2);
-  card.classList.add("flash");
-  setTimeout(() => card.classList.remove("flash"), 2000);
+  Canvas.reveal(card);   // zoom in if needed, centre, flash (shared with the campaign page)
 }
 
 // ------------------------------------------------------------------ boot

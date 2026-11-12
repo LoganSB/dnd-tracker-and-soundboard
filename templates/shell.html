@@ -29,7 +29,8 @@
                                anything it could not measure while hidden (the soundboard's cables)
                                { type: "focusSound", id }  sent to the soundboard to centre on a sound
     A "goto" message may also carry `sound` (a sound id): the shell then shows the Soundboard tab and
-    sends it "focusSound" (used by the campaign page's jump-to-sound buttons).
+    sends it "focusSound" (used by the campaign page's jump-to-sound buttons). Likewise `node` (a campaign card id)
+    sends the shown page "focusNode" (used by the Encounters tab after putting an encounter on the campaign tracker).
     The party tracker panel also lives in this page, so it works on every tab.
 
   Jinja2 variables: active (tab to show first), party_path (character frame address), role ("dm" or
@@ -122,12 +123,13 @@
   });
   // goto(page, path, sound): switch to a tab, optionally loading `path` in its frame first and, for the
   // soundboard, asking it to centre on the sound with id `sound` (see revealSound in app.js).
-  function goto(page, path, sound) {
+  function goto(page, path, sound, node) {
     const f = frames[page];
     if (!f) return;
     if (path && !f.src.endsWith(path)) f.src = path;
     show(page, true);
     if (sound) f.contentWindow.postMessage({ type: "focusSound", id: sound }, "*");
+    if (node) f.contentWindow.postMessage({ type: "focusNode", id: node }, "*");
   }
   window.shellGoto = goto;   // so the tracker panel (which runs in this page) can use it too
   // Messages from the pages (see the header comment). "reloadPages" (from Home, after a campaign is loaded)
@@ -137,7 +139,7 @@
     if (ev.data?.type === "reloadPages") {
       for (const name of ["sound", "campaign", "encounters"]) frames[name]?.contentWindow.location.reload();
     } else if (ev.data?.type === "goto") {
-      goto(ev.data.page, ev.data.path, ev.data.sound);
+      goto(ev.data.page, ev.data.path, ev.data.sound, ev.data.node);
     }
   });
 

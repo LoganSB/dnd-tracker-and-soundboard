@@ -1,0 +1,26 @@
+# Files gcloud must NOT upload when it builds the container in the cloud (gcloud run deploy --source .).
+# This matters separately from .dockerignore: gcloud first uploads your project folder to Google, and only
+# then does Docker build the image. Without this file your private data would be uploaded too, even though
+# the image itself would not contain it.
+
+.venv/
+__pycache__/
+*.pyc
+.git/
+.DS_Store
+
+# Your saved data and downloaded audio live in the bucket, not in the build.
+data/
+media/
+mp3s/
+
+# Fight Club files: personal characters and the large expansion collection.
+FightClub5.backup
+FightClub5eXML*/
+FightClub5eXML*.zip
+*.backup
+*.zip
+
+# Notes that are not needed to build.
+README.md
+DEPLOY-GOOGLE-CLOUD.md

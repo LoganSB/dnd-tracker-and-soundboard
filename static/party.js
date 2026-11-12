@@ -43,6 +43,7 @@
 //                                   .backup / .xml, or a .zip containing one)
 //                                   -> {error:"..."} on failure
 //   GET    /api/party/export.zip    download link (plain <a href>, no JS)
+//   GET    /api/party/<id>/export.zip  download one character (the DM: any; a player: their own)
 //   GET    /download/collection.zip download link (plain <a href>, no JS)
 //   (Editing HP, slots, etc. is done by tracker.js, not here: this page is
 //   read-only apart from import and remove.)
@@ -142,8 +143,8 @@ async function renderList() {
   // fallback (e.g. if pop-ups are blocked or the link is middle-clicked).
   bar.append(h("a", { href: "/api/party/export.zip", className: "btn",
     textContent: isDM ? "⬇ Export party (Fight Club zip)" : "⬇ Export my character (Fight Club zip)" }));
+  bar.append(h("a", { href: "/download/collection.zip", className: "btn", textContent: "⬇ Fight Club 5e collection zip" }));
   if (isDM) bar.append(
-    h("a", { href: "/download/collection.zip", className: "btn", textContent: "⬇ Fight Club 5e collection zip" }),
     h("a", { href: "/tracker", target: "dmtracker", className: "btn", textContent: "Open tracker window",
       onclick: e => { e.preventDefault(); window.open("/tracker", "dmtracker", "width=460,height=720"); } }));
   // Status line under the import form (used for progress and errors).
@@ -198,7 +199,9 @@ async function renderList() {
         // [race, class].filter(Boolean) drops empty values (Boolean() is
         // false for "" / undefined), join glues the rest with " · ".
         h("div", { className: "muted", textContent: [m.race, m.class].filter(Boolean).join(" · ") }),
-        h("div", { textContent: `HP ${m.hp}/${m.hpMax}` }), del)));
+        h("div", { textContent: `HP ${m.hp}/${m.hpMax}` }),
+        // The download sits inside the card's <a> link, so the click is redirected by hand (no nested links).
+        h("button", { className: "tiny", textContent: "⬇ Download", title: "Download this character (Fight Club zip)", onclick: e => { e.preventDefault(); location.href = `/api/party/${m.id}/export.zip`; } }), del)));
   });
   // The live tracker (the same widget as the popup: HP, spell slots, death saves, mana, conditions and
   // the Initiative tab), built right into this page. mountTracker comes from tracker.js, which
@@ -252,7 +255,8 @@ function itemRow(i) {
 async function renderDetail(id) {
   // The toolbar of the detail page: a way back to the list (this page lives inside a frame, so the link
   // loads the list into the same frame).
-  bar.append(h("a", { href: "/_/party", className: "btn", textContent: "← All characters" }));
+  bar.append(h("a", { href: "/_/party", className: "btn", textContent: "← All characters" }),
+    h("a", { href: `/api/party/${id}/export.zip`, className: "btn", textContent: "⬇ Download this character" }));
   const m = await get("/api/party/" + id);
   document.title = m.name;
   const r = m.raceInfo;

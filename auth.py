@@ -191,8 +191,9 @@ def _start_session(resp, key):
 OPEN_EXACT = {"/", "/login", "/healthz", "/favicon.ico"}
 OPEN_PREFIXES = ("/static/", "/api/auth/", "/auth/", "/invite/")
 # Players may also use the character pages and character API (route code limits them to their own characters),
-# plus the small page that is their home tab and the "my campaigns" routes (see app.py).
-PLAYER_PREFIXES = ("/api/party", "/_/party", "/party", "/_/home", "/api/my/")
+# plus the small page that is their home tab, the "my campaigns" routes (see app.py) and the Fight Club expansion
+# download.
+PLAYER_PREFIXES = ("/api/party", "/_/party", "/party", "/_/home", "/api/my/", "/download/collection.zip")
 
 
 def check_request():

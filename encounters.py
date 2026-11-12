@@ -9,14 +9,18 @@ WHERE THINGS ARE STORED
   A monster line keeps a COPY of the numbers it needs, so a saved campaign still works with no internet.
 
 MONSTERS come from the Open5e API (https://api.open5e.com), a free service that includes Kobold Press books
-such as Tome of Beasts. The browser never talks to it: these routes do, and keep answers for an hour.
+such as Tome of Beasts. The browser never talks to it: these routes do, and keep what they fetch on disk so the
+service is called as rarely as possible (see "Open5e, with as few calls as possible" below).
 
 app.py calls bind() once so this module can reach the live state without importing app.py (which imports us).
 """
+import json
+import os
 import re
 import secrets
 import threading
 import time
+from pathlib import Path
 
 import requests
 from flask import Blueprint, abort, jsonify, make_response, render_template, request
@@ -24,24 +28,18 @@ from flask import Blueprint, abort, jsonify, make_response, render_template, req
 import auth
 import party
 
+ROOT = Path(os.environ.get("DND_DATA_ROOT") or Path(__file__).resolve().parent)
+
 bp = Blueprint("encounters", __name__)
 API = "https://api.open5e.com/v1"
 _ctx = {}                    # filled by bind(): {"state": function, "commit": function, "lock": lock}
-_cache = {}                  # url+params -> (time fetched, answer)
-_cache_lock = threading.Lock()
-CACHE_SECONDS = 3600
-LIST_FIELDS = "slug,name,size,type,cr,armor_class,hit_points,dexterity,document__slug,document__title"
+LIST_FIELDS = "slug,name,type,cr,armor_class,hit_points,dexterity,document__slug,document__title"
 
 # Experience points per challenge rating (Dungeon Master's Guide, "Encounter Building").
 XP = {0: 10, 0.125: 25, 0.25: 50, 0.5: 100, 1: 200, 2: 450, 3: 700, 4: 1100, 5: 1800, 6: 2300, 7: 2900, 8: 3900,
       9: 5000, 10: 5900, 11: 7200, 12: 8400, 13: 10000, 14: 11500, 15: 13000, 16: 15000, 17: 18000, 18: 20000,
       19: 22000, 20: 25000, 21: 33000, 22: 41000, 23: 50000, 24: 62000, 25: 75000, 26: 90000, 27: 105000,
       28: 120000, 29: 135000, 30: 155000}
-
-
-def _fail(message, code=400):
-    """Stop the request with a JSON error body (the pages read {"error": ...})."""
-    abort(make_response(jsonify(error=message), code))
 
 
 def bind(get_state, commit, lock):
@@ -54,74 +52,121 @@ def _state():
     return _ctx["state"]()
 
 
-# ------------------------------------------------------------------ Open5e (cached)
-def _get(path, params=None):
-    """GET an Open5e address and return its JSON; raises abort(502) with a readable message if it is down."""
-    key = path + "?" + "&".join(f"{k}={v}" for k, v in sorted((params or {}).items()))
-    now = time.time()
-    with _cache_lock:
-        hit = _cache.get(key)
-        if hit and now - hit[0] < CACHE_SECONDS:
-            return hit[1]
+# ------------------------------------------------------------------ Open5e, with as few calls as possible
+# Two things come from Open5e and both are kept on disk (data/, so they survive restarts and, on Cloud Run, live in
+# the bucket):
+#   * the MONSTER LIST (name, type, CR, AC, HP, Dex, book for every monster: about 3,200 of them) is fetched in two
+#     calls and saved as data/monsters_index.json. The browser downloads that one file and does all the searching
+#     itself, so typing in the search box makes no API calls at all. It is rebuilt only when older than 30 days or
+#     when the DM presses "Refresh monster list" (at most once a day).
+#   * a STAT BLOCK is fetched the first time a monster is opened and saved as data/monsters/<slug>.json, so each
+#     monster costs at most one call, ever.
+INDEX = ROOT / "data" / "monsters_index.json"
+STATS = ROOT / "data" / "monsters"
+INDEX_DAYS, REFRESH_MIN_SECONDS = 30, 86400
+_index = {"data": None, "building": False}
+_index_lock = threading.Lock()
+
+
+def _fail(message, code=400):
+    """Stop the request with a JSON error body (the pages read {"error": ...})."""
+    abort(make_response(jsonify(error=message), code))
+
+
+def _fetch(path, params=None):
+    """One call to Open5e; returns the JSON, or stops the request with a readable 502."""
     try:
-        r = requests.get(API + path, params=params, timeout=15, headers={"User-Agent": "dnd-tracker"})
+        r = requests.get(API + path, params=params, timeout=30, headers={"User-Agent": "dnd-tracker"})
         r.raise_for_status()
-        data = r.json()
+        return r.json()
     except Exception:
         _fail("Open5e could not be reached. Try again in a moment.", 502)
-    with _cache_lock:
-        if len(_cache) > 500:
-            _cache.clear()
-        _cache[key] = (now, data)
-    return data
 
 
 def _mod(score):
     return (int(score or 10) - 10) // 2
 
 
-def _summary(m):
-    """The short record the builder's search results show."""
-    cr = float(m.get("cr") or 0)
-    return {"slug": m["slug"], "name": m["name"], "size": m.get("size", ""), "type": m.get("type", ""), "cr": cr,
-            "xp": XP.get(cr, 0), "ac": m.get("armor_class"), "hp": m.get("hit_points"),
-            "bonus": _mod(m.get("dexterity")), "doc": m.get("document__slug", ""), "docTitle": m.get("document__title", "")}
+def _build_index():
+    """Download every monster's short record (2 calls of up to 2000) and save data/monsters_index.json."""
+    try:
+        rows, docs, url, params = [], {}, "/monsters/", {"limit": 2000, "fields": LIST_FIELDS}
+        while True:
+            data = requests.get(API + url if url.startswith("/") else url, params=params, timeout=60,
+                                headers={"User-Agent": "dnd-tracker"})
+            data.raise_for_status()
+            data = data.json()
+            for m in data["results"]:
+                docs[m.get("document__slug", "")] = m.get("document__title", "")
+                rows.append([m["slug"], m["name"], m.get("type", ""), float(m.get("cr") or 0), m.get("armor_class"),
+                             m.get("hit_points"), _mod(m.get("dexterity")), m.get("document__slug", "")])
+            if not data.get("next"):
+                break
+            url, params = data["next"], None          # the "next" address already carries the parameters
+        out = {"built": int(time.time()), "docs": docs, "xp": XP, "m": rows}
+        tmp = INDEX.with_suffix(".tmp")
+        tmp.write_text(json.dumps(out, separators=(",", ":")))
+        tmp.replace(INDEX)
+        _index["data"] = out
+    except Exception:
+        pass                                               # keep whatever list we had; the next request tries again
+    finally:
+        _index["building"] = False
 
 
-@bp.get("/api/monsters")
-def search_monsters():
-    """GET /api/monsters?q=&type=&doc=&crMin=&crMax=&page= -> {"count", "page", "pages", "items":[summary]}.
-    Search is Open5e's own name search; the other fields narrow it. 30 results a page, easiest first."""
-    a = request.args
-    params = {"fields": LIST_FIELDS, "limit": 30, "ordering": "cr,name", "page": max(1, int(a.get("page", 1) or 1))}
-    if a.get("q"):
-        params["search"] = a["q"][:80]
-    if a.get("type"):
-        params["type__iexact"] = a["type"][:30]
-    if a.get("doc"):
-        params["document__slug"] = a["doc"][:40]
-    for src, dst in (("crMin", "cr__gte"), ("crMax", "cr__lte")):
-        if a.get(src, "") != "":
-            try:
-                params[dst] = float(a[src])
-            except ValueError:
-                _fail("CR must be a number")
-    data = _get("/monsters/", params)
-    return jsonify(count=data["count"], page=params["page"], pages=-(-data["count"] // 30),
-                   items=[_summary(m) for m in data["results"]])
+def _start_build():
+    with _index_lock:
+        if not _index["building"]:
+            _index["building"] = True
+            threading.Thread(target=_build_index, daemon=True).start()
 
 
-@bp.get("/api/monsters/documents")
-def monster_sources():
-    """GET /api/monsters/documents -> [{"slug","title"}] the books Open5e has monsters from."""
-    data = _get("/documents/", {"fields": "slug,title", "limit": 50})
-    return jsonify([{"slug": d["slug"], "title": d["title"]} for d in data["results"]])
+@bp.get("/api/monsters/index")
+def monster_index():
+    """GET /api/monsters/index -> {"built", "docs": {slug: title}, "xp": {cr: xp}, "m": [[slug, name, type, cr, ac, hp,
+    dexMod, bookSlug], ...]} for the browser to search. While the very first copy is still downloading it answers
+    202 {"building": true} (the page asks again in a few seconds). A copy older than 30 days is served as it is
+    while a fresh one is fetched in the background."""
+    if _index["data"] is None and INDEX.exists():
+        try:
+            _index["data"] = json.loads(INDEX.read_text())
+        except Exception:
+            pass
+    d = _index["data"]
+    if d is None or time.time() - d.get("built", 0) > INDEX_DAYS * 86400:
+        _start_build()
+    if d is None:
+        return jsonify(building=True), 202
+    resp = jsonify(d)
+    resp.headers["Cache-Control"] = "private, max-age=3600"
+    return resp
+
+
+@bp.post("/api/monsters/index/refresh")
+def refresh_index():
+    """POST /api/monsters/index/refresh -> fetch the monster list again (2 Open5e calls). Refused if the list is under a
+    day old, so a stray click cannot hammer the service."""
+    d = _index["data"]
+    if d and time.time() - d.get("built", 0) < REFRESH_MIN_SECONDS:
+        return jsonify(error="The list was refreshed less than a day ago"), 429
+    _start_build()
+    return jsonify(ok=True)
 
 
 def _full(slug):
+    """The whole Open5e record for one monster: from data/monsters/<slug>.json if we have it, else one API call (saved)."""
     if not re.fullmatch(r"[\w-]+", slug):
-        abort(400)
-    return _get(f"/monsters/{slug}/")
+        _fail("Bad monster id")
+    f = STATS / f"{slug}.json"
+    if f.exists():
+        try:
+            return json.loads(f.read_text())
+        except Exception:
+            pass
+    data = _fetch(f"/monsters/{slug}/")
+    STATS.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps(data))
+    return data
 
 
 @bp.get("/api/monsters/<slug>")
@@ -212,7 +257,8 @@ def add_encounter_tile(eid):
     """POST /api/encounters/<id>/tile {"tile": id of a campaign tracker tile, or "" for the first one} -> put this
     encounter on the campaign tracker as an encounter tile. Does nothing if that tile already has it.
 
-    The new card has no x, y: the campaign page finds it a free spot the next time it loads the board."""
+    The new card has no x, y: the campaign page finds it a free spot the next time it loads the board.
+    Returns {"tile": its name, "item": the card's id} (the id lets the page highlight it on the campaign tracker)."""
     want = str((request.get_json(force=True, silent=True) or {}).get("tile", ""))
     with _ctx["lock"]:
         st = _state()
@@ -225,11 +271,13 @@ def add_encounter_tile(eid):
             camp["tiles"] = [{"id": secrets.token_hex(4), "name": "Chapter 1", "section": camp["sections"][0]["id"], "subs": [], "items": []}]
         tile = next((t for t in camp["tiles"] if t["id"] == want), camp["tiles"][0])
         tile.setdefault("items", [])
-        if not any(i.get("encounter") == eid for i in tile["items"]):
-            tile["items"].append({"id": secrets.token_hex(4), "name": "", "encounter": eid, "checklist": [],
-                                  "triggered": False, "loot": {"entries": [], "log": []}})
+        card = next((i for i in tile["items"] if i.get("encounter") == eid), None)
+        if not card:
+            card = {"id": secrets.token_hex(4), "name": "", "encounter": eid, "checklist": [],
+                    "triggered": False, "loot": {"entries": [], "log": []}}
+            tile["items"].append(card)
         _ctx["commit"](True)
-        return jsonify(tile=tile["name"])
+        return jsonify(tile=tile["name"], item=card["id"])
 
 
 # ------------------------------------------------------------------ the initiative order

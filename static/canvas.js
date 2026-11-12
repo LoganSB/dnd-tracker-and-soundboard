@@ -35,6 +35,7 @@
 //   Canvas.frameAt(rects, x, y)           which frame is a point inside (used when a card is dropped)
 //   Canvas.dragItems(ev, items, hooks)    drag cards or whole frames around, with snapping
 //   Canvas.fit()                          zoom/pan so everything is visible
+//   Canvas.reveal(card)                   centre on a card and flash it (jumps between pages)
 //
 // THE MODEL: the movable things are CARDS (sounds on the soundboard, flags on the campaign page). Each
 // card has its own x, y. Tiles, subsections and sections are not boxes that hold cards: they are FRAMES
@@ -119,6 +120,17 @@ const Canvas = (() => {
     view.x = stage.clientWidth / 2 - wx * view.k;
     view.y = stage.clientHeight / 2 - wy * view.k;
     apply();
+  }
+
+  // reveal(card): bring one card into view and make it pulse for two seconds so the eye finds it: zoom in a little if
+  // the canvas is zoomed far out, centre on the card, add the "flash" class. Used for jumps between pages (the campaign
+  // page's 🎯 buttons reveal a sound; the Encounters tab reveals a new encounter card).
+  function reveal(card) {
+    const p = posIn(card);
+    if (view.k < 0.7) view.k = 0.9;
+    centerOn(p.x + card.offsetWidth / 2, p.y + card.offsetHeight / 2);
+    card.classList.add("flash");
+    setTimeout(() => card.classList.remove("flash"), 2000);
   }
 
   // fit(): choose the zoom and position that show everything: every card and every top-level frame.
@@ -601,5 +613,5 @@ const Canvas = (() => {
     addEventListener("pointercancel", up);
   }
 
-  return { WORLD, CENTER, CARD_W, CARD_H, mount, toWorld, posIn, itemRects, freeSpot, arrangeInGrid, layoutMissing, layoutFrames, frameAt, dragItems, fit, centerOn, view };
+  return { WORLD, CENTER, CARD_W, CARD_H, mount, toWorld, posIn, itemRects, freeSpot, arrangeInGrid, layoutMissing, layoutFrames, frameAt, dragItems, fit, centerOn, reveal, view };
 })();

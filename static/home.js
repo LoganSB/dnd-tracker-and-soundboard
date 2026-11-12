@@ -19,7 +19,7 @@
 //   GET  /api/my/campaigns, POST /api/my/campaigns/<name>/request   (player) campaigns and asking to join
 //   POST /api/auth/password              {old, new}  change your own password
 //   GET  /api/auth/me                    who am I, and do I have a password
-//   POST /api/auth/link                  {username, password}  link this Google login to a password account
+//   POST /api/auth/link                  {username, password}  link this Google login to a password account (footer pop-up)
 // After a campaign is loaded the shell is told to reload the Soundboard and Campaign pages
 // (postMessage {type: "reloadPages"}), because they keep their own copy of the board in memory.
 
@@ -54,7 +54,8 @@ function characterTable(key, rows, { users, buttons, empty }) {
       { label: "Player", text: r => r.owner || "(no owner)", show: owner, filter: true },
       { label: "HP", text: r => (r.present === false ? "waiting for upload" : `${r.hp}/${r.hpMax}`) },
     ],
-    actions: buttons,
+    // Every row that has a sheet here also gets a download (a Fight Club zip of just that character).
+    actions: r => [...buttons(r), r.present === false ? null : h("a", { className: "btn", href: `/api/party/${r.id}/export.zip`, textContent: "⬇", title: "Download this character (Fight Club zip)" })],
   });
 }
 
@@ -81,20 +82,27 @@ function uploadBox(users) {
     h("div", { className: "row" }, file, owner, btn), msg);
 }
 
-// linkBox(): shown to someone signed in with Google alone. They name the user name they already have and
-// prove it with its password; their Google login then opens that same account. (Done by the person, never the DM.)
-function linkBox() {
+// linkFooter(me): a small line at the very bottom of this page, shown only to someone signed in with Google alone.
+// It opens a pop-up where they name the user name they already have and prove it with its password; their Google login
+// then opens that same account. (Done by the person, never the DM. Nowhere else in the app offers it.)
+function linkFooter(me) {
+  if (me.hasPassword || me.user?.name === "local") return null;
   const name = h("input", { placeholder: "Your existing user name", autocomplete: "username" });
   const pw = h("input", { type: "password", placeholder: "Its password", autocomplete: "current-password" });
   const msg = status();
-  return box("link", "Link this login to a password login",
+  const dlg = h("dialog", {},
+    h("h2", { textContent: "Link this login to a password login" }),
     h("p", { className: "muted", textContent: "You are signed in with Google. If you also have a user name and password here, link them: afterwards either way of signing in opens the same account, with the same characters and campaigns." }),
-    h("div", { className: "row" }, name, pw, h("button", { textContent: "Link", onclick: async () => {
-      try {
-        await api("/api/auth/link", "POST", { username: name.value, password: pw.value });
-        parent.location.reload();   // the browser is now signed in as the other account
-      } catch (e) { msg.say(e.message, true); }
-    } })), msg);
+    h("div", { className: "row" }, name, pw), msg,
+    h("menu", {}, h("span", { className: "grow" }), h("button", { textContent: "Cancel", onclick: () => dlg.close() }),
+      h("button", { className: "primary", textContent: "Link", onclick: async () => {
+        try {
+          await api("/api/auth/link", "POST", { username: name.value, password: pw.value });
+          parent.location.reload();   // the browser is now signed in as the other account
+        } catch (e) { msg.say(e.message, true); }
+      } })));
+  return h("footer", { className: "homefoot" }, dlg,
+    h("button", { className: "linkish", textContent: "Already have a user name and password? Link this login", onclick: () => { msg.say(""); dlg.showModal(); } }));
 }
 
 // passwordBox(): change your own password.
@@ -131,7 +139,7 @@ async function playerView(me) {
       ],
       actions: c => (c.status === "none" ? [h("button", { textContent: "Request to join", onclick: attempt(msg, () => api(`/api/my/campaigns/${encodeURIComponent(c.name)}/request`, "POST")) })] : []),
     }), h("p", { className: "muted", textContent: "Ask to join a campaign and your DM will see the request." }), msg),
-    me.hasPassword ? passwordBox() : linkBox(),
+    me.hasPassword ? passwordBox() : null,
   ];
 }
 
@@ -153,7 +161,7 @@ async function dmView(me) {
     box("party", ap.campaign ? `Party in ${ap.campaign}` : "Party in this campaign", characterTable("party", partyRows, {
       users, empty: "No one is in the party yet. Use Add to campaign below.",
       buttons: p => [p.present ? h("button", { textContent: "Open", onclick: () => openSheet(p.id) }) : null,
-        h("button", { textContent: "Remove from campaign", onclick: () => setParty([...inParty].filter(id => id !== p.id)) })],
+        h("button", { className: "danger", textContent: "Remove from campaign", onclick: () => setParty([...inParty].filter(id => id !== p.id)) })],
     })),
     box("roster", "Characters", characterTable("roster", rosterRows, {
       users, empty: chars.length ? "Every uploaded character is in the campaign." : "No characters uploaded yet.",
@@ -163,7 +171,6 @@ async function dmView(me) {
     playersBox(users),
     invitesBox(invites),
     box("upload", "Upload a character", uploadBox(users)),
-    me.hasPassword || me.user?.name === "local" ? null : linkBox(),
   ];
 }
 
@@ -265,7 +272,7 @@ async function boot() {
   try {
     const me = await api("/api/auth/me");
     const parts = await (role === "dm" ? dmView(me) : playerView(me));
-    root.replaceChildren(h("h1", { textContent: "🎲 DND Tracker" }), ...parts.filter(Boolean));
+    root.replaceChildren(h("h1", { textContent: "🎲 DND Tracker" }), ...parts.filter(Boolean), linkFooter(me) || []);
   } catch (e) {
     root.replaceChildren(h("p", { className: "bad", textContent: e.message }));
   } finally { booting = false; }

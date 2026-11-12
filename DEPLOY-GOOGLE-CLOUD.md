@@ -203,7 +203,7 @@ link to the player. They open it, type a user name and press **Next**, then eith
 twice) or press **Sign up with Google**. After that they see only their own character (they can upload their
 Fight Club file there) and the campaign names, with a button to ask to join. A link works once and expires after
 7 days. If the same person ends up with a Google login and a user name and password, they link them
-themselves: signed in with Google, they use "Link this login to a password login" on their Home tab and type the
+themselves: signed in with Google, they use the small "Link this login" line at the bottom of their Home tab and type the
 user name and password they already have. Afterwards either login opens the same account.
 
 Check that it saves: change something, then run
@@ -276,8 +276,9 @@ the invite page (**Sign up with Google**, after choosing a user name). An addres
 account, and is not `DND_DM_EMAIL`, is refused. Someone who already has a password account adds Google by getting
 an invite, signing up with Google, and then linking it to their existing user name (see above).
 
-The **Encounters** tab looks monsters up on Open5e (api.open5e.com) from the server, so the Cloud Run service needs
-outbound internet access, which it has by default. Nothing needs to be set up or paid for.
+The **Encounters** tab gets its monsters from Open5e (api.open5e.com), called from the server, so the Cloud Run service
+needs outbound internet access, which it has by default. Nothing needs to be set up or paid for. It makes two calls
+to build a monster list (saved in the bucket's `data/` folder, rebuilt monthly) and one per stat block ever opened.
 
 ## Limits to know about
 

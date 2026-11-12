@@ -1,0 +1,23 @@
+# Files Docker must NOT copy into the build. Keeping them out makes the image small, and keeps private data
+# (your characters, saved soundboards, downloaded audio) from ever ending up inside an image.
+.venv/
+__pycache__/
+*.pyc
+.git/
+.DS_Store
+
+# Your saved data and downloaded audio: these live on the mounted volume, not in the image.
+data/
+media/
+mp3s/
+
+# Fight Club data: personal characters and the big expansion collection (123 MB).
+FightClub5.backup
+FightClub5eXML*/
+FightClub5eXML*.zip
+*.backup
+*.zip
+
+# Documentation and deployment notes are not needed at run time.
+README.md
+DEPLOY-GOOGLE-CLOUD.md

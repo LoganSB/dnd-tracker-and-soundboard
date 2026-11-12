@@ -623,25 +623,30 @@ def set_owner(cid):
     return jsonify(ok=True)
 
 
-# NOTE: this literal route (".../export.zip") must not be shadowed by "/api/party/<cid>";
-# Flask prefers the more specific literal match, and GET <cid> would never contain ".zip".
-@bp.get("/api/party/export.zip")
-def export_party():
-    """Fight Club-importable backup (characters only), zipped.
+def _stream_download(source, filename, mimetype="application/zip"):
+    """Send `source` (an open binary file object, closed afterwards) as a download, STREAMED in 1 MiB pieces with no
+    Content-Length. One ordinary download for the user, and it also gets past Cloud Run's 32 MiB limit on a single
+    HTTP/1 response, which does not apply to streamed ones. The price: the browser cannot show a percentage, because
+    the total size is not sent. Used by every download here (the collection zip and the character backups)."""
+    def pieces():
+        with source:
+            while chunk := source.read(1024 * 1024):
+                yield chunk
+    return Response(pieces(), mimetype=mimetype, headers={"Content-Disposition": f'attachment; filename="{filename}"',
+                                                          "Cache-Control": "private, no-store" if source.__class__ is io.BytesIO else "private, max-age=3600"})
 
-    GET /api/party/export.zip downloads FightClub5-party.zip containing one file,
-    "FightClub5.backup": an XML <data> document with a version and uid header followed by
-    every stored <character>, i.e. the same layout Fight Club exports. The sidecar-only
-    data (mana, conditions) is NOT included. The "version"/"uid" values are fixed numbers
-    that mimic a Fight Club header so the app accepts the file.
-    """
+
+def _backup_zip(ids, download_name):
+    """A Fight Club-importable backup (an XML <data> document with a version and uid header followed by the stored
+    <character> elements for `ids`), zipped as "FightClub5.backup" and returned as a download. The sidecar-only data
+    (mana, conditions) is NOT included. The "version"/"uid" values are fixed numbers that mimic a Fight Club header
+    so the app accepts the file. The caller has already checked the user may use every id."""
     with lock:
         data = ET.Element("data")  # new root element <data>
         ET.SubElement(data, "version").text = "37"
         ET.SubElement(data, "uid").text = "1031"
-        for i in _ids():
-            if _may_use(i):  # a player's backup holds only their own characters
-                data.append(_load(i))
+        for i in ids:
+            data.append(_load(i))
         xml = ET.tostring(data, encoding="utf-8", xml_declaration=True)  # tree -> bytes
     # Build the zip in memory (BytesIO ~ a growable in-RAM file), then rewind to the start
     # with seek(0) so send_file reads from the beginning.
@@ -649,20 +654,41 @@ def export_party():
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("FightClub5.backup", xml)
     buf.seek(0)
-    # as_attachment=True makes the browser save a file rather than display it.
-    return send_file(buf, mimetype="application/zip", as_attachment=True, download_name="FightClub5-party.zip")
+    return _stream_download(buf, download_name)
+
+
+# NOTE: this literal route (".../export.zip") must not be shadowed by "/api/party/<cid>";
+# Flask prefers the more specific literal match, and GET <cid> would never contain ".zip".
+@bp.get("/api/party/export.zip")
+def export_party():
+    """GET /api/party/export.zip downloads FightClub5-party.zip: every character the signed-in user may see (the DM:
+    all; a player: only their own)."""
+    with lock:
+        ids = [i for i in _ids() if _may_use(i)]
+    return _backup_zip(ids, "FightClub5-party.zip")
+
+
+@bp.get("/api/party/<cid>/export.zip")
+def export_member(cid):
+    """GET /api/party/<id>/export.zip downloads ONE character as a Fight Club backup zip, named after the character.
+    The DM may download any; a player only a character assigned to them (anything else is a 404, like every other
+    character route, see _guard)."""
+    _guard(cid)
+    with lock:
+        name = _t(_load(cid), "name") or cid
+    return _backup_zip([cid], re.sub(r"[^\w.-]+", "_", name).strip("_") + ".zip")
 
 
 @bp.get("/download/collection.zip")
 def download_collection():
     """The Fight Club 5e XML expansion collection zip, if it sits next to app.py.
 
-    Serves the first file matching FightClub5eXML*.zip in the project folder (sorted, so
-    the choice is deterministic) as "FightClub5eXML.zip"; 404 if none is present. The
-    for-loop returns on its first iteration, so it is really "first match or fall through
-    to abort". DM only.
+    Serves the first file matching FightClub5eXML*.zip in the project folder (sorted, so the choice is
+    deterministic) as "FightClub5eXML.zip"; 404 if none is present. Any signed-in user may download it
+    (check_request in auth.py lets it through for players).
+
+    Streamed (see _stream_download), because the zip is about 123 MB, far over Cloud Run's 32 MiB single-response limit.
     """
-    auth.require_dm()
     for p in sorted(BASE.glob("FightClub5eXML*.zip")):
-        return send_file(p, mimetype="application/zip", as_attachment=True, download_name="FightClub5eXML.zip")
+        return _stream_download(open(p, "rb"), "FightClub5eXML.zip")
     abort(404)
