@@ -2566,3 +2566,22 @@ body.homepage { padding: 1rem; overflow: auto; }
 .homecard { display: flex; gap: .8rem; align-items: center; padding: .4rem 0; }
 .homecard img { width: 56px; height: 56px; object-fit: cover; border-radius: 8px; }
 .homecard div { flex: 1; }
+
+/* The standard "Sign in with Google" button (see templates/_google_button.html). Deliberately NOT themed to
+   match the page: Google's guidelines ask for this white button, grey border, 14px Roboto/Arial medium text and
+   the four-colour G, and people recognise it. */
+button.gsi, a.gsi {
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  width: 100%; height: 40px; padding: 0 12px;
+  background: #fff; color: #1f1f1f;
+  border: 1px solid #747775; border-radius: 20px;
+  font: 500 14px/20px Roboto, Arial, sans-serif; letter-spacing: .25px;
+  text-decoration: none; cursor: pointer;
+}
+button.gsi:hover, a.gsi:hover { background: #f2f2f2; border-color: #747775; color: #1f1f1f; }
+button.gsi:focus-visible, a.gsi:focus-visible { outline: 3px solid #a8c7fa; outline-offset: 1px; }
+.gsi-logo { width: 20px; height: 20px; flex: none; }
+/* the "or" between a password form and the Google button */
+.authbox .or { text-align: center; color: var(--muted); margin: 1rem 0; }
+.authbox .or::before, .authbox .or::after { content: ""; display: inline-block; width: 3rem; height: 1px; background: var(--muted); vertical-align: middle; margin: 0 .6rem; opacity: .5; }
+.ok { color: var(--ok); }

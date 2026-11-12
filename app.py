@@ -847,9 +847,61 @@ def put_active_party():
             elif cid in old:
                 refs.append(old[cid])
         state["party"] = refs
+        # A character's owner is a member of the loaded campaign as soon as the character is in its party.
+        for ref in refs:
+            if ref.get("owner"):
+                auth.add_membership(ref["owner"], state.get("campaignName", ""))
         state["revision"] = state.get("revision", 0) + 1
         save_live()
         return jsonify(campaign=state.get("campaignName", ""), party=active_party())
+
+
+def _follow_rename(old, new):
+    """A user name changed (two accounts were linked): keep the loaded campaign's party references pointing
+    at the right owner."""
+    with lock:
+        changed = False
+        for ref in state.get("party", []):
+            if ref.get("owner", "").lower() == old.lower():
+                ref["owner"] = new
+                changed = True
+        if changed:
+            save_live()
+
+
+auth.rename_hooks.append(_follow_rename)
+
+
+# What a player may know about campaigns: only their NAMES, whether they belong to each, and which one is
+# loaded. Nothing inside a campaign (sounds, notes, other members) is exposed here. Under /api/my/ so that
+# players may use these routes while the rest of /api/campaigns stays DM-only (see auth.PLAYER_PREFIXES).
+@app.get("/api/my/campaigns")
+def my_campaigns():
+    """GET /api/my/campaigns -> {"loaded": name of the loaded campaign or "", "campaigns": [{"name",
+    "status": "member" | "requested" | "none"}], "myCharactersInParty": [ids of the caller's characters that
+    are in the loaded campaign's party]}."""
+    user = auth.current_user()
+    member, asked = auth.my_campaigns(user["name"])
+    with lock:
+        loaded = state.get("campaignName", "")
+        in_party = [r["id"] for r in state.get("party", [])
+                    if party._extra().get(r["id"], {}).get("owner", r.get("owner", "")).lower() == user["name"].lower()]
+    names = sorted(p.stem for p in PRESETS.glob("*.json"))
+    return jsonify(loaded=loaded, myCharactersInParty=in_party, campaigns=[
+        {"name": n, "status": "member" if n in member else "requested" if n in asked else "none"} for n in names])
+
+
+@app.post("/api/my/campaigns/<name>/request")
+def request_campaign(name):
+    """POST /api/my/campaigns/<name>/request : ask the DM to let me join this campaign. The DM sees the request
+    on the Home tab and approves or denies it. 404 for a campaign that does not exist."""
+    if not (PRESETS / f"{safe_name(name)}.json").exists():
+        abort(404)
+    user = auth.current_user()
+    if user["name"] == "local":  # open mode on your own computer: there are no accounts to attach a request to
+        return jsonify(error="Create an account first"), 400
+    auth.request_join(user["name"], safe_name(name))
+    return jsonify(ok=True)
 
 
 @app.post("/api/media")
@@ -1098,6 +1150,7 @@ def delete_campaign(name):
     p = PRESETS / f"{safe_name(name)}.json"
     if p.exists():
         p.unlink()  # unlink = delete the file
+    auth.forget_campaign(safe_name(name))  # nobody stays a member of, or waits to join, a campaign that is gone
     return jsonify(ok=True)
 
 

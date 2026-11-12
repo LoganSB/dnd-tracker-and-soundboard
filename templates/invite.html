@@ -2,9 +2,13 @@
 <!--
   invite.html - where a player uses the invite link the DM gave them (/invite/<token>).
 
-  They choose a user name and a password (POST /api/auth/redeem), or choose a user name and press
-  "Continue with Google" (the Google address is then linked to the new account). A link that has expired
-  or been used shows a message instead.
+  TWO STEPS, in this one page (the script shows one panel at a time):
+    1. "Choose a user name" and press Next. The name is checked with the server first (POST
+       /api/auth/invite-check), so a taken or invalid name is reported before anything else is asked.
+    2. "Create your account": either choose a password (typed twice) and press Create account (POST
+       /api/auth/redeem), or press the standard "Sign up with Google" button, which sends the browser to
+       Google and links that Google address to the new account (see auth.py).
+  A link that has expired or been used shows a message instead.
 
   Jinja2 variables: token (the invite), valid (is it still usable), google (is Google sign-in on).
 -->
@@ -15,6 +19,7 @@
 <title>Join - DND Tracker</title>
 <link rel="stylesheet" href="/static/style.css">
 </head>
+{% from "_google_button.html" import google_button %}
 <body class="authpage">
 <header class="appnav">
   <a class="brand" href="/">🎲 DND Tracker</a>
@@ -25,17 +30,31 @@
   <h1>Invite not valid</h1>
   <p>This invite link has expired or was already used. Ask your DM for a new one.</p>
   {% else %}
-  <h1>Join the table</h1>
   <p id="msg" class="bad"></p>
-  <form id="joinForm">
+
+  <!-- Step 1: the user name -->
+  <form id="nameForm">
+    <h1>Join the table</h1>
     <label>Choose a user name <input name="username" id="username" autocomplete="username" required autofocus
       pattern="[A-Za-z0-9_.\-]{2,32}" title="2 to 32 letters, digits, dots, dashes or underscores"></label>
-    <label>Choose a password (8 or more characters) <input name="password" id="password" type="password" autocomplete="new-password" minlength="8" required></label>
-    <button class="primary" type="submit">Create my account</button>
+    <button class="primary" type="submit">Next</button>
   </form>
-  {% if google %}
-  <p><button class="btn" id="googleBtn" type="button">Use my Google account instead (needs the user name above)</button></p>
-  {% endif %}
+
+  <!-- Step 2: the password (typed twice), or Google -->
+  <div id="step2" hidden>
+    <h1>Welcome, <span id="hello"></span></h1>
+    <form id="pwForm">
+      <p class="muted">Create a password for this account.</p>
+      <label>Password (8 or more characters) <input name="password" id="password" type="password" autocomplete="new-password" minlength="8" required></label>
+      <label>Type it again <input name="verify" id="verify" type="password" autocomplete="new-password" minlength="8" required></label>
+      <button class="primary" type="submit">Create account</button>
+    </form>
+    {% if google %}
+    <p class="or">or</p>
+    {{ google_button("Sign up with Google", id="googleBtn") }}
+    {% endif %}
+    <p><a href="#" id="back">← Choose a different user name</a></p>
+  </div>
   {% endif %}
 </main>
 {% if valid %}
@@ -43,19 +62,44 @@
 (function () {
   const token = {{ token|tojson }};
   const msg = document.getElementById("msg");
-  document.getElementById("joinForm").onsubmit = async ev => {
+  const nameForm = document.getElementById("nameForm"), step2 = document.getElementById("step2");
+  let username = "";
+  const post = (url, body) => fetch(url, { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body) }).then(async r => ({ ok: r.ok, j: await r.json().catch(() => ({})) }));
+
+  // Step 1 -> 2: ask the server whether the name is usable before showing the password page.
+  nameForm.onsubmit = async ev => {
     ev.preventDefault();
-    const f = ev.target;
-    const r = await fetch("/api/auth/redeem", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token, username: f.username.value, password: f.password.value }) });
-    const j = await r.json().catch(() => ({}));
-    if (r.ok) location.href = "/"; else msg.textContent = j.error || "Something went wrong";
+    msg.textContent = "";
+    username = document.getElementById("username").value.trim();
+    const r = await post("/api/auth/invite-check", { token, username });
+    if (!r.ok) { msg.textContent = r.j.error || "Something went wrong"; return; }
+    document.getElementById("hello").textContent = username;
+    nameForm.hidden = true;
+    step2.hidden = false;
+    document.getElementById("password").focus();
   };
+  document.getElementById("back").onclick = ev => {
+    ev.preventDefault();
+    msg.textContent = "";
+    step2.hidden = true;
+    nameForm.hidden = false;
+  };
+
+  // Step 2, password: both boxes must match before anything is sent.
+  document.getElementById("pwForm").onsubmit = async ev => {
+    ev.preventDefault();
+    msg.textContent = "";
+    const pw = document.getElementById("password").value;
+    if (pw !== document.getElementById("verify").value) { msg.textContent = "The two passwords do not match"; return; }
+    const r = await post("/api/auth/redeem", { token, username, password: pw });
+    if (r.ok) location.href = "/"; else msg.textContent = r.j.error || "Something went wrong";
+  };
+
+  // Step 2, Google: the user name is already chosen, so just go.
   const g = document.getElementById("googleBtn");
   if (g) g.onclick = () => {
-    const u = document.getElementById("username");
-    if (!u.reportValidity()) return;     // ask for a valid user name first
-    location.href = "/auth/google?invite=" + encodeURIComponent(token) + "&username=" + encodeURIComponent(u.value);
+    location.href = "/auth/google?invite=" + encodeURIComponent(token) + "&username=" + encodeURIComponent(username);
   };
 })();
 </script>

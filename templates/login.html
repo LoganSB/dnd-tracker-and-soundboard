@@ -2,7 +2,7 @@
 <!--
   login.html - the sign-in page.
 
-  Shows the user name / password form, a "Continue with Google" button when the server has Google sign-in
+  Shows the user name / password form, the standard "Sign in with Google" button when the server has Google sign-in
   switched on, and, only while no DM account exists yet, a "Create the DM account" form (which needs the
   server's setup key, DND_PASSWORD). The script asks GET /api/auth/me which of these to show, posts to
   /api/auth/login (or /api/auth/setup), then goes to the page the visitor first asked for (?next=).
@@ -16,6 +16,7 @@
 <title>Log in - DND Tracker</title>
 <link rel="stylesheet" href="/static/style.css">
 </head>
+{% from "_google_button.html" import google_button %}
 <body class="authpage">
 <header class="appnav">
   <a class="brand" href="/">🎲 DND Tracker</a>
@@ -29,7 +30,10 @@
     <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
     <button class="primary" type="submit">Log in</button>
   </form>
-  <p id="googleRow" hidden><a class="btn" id="googleBtn" href="/auth/google">Continue with Google</a></p>
+  <div id="googleRow" hidden>
+    <p class="or">or</p>
+    {{ google_button("Sign in with Google", id="googleBtn", href="/auth/google") }}
+  </div>
 
   <form id="setupForm" hidden>
     <h2>Create the DM account</h2>

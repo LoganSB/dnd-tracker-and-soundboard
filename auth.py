@@ -16,6 +16,11 @@ HOW SIGNING IN WORKS
   reset), so changing a password signs out every device that was using the old one.
 * Players cannot register on their own. The DM makes an invite link (valid for 7 days, usable once); opening
   it lets the person choose their own user name and a password (or link their Google account).
+* One account can have several ways to sign in: a password and/or one or more Google addresses. If the same
+  person ended up with two accounts (say a password one and, later, a Google one), the DM can link them: the
+  second account is folded into the first (see merge_users), keeping characters and campaign memberships.
+* Each account also records the campaigns the person belongs to ("campaigns") and the ones they have asked
+  to join ("requests"); the DM approves or denies requests.
 * Google sign-in is optional. It is switched on by giving the server a Google "OAuth client" through the
   environment variables below; without them the Google buttons are hidden.
 
@@ -110,10 +115,20 @@ def _key(name):
     return (name or "").strip().lower()
 
 
+def _emails(rec):
+    """The Google addresses linked to an account, lower case. (Accounts made before several addresses were
+    allowed stored one address under "email"; it is still read here.)"""
+    out = list(rec.get("emails", []))
+    if rec.get("email") and rec["email"] not in out:
+        out.append(rec["email"])
+    return out
+
+
 def public(name, rec):
     """The parts of a user record that are safe to show (never the hash)."""
-    return {"name": rec.get("name", name), "role": rec.get("role", "player"), "email": rec.get("email", ""),
-            "hasPassword": bool(rec.get("hash")), "created": rec.get("created", 0)}
+    return {"name": rec.get("name", name), "role": rec.get("role", "player"), "emails": _emails(rec),
+            "hasPassword": bool(rec.get("hash")), "created": rec.get("created", 0),
+            "campaigns": rec.get("campaigns", []), "requests": rec.get("requests", [])}
 
 
 # ------------------------------------------------------------------ who is asking
@@ -175,8 +190,8 @@ def _start_session(resp, key):
 OPEN_EXACT = {"/", "/login", "/healthz", "/favicon.ico"}
 OPEN_PREFIXES = ("/static/", "/api/auth/", "/auth/", "/invite/")
 # Players may also use the character pages and character API (route code limits them to their own characters),
-# plus the small page that is their home tab.
-PLAYER_PREFIXES = ("/api/party", "/_/party", "/party", "/_/home")
+# plus the small page that is their home tab and the "my campaigns" routes (see app.py).
+PLAYER_PREFIXES = ("/api/party", "/_/party", "/party", "/_/home", "/api/my/")
 
 
 def check_request():
@@ -244,7 +259,8 @@ def _create(name, role, password=None, email=""):
     """Add an account and return its key. The caller has already checked _valid_new."""
     with lock:
         d = _load()
-        d["users"][_key(name)] = {"name": name, "role": role, "email": email.lower(), "created": int(time.time()),
+        d["users"][_key(name)] = {"name": name, "role": role, "emails": [email.lower()] if email else [],
+                                  "created": int(time.time()), "campaigns": [], "requests": [],
                                   "ver": secrets.token_hex(8),
                                   **({"hash": generate_password_hash(password)} if password else {})}
         _save(d)
@@ -354,7 +370,11 @@ def delete_user(name):
 
 @bp.post("/api/auth/users/<name>/password")
 def reset_password(name):
-    """POST /api/auth/users/<name>/password {"password"} (DM) -> set a new password for someone who forgot theirs."""
+    """POST /api/auth/users/<name>/password {"password"} (DM) -> set a new password for someone who forgot theirs.
+
+    Only for accounts that HAVE a password. An account that signs in with Google alone has nothing to reset,
+    and giving it a password would quietly add a second way in that the DM chose and knows, so it is refused.
+    (An account that has both can still be reset: the person forgot the password, and Google still works.)"""
     require_dm()
     pw = (request.get_json(force=True, silent=True) or {}).get("password", "")
     if len(pw) < MIN_PASSWORD:
@@ -364,6 +384,8 @@ def reset_password(name):
         rec = d["users"].get(_key(name))
         if not rec:
             abort(404)
+        if not rec.get("hash"):
+            return jsonify(error="This account signs in with Google only: there is no password to reset"), 400
         rec["hash"], rec["ver"] = generate_password_hash(pw), secrets.token_hex(8)
         _save(d)
     return jsonify(ok=True)
@@ -425,6 +447,193 @@ def redeem():
         _save(d)
         key = _create(body["username"], "player", body["password"])
     return _start_session(jsonify(ok=True), key)
+
+
+@bp.post("/api/auth/invite-check")
+def invite_check():
+    """POST /api/auth/invite-check {"token","username"} -> is this invite still usable and the name free?
+
+    Used by the first step of the invite page, before the person is asked for a password or Google. It
+    changes nothing. 200 {"ok": true}, 410 for a dead invite, or 400 with the reason the name cannot be used."""
+    body = request.get_json(force=True, silent=True) or {}
+    if body.get("token", "") not in _live_invites(_load()):
+        return jsonify(error="This invite link is no longer valid"), 410
+    err = _valid_new(body.get("username"), None)
+    if err:
+        return jsonify(error=err), 400
+    return jsonify(ok=True)
+
+
+# ------------------------------------------------------------------ DM: linking accounts
+# Called with the old and new user name after accounts are merged or renamed, so other parts of the app
+# (the loaded campaign's party list, character owners) can follow. app.py and party.py add their functions.
+rename_hooks = []
+
+
+@bp.post("/api/auth/merge")
+def merge_users():
+    """POST /api/auth/merge {"keep","merge"} (DM) -> "these two logins are the same person".
+
+    The account `merge` is folded into the account `keep`, then deleted:
+      * sign-in methods: `keep` gains `merge`'s Google addresses, and `merge`'s password if `keep` has none
+        (if both have one, `keep`'s stays);
+      * characters owned by `merge` become `keep`'s; campaign memberships and join requests are combined;
+      * the person signs in with any of the methods and lands in the one account (`keep`).
+    Refused: merging an account into itself, merging the DM account you are using, or folding a DM account
+    into a player account (that would quietly take the DM's powers away or hand them over).
+    """
+    require_dm()
+    body = request.get_json(force=True, silent=True) or {}
+    keep_k, drop_k = _key(body.get("keep")), _key(body.get("merge"))
+    with lock:
+        d = _load()
+        keep, drop = d["users"].get(keep_k), d["users"].get(drop_k)
+        if not keep or not drop:
+            abort(404)
+        if keep_k == drop_k:
+            return jsonify(error="Choose two different accounts"), 400
+        if drop_k == _key(current_user()["name"]):
+            return jsonify(error="You cannot fold the account you are signed in with into another one; sign in as the other one, or choose it as the main account"), 400
+        if drop.get("role") == "dm" and keep.get("role") != "dm":
+            return jsonify(error="A DM account cannot be folded into a player account"), 400
+        keep["emails"] = _emails(keep) + [e for e in _emails(drop) if e not in _emails(keep)]
+        keep.pop("email", None)
+        if not keep.get("hash") and drop.get("hash"):
+            keep["hash"] = drop["hash"]
+        keep["campaigns"] = sorted(set(keep.get("campaigns", [])) | set(drop.get("campaigns", [])))
+        keep["requests"] = sorted((set(keep.get("requests", [])) | set(drop.get("requests", []))) - set(keep["campaigns"]))
+        keep["ver"] = secrets.token_hex(8)  # signs the kept account out everywhere; they sign in again
+        del d["users"][drop_k]
+        _save(d)
+        old, new = drop.get("name", drop_k), keep.get("name", keep_k)
+    import party
+    party.reown(old, new)
+    for hook in rename_hooks:
+        hook(old, new)
+    return jsonify(ok=True)
+
+
+@bp.post("/api/auth/users/<name>/email")
+def add_email(name):
+    """POST /api/auth/users/<name>/email {"email"} (DM) -> let this account also sign in with a Google address.
+    The address may not belong to another account (link the accounts instead)."""
+    require_dm()
+    email = str((request.get_json(force=True, silent=True) or {}).get("email", "")).strip().lower()
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+        return jsonify(error="That does not look like an email address"), 400
+    with lock:
+        d = _load()
+        rec = d["users"].get(_key(name))
+        if not rec:
+            abort(404)
+        if any(email in _emails(u) for u in d["users"].values()):
+            return jsonify(error="That address is already linked to an account"), 409
+        rec["emails"] = _emails(rec) + [email]
+        rec.pop("email", None)
+        _save(d)
+    return jsonify(ok=True)
+
+
+@bp.delete("/api/auth/users/<name>/email/<email>")
+def remove_email(name, email):
+    """DELETE /api/auth/users/<name>/email/<email> (DM) -> unlink a Google address. An account must keep at
+    least one way to sign in (a password or an address)."""
+    require_dm()
+    with lock:
+        d = _load()
+        rec = d["users"].get(_key(name))
+        if not rec:
+            abort(404)
+        rest = [e for e in _emails(rec) if e != email.lower()]
+        if not rest and not rec.get("hash"):
+            return jsonify(error="That is the account's only way to sign in"), 400
+        rec["emails"] = rest
+        rec.pop("email", None)
+        _save(d)
+    return jsonify(ok=True)
+
+
+# ------------------------------------------------------------------ campaign membership and join requests
+# "campaigns" on an account = the campaigns that person belongs to; "requests" = campaigns they asked to join.
+# Campaign names come from app.py (the saved campaign files); this module only records who is attached to a name.
+def my_campaigns(name):
+    """(member of, requested) for user `name`, as two lists of campaign names."""
+    rec = _load()["users"].get(_key(name), {})
+    return rec.get("campaigns", []), rec.get("requests", [])
+
+
+def request_join(name, campaign):
+    """Record that `name` asked to join `campaign` (does nothing if already a member or already asked)."""
+    with lock:
+        d = _load()
+        rec = d["users"].get(_key(name))
+        if rec and campaign not in rec.get("campaigns", []) and campaign not in rec.get("requests", []):
+            rec.setdefault("requests", []).append(campaign)
+            _save(d)
+
+
+def add_membership(name, campaign):
+    """Make `name` a member of `campaign` (and clear any request for it). Safe to call repeatedly."""
+    if not campaign:
+        return
+    with lock:
+        d = _load()
+        rec = d["users"].get(_key(name))
+        if rec and campaign not in rec.get("campaigns", []):
+            rec.setdefault("campaigns", []).append(campaign)
+            rec["requests"] = [c for c in rec.get("requests", []) if c != campaign]
+            _save(d)
+
+
+def forget_campaign(campaign):
+    """A campaign was deleted: drop it from every account's memberships and requests."""
+    with lock:
+        d = _load()
+        for rec in d["users"].values():
+            rec["campaigns"] = [c for c in rec.get("campaigns", []) if c != campaign]
+            rec["requests"] = [c for c in rec.get("requests", []) if c != campaign]
+        _save(d)
+
+
+@bp.get("/api/auth/requests")
+def list_requests():
+    """GET /api/auth/requests (DM) -> [{"user","campaign"}] every pending join request."""
+    require_dm()
+    return jsonify([{"user": rec.get("name", k), "campaign": c}
+                    for k, rec in sorted(_load()["users"].items()) for c in rec.get("requests", [])])
+
+
+@bp.post("/api/auth/requests/resolve")
+def resolve_request():
+    """POST /api/auth/requests/resolve {"user","campaign","approve"} (DM) -> approve (the person joins the
+    campaign) or deny (the request is just removed; they may ask again)."""
+    require_dm()
+    body = request.get_json(force=True, silent=True) or {}
+    campaign = body.get("campaign", "")
+    with lock:
+        d = _load()
+        rec = d["users"].get(_key(body.get("user")))
+        if not rec or campaign not in rec.get("requests", []):
+            abort(404)
+        rec["requests"] = [c for c in rec["requests"] if c != campaign]
+        if body.get("approve"):
+            rec.setdefault("campaigns", []).append(campaign)
+        _save(d)
+    return jsonify(ok=True)
+
+
+@bp.delete("/api/auth/users/<name>/campaigns/<campaign>")
+def remove_membership(name, campaign):
+    """DELETE /api/auth/users/<name>/campaigns/<campaign> (DM) -> take a person out of a campaign's members."""
+    require_dm()
+    with lock:
+        d = _load()
+        rec = d["users"].get(_key(name))
+        if not rec:
+            abort(404)
+        rec["campaigns"] = [c for c in rec.get("campaigns", []) if c != campaign]
+        _save(d)
+    return jsonify(ok=True)
 
 
 # ------------------------------------------------------------------ pages
@@ -521,14 +730,14 @@ def google_callback():
             err = _valid_new(state.get("u"), None)
             if err:
                 return _error_page(err)
-            if any(u.get("email") == email for u in d["users"].values()):
+            if any(email in _emails(u) for u in d["users"].values()):
                 return _error_page("That Google account is already linked to a user.")
             del d["invites"][state["i"]]
             _save(d)
             key = _create(state["u"], "player", None, email)
         else:
             # 2. An account already linked to this address.
-            key = next((k for k, u in d["users"].items() if u.get("email") == email), None)
+            key = next((k for k, u in d["users"].items() if email in _emails(u)), None)
             # 3. The DM's own address: make the DM account the first time.
             if not key and email == os.environ.get("DND_DM_EMAIL", "").lower():
                 base = re.sub(r"[^A-Za-z0-9_.-]", "", email.split("@")[0])[:28] or "dm"

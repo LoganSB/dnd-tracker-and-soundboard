@@ -248,6 +248,19 @@ def _guard(cid):
         abort(404)
 
 
+def reown(old, new):
+    """Give every character that belonged to user `old` to user `new` (used when two accounts are linked)."""
+    with lock:
+        ex = _extra()
+        changed = False
+        for rec in ex.values():
+            if rec.get("owner", "").lower() == old.lower():
+                rec["owner"] = new
+                changed = True
+        if changed:
+            _save_extra(ex)
+
+
 def disown(name):
     """Clear the owner of every character that belonged to user `name` (used when the account is deleted)."""
     with lock:

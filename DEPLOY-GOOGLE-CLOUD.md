@@ -199,8 +199,11 @@ account again; players' accounts are lost too.) Click once on the page before us
 click before they allow audio).
 
 **Adding players.** On the Home tab, under "Players and invite links", press **Create invite link** and send the
-link to the player. They open it, choose a user name and a password, and then see only their own character (they
-can upload their Fight Club file there). A link works once and expires after 7 days.
+link to the player. They open it, type a user name and press **Next**, then either create a password (typed
+twice) or press **Sign up with Google**. After that they see only their own character (they can upload their
+Fight Club file there) and the campaign names, with a button to ask to join. A link works once and expires after
+7 days. If the same person later makes a second account, use "Link accounts" on the Home tab to fold it into the
+first.
 
 Check that it saves: change something, then run
 
@@ -267,9 +270,10 @@ Google's replies, so expect to adjust a screen or two.
    ```
    (These two lines replace the existing `--set-secrets` line.)
 
-A **Continue with Google** button then appears on the login page. A player links their Google account when they
-use their invite link (the invite page has a "Use my Google account instead" button). An address that is not
-linked to an account, and is not `DND_DM_EMAIL`, is refused.
+A standard **Sign in with Google** button then appears on the login page. A player links their Google account on
+the invite page (**Sign up with Google**, after choosing a user name). An address that is not linked to an
+account, and is not `DND_DM_EMAIL`, is refused. To let someone who already has a password account sign in with
+Google as well, use "Add Google address" next to their name on the Home tab.
 
 ## Limits to know about
 
