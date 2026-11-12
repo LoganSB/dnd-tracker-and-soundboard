@@ -33,6 +33,10 @@
     <button id="undoBtn" title="Undo the last link change (Ctrl+Z)">↶</button>
     <button id="redoBtn" title="Redo (Ctrl+Y)">↷</button>
     <button id="addSectionBtn">+ Section</button>
+    <!-- The same things the click menu on the canvas offers (see Canvas.clickMenu in campaign.js): -->
+    <button id="addFlagBtn">+ Flag</button>
+    <button id="addEncounterBtn">+ Encounter</button>
+    <button id="addLootTableBtn">+ Loot table</button>
     <!-- saveState: "saved" / "saving…" text updated by campaign.js. -->
     <span id="saveState" class="muted">saved</span>
   </div>
@@ -89,14 +93,15 @@
   </form>
 </dialog>
 
-<!-- encDlg: put an encounter on the board (from the click menu): pick an existing one or make a new one. -->
+<!-- encDlg: put an encounter or a loot table on the board (from the click menu): pick an existing one (they are shared by every
+     campaign) or make a new one. campaign.js fills in the wording for whichever kind was chosen. -->
 <dialog id="encDlg">
   <form method="dialog" id="encForm">
-    <h2>Encounter</h2>
-    <label>Encounter <select name="enc"></select></label>
-    <label>New encounter name <input name="newName" placeholder="e.g. Goblin ambush"></label>
+    <h2 id="encDlgTitle">Encounter</h2>
+    <label><span id="encPickLabel">Encounter</span> <select name="enc"></select></label>
+    <label>New name <input name="newName" placeholder="e.g. Goblin ambush"></label>
     <label>Tile <select name="tile"></select></label>
-    <p class="muted">Clicking the card adds the encounter to the initiative tracker. A new encounter opens in the Encounters tab so you can add monsters.</p>
+    <p class="muted">An encounter card adds the encounter to the initiative tracker when clicked; a loot table becomes a flag that rolls on it. A new one opens in its own tab so you can fill it in.</p>
     <menu><span class="grow"></span><button type="button" data-close>Cancel</button><button type="submit" class="primary">Add</button></menu>
   </form>
 </dialog>

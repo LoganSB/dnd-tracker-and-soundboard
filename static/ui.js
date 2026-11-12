@@ -61,7 +61,8 @@ function box(key, title, ...body) {
 
 // dataTable({ key, columns, rows, actions, empty }) -> element
 //   columns  [{ label, text(row) -> string used for searching and filtering, show(row) -> node or text (optional;
-//            defaults to the text), filter: true to give the column a menu of its distinct values }]
+//            defaults to the text), filter: true to give the column a menu of its distinct values,
+//            tags(row) -> array: with filter, a row belongs to every value in its list (a row in two campaigns shows up under both) }]
 //   actions  (row) -> array of buttons for the last column (omit for none)
 //   empty    text shown when there are no rows at all
 // The search takes the whole typed text as ONE regular expression over the row's text (as it always did; invalid ones are
@@ -78,7 +79,7 @@ function dataTable({ key, columns, rows, actions, empty = "Nothing here yet." })
   const filters = columns.map((c, i) => {
     if (!c.filter) return null;
     const sel = h("select", { title: "Filter by " + c.label }, h("option", { value: "", textContent: `${c.label}: all` }),
-      [...new Set(rows.map(r => c.text(r)).filter(Boolean))].sort().map(v => h("option", { value: v, textContent: v })));
+      [...new Set(c.tags ? rows.flatMap(c.tags) : rows.map(r => c.text(r)).filter(Boolean))].sort().map(v => h("option", { value: v, textContent: v })));
     sel.value = stored(`f.${key}.${i}`, "");
     if (sel.value !== stored(`f.${key}.${i}`, "")) sel.value = "";
     return sel;
@@ -98,7 +99,7 @@ function dataTable({ key, columns, rows, actions, empty = "Nothing here yet." })
     const exact = !q ? [] : prepared.filter(p => (re ? re.test(p.name) : p.lname.includes(q.toLowerCase())));
     const generous = Finder.find(prepared, { q }, { keepOrder: true });
     const list = (q ? [...new Set([...exact, ...generous])] : generous)
-      .map(p => p.ref).filter(r => !filters.some((f, i) => f && f.value && columns[i].text(r) !== f.value));
+      .map(p => p.ref).filter(r => !filters.some((f, i) => f && f.value && !(columns[i].tags ? columns[i].tags(r).includes(f.value) : columns[i].text(r) === f.value)));
     body.replaceChildren(...list.map(r => h("tr", {}, columns.map(c => h("td", {}, c.show ? c.show(r) : c.text(r))),
       actions ? h("td", { className: "acts" }, actions(r)) : null)));
     if (!list.length) body.append(h("tr", {}, h("td", { colSpan: columns.length + 1, className: "muted", textContent: "No rows match." })));

@@ -2,11 +2,10 @@
 players away from every route here, because none of these paths is in its PLAYER_PREFIXES list.
 
 WHERE THINGS ARE STORED
-  Both live inside the campaign's own state (app.py's `state`, saved in data/live.json and in every saved
-  campaign), so loading another campaign brings back ITS encounters and ITS combat, not the previous one's:
-    state["encounters"]  [{"id","name","notes","monsters":[{"slug","name","count","hp","ac","cr","xp","bonus","doc"}]}]
+  Encounters and loot tables are a shared LIBRARY in their own files (data/encounters.json, data/loots.json), not part of
+  any campaign, so every campaign can use every one; each record notes which campaigns have it on their tracker (see
+  "the library" below). The combat in progress belongs to the campaign:
     state["initiative"]  {"round","active","order":[...]}   (shape documented in static/tracker.js)
-  A monster line keeps a COPY of the numbers it needs, so a saved campaign still works with no internet.
 
 MONSTERS come from the Open5e API (https://api.open5e.com), a free service that includes Kobold Press books
 such as Tome of Beasts. The browser never talks to it: these routes do, and keep what they fetch on disk so the
@@ -185,7 +184,149 @@ _routes(MONSTERS, "monsters", "monster", "monster.html", mod=_mod, xp=XP)
 _routes(ITEMS, "items", "item", "item.html")
 
 
-# ------------------------------------------------------------------ encounters (in the campaign state)
+# ------------------------------------------------------------------ the library: encounters and loot tables
+# Encounters and loot tables belong to NO campaign. They live in their own files, data/encounters.json and
+# data/loots.json, so any campaign can use any of them. (Only the combat in progress, the initiative order, belongs to a
+# campaign.) Each record also carries "campaigns": the names of the saved campaigns that have it on their campaign
+# tracker as a card. The Browse lists filter on it. It is kept up to date by reindex() whenever a campaign is saved,
+# its tracker changes, or a card is added from the Encounters / Loot tab.
+#   encounter  {"id","name","notes","monsters":[{"slug","name","count","hp","ac","cr","xp","bonus","doc"}],"campaigns":[...]}
+#   loot table {"id","name","notes","entries":[{"slug","name","type","rarity","weight","note"}],"campaigns":[...]}
+# A line keeps a COPY of the numbers it needs, so a campaign still works with no internet.
+LIB_FILES = {"encounters": ROOT / "data" / "encounters.json", "loots": ROOT / "data" / "loots.json"}
+_lib_cache = {}   # kind -> (file modified time, list)
+
+
+def _lib(kind):
+    """The list of records of one kind (a live list: callers change it, then call _save_lib). Read from disk when the file changed."""
+    f = LIB_FILES[kind]
+    mtime = f.stat().st_mtime_ns if f.exists() else 0
+    hit = _lib_cache.get(kind)
+    if hit and hit[0] == mtime:
+        return hit[1]
+    try:
+        items = json.loads(f.read_text()) if mtime else []
+    except Exception:
+        items = []
+    _lib_cache[kind] = (mtime, items)
+    return items
+
+
+def _save_lib(kind, items):
+    f = LIB_FILES[kind]
+    f.parent.mkdir(parents=True, exist_ok=True)
+    tmp = f.with_suffix(".tmp")
+    tmp.write_text(json.dumps(items, indent=2))
+    tmp.replace(f)
+    _lib_cache[kind] = (f.stat().st_mtime_ns, items)
+
+
+def _find(kind, rid):
+    for r in _lib(kind):
+        if r["id"] == rid:
+            return r
+    abort(404)
+
+
+def adopt(st):
+    """Older saves kept encounters and loot tables INSIDE the campaign. Move any found in state `st` into the library (a record
+    already there with the same id wins) and remove them from `st`. Returns True if `st` was changed. Called on start-up and
+    whenever a campaign or version is loaded."""
+    changed = False
+    for kind in ("encounters", "loots"):
+        if kind in st:
+            have = {r["id"] for r in _lib(kind)}
+            moved = [dict(r, campaigns=r.get("campaigns", [])) for r in st.pop(kind) if r.get("id") not in have]
+            if moved:
+                _save_lib(kind, _lib(kind) + moved)
+            changed = True
+    return changed
+
+
+def cards_of(campaign):
+    """(encounter ids, loot table ids) that have a card on this campaign tracker."""
+    enc, loot = set(), set()
+    for t in (campaign or {}).get("tiles", []):
+        for i in t.get("items", []):
+            if i.get("encounter"):
+                enc.add(i["encounter"])
+            src = i.get("loot", {}).get("source", "")
+            if src.startswith("table:"):
+                loot.add(src[6:])
+    return enc, loot
+
+
+def reindex(name, campaign):
+    """Record, on every encounter and loot table, whether saved campaign `name` has a card for it (see "campaigns" above)."""
+    if not name:
+        return
+    for kind, ids in zip(("encounters", "loots"), cards_of(campaign)):
+        items, changed = _lib(kind), False
+        for r in items:
+            has, want = name in r.setdefault("campaigns", []), r["id"] in ids
+            if has != want:
+                r["campaigns"] = sorted((set(r["campaigns"]) | {name}) if want else (set(r["campaigns"]) - {name}))
+                changed = True
+        if changed:
+            _save_lib(kind, items)
+
+
+def forget_campaign(name):
+    """A campaign was deleted: it no longer holds cards for anything."""
+    for kind in ("encounters", "loots"):
+        items = _lib(kind)
+        if any(name in r.get("campaigns", []) for r in items):
+            for r in items:
+                r["campaigns"] = [c for c in r.get("campaigns", []) if c != name]
+            _save_lib(kind, items)
+
+
+def _on_tracker(st, field_of):
+    """For the LOADED campaign: {record id: [names of tiles holding a card for it]}."""
+    out = {}
+    for t in st.get("campaign", {}).get("tiles", []):
+        for i in t.get("items", []):
+            rid = field_of(i)
+            if rid:
+                out.setdefault(rid, []).append(t.get("name", ""))
+    return out
+
+
+def _listing(kind, field_of):
+    """The records of one kind, each with "onTracker": tile names in the loaded campaign (computed, not stored)."""
+    with _ctx["lock"]:
+        held = _on_tracker(_state(), field_of)
+        return jsonify([{**r, "campaigns": r.get("campaigns", []), "onTracker": held.get(r["id"], [])} for r in _lib(kind)])
+
+
+def _create(kind, default_name, extra):
+    name = str((request.get_json(force=True, silent=True) or {}).get("name", "")).strip()[:80] or default_name
+    with _ctx["lock"]:
+        r = {"id": secrets.token_hex(4), "name": name, "notes": "", **extra, "campaigns": []}
+        items = _lib(kind)
+        items.append(r)
+        _save_lib(kind, items)
+        _ctx["commit"](True)
+    return jsonify(r)
+
+
+def _delete(kind, rid):
+    with _ctx["lock"]:
+        _save_lib(kind, [r for r in _lib(kind) if r["id"] != rid])
+        _ctx["commit"](True)
+    return jsonify(ok=True)
+
+
+def _enc_ref(item):
+    return item.get("encounter")
+
+
+def _loot_ref(item):
+    src = item.get("loot", {}).get("source", "")
+    return src[6:] if src.startswith("table:") else None
+
+
+# ---- encounters
 def _clean_line(x):
     """One monster line from the browser, with every field forced to a safe type and size."""
     try:
@@ -199,33 +340,17 @@ def _clean_line(x):
             "doc": str(x.get("doc", ""))[:40]}
 
 
-def _find(st, eid):
-    for e in st.get("encounters", []):
-        if e["id"] == eid:
-            return e
-    abort(404)
-
-
 @bp.get("/api/encounters")
 def list_encounters():
-    """GET /api/encounters -> the loaded campaign's encounters, each with "onTracker": names of the campaign tracker
-    tiles that hold it (computed here, not stored)."""
-    with _ctx["lock"]:
-        st = _state()
-        tiles = st.get("campaign", {}).get("tiles", [])
-        return jsonify([{**e, "onTracker": [t.get("name", "") for t in tiles if any(i.get("encounter") == e["id"] for i in t.get("items", []))]}
-                        for e in st.get("encounters", [])])
+    """GET /api/encounters -> every encounter, each with "campaigns" (saved campaigns that have it on their tracker) and
+    "onTracker" (tile names in the LOADED campaign; computed here, not stored)."""
+    return _listing("encounters", _enc_ref)
 
 
 @bp.post("/api/encounters")
 def create_encounter():
     """POST /api/encounters {"name"} -> a new, empty encounter (returned)."""
-    name = str((request.get_json(force=True, silent=True) or {}).get("name", "")).strip()[:80] or "New encounter"
-    with _ctx["lock"]:
-        e = {"id": secrets.token_hex(4), "name": name, "notes": "", "monsters": []}
-        _state().setdefault("encounters", []).append(e)
-        _ctx["commit"](True)
-    return jsonify(e)
+    return _create("encounters", "New encounter", {"monsters": []})
 
 
 @bp.put("/api/encounters/<eid>")
@@ -235,13 +360,14 @@ def update_encounter(eid):
     if not isinstance(b.get("monsters", []), list):
         return jsonify(error="monsters must be a list"), 400
     with _ctx["lock"]:
-        e = _find(_state(), eid)
+        e = _find("encounters", eid)
         if "name" in b:
             e["name"] = str(b["name"]).strip()[:80] or e["name"]
         if "notes" in b:
             e["notes"] = str(b["notes"])[:2000]
         if "monsters" in b:
             e["monsters"] = [_clean_line(x) for x in b["monsters"][:60] if isinstance(x, dict)]
+        _save_lib("encounters", _lib("encounters"))
         _ctx["commit"](True)
         return jsonify(e)
 
@@ -249,15 +375,11 @@ def update_encounter(eid):
 @bp.delete("/api/encounters/<eid>")
 def delete_encounter(eid):
     """DELETE /api/encounters/<id>. Campaign tiles that pointed at it stay and show "deleted encounter"."""
-    with _ctx["lock"]:
-        st = _state()
-        st["encounters"] = [e for e in st.get("encounters", []) if e["id"] != eid]
-        _ctx["commit"](True)
-    return jsonify(ok=True)
+    return _delete("encounters", eid)
 
 
 def _add_card(st, want, matches, make):
-    """Put a card on the campaign tracker (the one place encounters and loot tables share). `want` is a tile id ("" for
+    """Put a card on the loaded campaign's tracker (the one place encounters and loot tables share). `want` is a tile id ("" for
     the first tile; a campaign with no tiles yet gets a section and a tile). `matches(item)` says whether a card already
     exists (then nothing is added) and `make()` builds a new card without x, y: the campaign page finds it a free spot
     the next time it loads the board. Returns (tile, card)."""
@@ -279,22 +401,22 @@ def _add_card(st, want, matches, make):
 @bp.post("/api/encounters/<eid>/tile")
 def add_encounter_tile(eid):
     """POST /api/encounters/<id>/tile {"tile": id of a campaign tracker tile, or "" for the first one} -> put this
-    encounter on the campaign tracker as an encounter tile. Does nothing if that tile already has it.
+    encounter on the LOADED campaign's tracker as an encounter tile. Does nothing if that tile already has it.
     Returns {"tile": its name, "item": the card's id} (the id lets the page highlight it on the campaign tracker)."""
     want = str((request.get_json(force=True, silent=True) or {}).get("tile", ""))
     with _ctx["lock"]:
         st = _state()
-        _find(st, eid)
+        _find("encounters", eid)
         tile, card = _add_card(st, want, lambda i: i.get("encounter") == eid,
                                lambda: {"id": secrets.token_hex(4), "name": "", "encounter": eid, "checklist": [],
                                         "triggered": False, "loot": {"entries": [], "log": []}})
+        reindex(st.get("campaignName", ""), st["campaign"])
         _ctx["commit"](True)
         return jsonify(tile=tile["name"], item=card["id"])
 
 
-# ------------------------------------------------------------------ loot tables (in the campaign state)
-# state["loots"] = [{"id","name","notes","entries":[{"slug","name","type","rarity","weight","note"}]}]. Like encounters, they
-# belong to the campaign. A flag on the campaign tracker can roll on one (flag["loot"]["source"] = "table:<id>").
+# ------------------------------------------------------------------ loot tables (see "the library" above)
+# A flag on the campaign tracker rolls on a table when flag["loot"]["source"] = "table:<id>".
 def _clean_entry(x):
     try:
         weight = max(1, min(1000, int(float(x.get("weight", 1)))))
@@ -305,33 +427,16 @@ def _clean_entry(x):
             "weight": weight, "note": str(x.get("note", ""))[:200]}
 
 
-def _find_loot(st, lid):
-    for t in st.get("loots", []):
-        if t["id"] == lid:
-            return t
-    abort(404)
-
-
 @bp.get("/api/loots")
 def list_loots():
-    """GET /api/loots -> the loaded campaign's loot tables, each with "onTracker": names of campaign tiles whose flags roll on it."""
-    with _ctx["lock"]:
-        st = _state()
-        tiles = st.get("campaign", {}).get("tiles", [])
-        return jsonify([{**t, "onTracker": [x.get("name", "") for x in tiles
-                                            if any(i.get("loot", {}).get("source") == "table:" + t["id"] for i in x.get("items", []))]}
-                        for t in st.get("loots", [])])
+    """GET /api/loots -> every loot table, each with "campaigns" and "onTracker" (see list_encounters)."""
+    return _listing("loots", _loot_ref)
 
 
 @bp.post("/api/loots")
 def create_loot():
     """POST /api/loots {"name"} -> a new empty loot table (returned)."""
-    name = str((request.get_json(force=True, silent=True) or {}).get("name", "")).strip()[:80] or "New loot table"
-    with _ctx["lock"]:
-        t = {"id": secrets.token_hex(4), "name": name, "notes": "", "entries": []}
-        _state().setdefault("loots", []).append(t)
-        _ctx["commit"](True)
-    return jsonify(t)
+    return _create("loots", "New loot table", {"entries": []})
 
 
 @bp.put("/api/loots/<lid>")
@@ -341,13 +446,14 @@ def update_loot(lid):
     if not isinstance(b.get("entries", []), list):
         return jsonify(error="entries must be a list"), 400
     with _ctx["lock"]:
-        t = _find_loot(_state(), lid)
+        t = _find("loots", lid)
         if "name" in b:
             t["name"] = str(b["name"]).strip()[:80] or t["name"]
         if "notes" in b:
             t["notes"] = str(b["notes"])[:2000]
         if "entries" in b:
             t["entries"] = [_clean_entry(x) for x in b["entries"][:200] if isinstance(x, dict)]
+        _save_lib("loots", _lib("loots"))
         _ctx["commit"](True)
         return jsonify(t)
 
@@ -355,24 +461,21 @@ def update_loot(lid):
 @bp.delete("/api/loots/<lid>")
 def delete_loot(lid):
     """DELETE /api/loots/<id>. Flags that rolled on it keep their card and say "deleted loot table"."""
-    with _ctx["lock"]:
-        st = _state()
-        st["loots"] = [t for t in st.get("loots", []) if t["id"] != lid]
-        _ctx["commit"](True)
-    return jsonify(ok=True)
+    return _delete("loots", lid)
 
 
 @bp.post("/api/loots/<lid>/tile")
 def add_loot_tile(lid):
-    """POST /api/loots/<id>/tile {"tile"} -> put a flag on the campaign tracker that rolls on this table (like encounters).
+    """POST /api/loots/<id>/tile {"tile"} -> put a flag on the loaded campaign's tracker that rolls on this table (like encounters).
     Returns {"tile", "item"}."""
     want = str((request.get_json(force=True, silent=True) or {}).get("tile", ""))
     with _ctx["lock"]:
         st = _state()
-        t = _find_loot(st, lid)
+        t = _find("loots", lid)
         tile, card = _add_card(st, want, lambda i: i.get("loot", {}).get("source") == "table:" + lid,
                                lambda: {"id": secrets.token_hex(4), "name": t["name"], "checklist": [], "triggered": False,
                                         "loot": {"entries": [], "log": [], "source": "table:" + lid}})
+        reindex(st.get("campaignName", ""), st["campaign"])
         _ctx["commit"](True)
         return jsonify(tile=tile["name"], item=card["id"])
 
@@ -432,7 +535,7 @@ def load_encounter(eid):
     d20 = lambda: random.randint(1, 20)  # noqa: E731
     with _ctx["lock"]:
         st = _state()
-        enc = _find(st, eid)
+        enc = _find("encounters", eid)
         ini = _fresh() if mode == "replace" else (st.get("initiative") or _fresh())
         order = ini["order"]
         if mode != "replace" and not again and any(c.get("enc") == eid for c in order):

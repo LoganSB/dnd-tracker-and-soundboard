@@ -1745,9 +1745,10 @@ function subFrame(tile, sub) {
     () => (mine.length ? cardsOf(mine) : [{ obj: sub, el: document.querySelector(`.frame[data-fid="sub:${tile.id}:${sub.id}"]`) }]));
 }
 
-// addTile(sectionId): ask for a name and add a new empty tile to that section (or the first section if
-// sectionId is null). Its (empty) frame goes in the free spot nearest to that section's other frames.
-function addTile(sectionId) {
+// addTile(sectionId, at): ask for a name and add a new empty tile to that section (or the first section if
+// sectionId is null). Its (empty) frame goes where the canvas was clicked (`at`, world coordinates, from the click menu), or
+// else in the free spot nearest to that section's other frames.
+function addTile(sectionId, at) {
   const name = prompt("New tile name (e.g. 'Boss Phase 2')");
   if (!name) return;
   const sec = sectionId || S.sections[0].id;
@@ -1755,7 +1756,7 @@ function addTile(sectionId) {
   const grow = (r, m) => ({ l: r.l - m, t: r.t - m, r: r.r + m, b: r.b + m });
   const obstacles = Object.entries(frames).filter(([fid]) => fid.startsWith("tile:")).map(([, r]) => grow(r, 24));
   const near = S.tiles.filter(t => t.section === sec).map(t => frames[`tile:${t.id}`]).filter(Boolean);
-  Object.assign(tile, Canvas.freeSpot(obstacles, 320, 100, near));
+  Object.assign(tile, at ? { x: Math.round(at.x), y: Math.round(at.y) } : Canvas.freeSpot(obstacles, 320, 100, near));
   S.tiles.push(tile);
   save();
   render();
@@ -2021,7 +2022,8 @@ form.addEventListener("submit", ev => {
     // `...data` (spread) copies every field of data into the new object literal.
     const snd = { id: uid(), ...data, autoName: !data.name };
     if (!data.name) snd.name = "Loading…";
-    placeSound(snd, dest);   // a free spot next to the tile's other cards
+    if (newSoundAt) { snd.x = Math.round(newSoundAt.x - 100); snd.y = Math.round(newSoundAt.y - 40); }   // where the canvas was clicked
+    else placeSound(snd, dest);   // a free spot next to the tile's other cards
     dest.sounds.push(snd);
     loadSound(snd);
   }
@@ -2040,6 +2042,30 @@ $("#addSectionBtn").onclick = () => {
     render();
   }
 };
+
+// ---------------------------------------------------------- click menu
+// A plain click on empty canvas opens a small menu at that spot (Canvas.clickMenu in canvas.js, the same menu the campaign
+// tracker uses): new section, tile or sound, created where you clicked and, for a tile or sound, inside the section or tile
+// the click landed in. newSoundAt remembers the spot for the sound dialog (null = a free spot next to the tile's other cards).
+let newSoundAt = null;
+dlg.addEventListener("close", () => { newSoundAt = null; });
+// soundMenu(at, here): the entries. `at` is the canvas position of the click and `here` the frame it landed inside, so the new
+// thing goes into the right section or tile and at that spot.
+function soundMenu(at, here) {
+  const tile = (here.kind === "tile" || here.kind === "sub" ? S.tiles.find(t => t.id === here.id) : null) || S.tiles[0];
+  const sec = here.kind === "sec" ? S.sections.find(x => x.id === here.id) : S.sections.find(x => x.id === tile.section);
+  return [
+    ["New section", () => {
+      const name = prompt("New section name (e.g. 'Act 2')");
+      if (!name) return;
+      S.sections.push({ id: uid(), name, x: Math.round(at.x), y: Math.round(at.y) });
+      save(); render(true);
+    }],
+    ["New tile", () => addTile((sec || S.sections[0]).id, at)],
+    ["New sound", () => { openSoundDlg(null, tile.id, here.kind === "sub" ? here.sub : undefined); newSoundAt = at; }],
+  ];
+}
+if (!MOBILE) Canvas.clickMenu($("#stage"), () => frames, soundMenu);
 
 // ---------------------------------------------------------- tile settings
 // The tile settings dialog (rename, move to another section, fade lengths, subsections).

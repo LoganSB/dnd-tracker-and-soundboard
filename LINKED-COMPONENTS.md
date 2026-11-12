@@ -1,0 +1,57 @@
+# Linked components: keep related features in step
+
+Audience: the coding assistant working on this repo. Read this file at the start of every session (CLAUDE.md points here).
+Goal: when one feature changes, the other features that depend on it get the same change, without a user having to remember
+them, and without the assistant looping forever.
+
+## The rules
+
+1. **Track links as you work.** When a change creates or touches a link between two parts of the app, add or update a row in
+   the registry below. This is a small edit and needs no confirmation.
+2. **Do the link check LAST.** Finish the requested work first: code, tests, README/doc updates, the recap. Only then run the
+   link check. It is the final step of the prompt, so a skipped or slow link check never blocks the real work.
+3. **Run it once per user prompt.** For each part you added or changed this prompt, find its registry rows and list the linked
+   components that were NOT updated. If there are none, say "link check: nothing outstanding" and stop.
+4. **Ask before changing anything.** Put the list to the user as ONE question with the `wrap_up` buttons (or `AskUserQuestion`
+   when there is no wrap_up): apply all, or skip. Name each candidate in one short line. Never apply link-check changes
+   without an answer.
+5. **No recursion.** Changes made because of a "yes" are NOT link-checked again. If doing them reveals more links, write them
+   under "Open candidates" below and mention them in one line; they are raised only in a LATER prompt, and only if the user's
+   next request touches that area.
+6. **Respect "no".** A skipped candidate goes under "Declined" with the date. Do not offer the same pair again unless the user
+   asks.
+7. **Keep it cheap.** The check is a read of this file plus targeted `grep` calls for the names in the row. It is not a
+   code review and it does not add features the user did not ask about.
+
+## Registry
+
+Each row: the thing that changes, the components linked to it, and what must be updated in them.
+
+| When this changes | Linked components | Update |
+|---|---|---|
+| A new kind of card on the campaign tracker (flag, encounter, loot flag, ...) | `Canvas.clickMenu` entries in `static/campaign.js`; the `LIB` table and `#encDlg` there; toolbar buttons in `templates/campaign.html`; `frameModel` / `locate`; link keys (`lookup`, `isDone`, `pruneLinks`); `cards_of()` and `reindex()` in `encounters.py`; Browse "Campaigns" column | add a menu entry, a toolbar button if the others have one, link handling, and the card scan |
+| A new kind of item on the soundboard (sound, tile, section, ...) | click-menu build function in `static/app.js`; toolbar buttons in `templates/index.html`; `frameModel`; `placeSound`; cable/link code | add a menu entry and toolbar button; place it where the canvas was clicked |
+| The click menu on either canvas | `Canvas.clickMenu` in `static/canvas.js` (shared); the build functions in `static/app.js` and `static/campaign.js` | change the shared function once; keep both build functions' entries in step |
+| A field on an encounter or loot table | `_clean_line` / `_clean_entry` and `_create` in `encounters.py`; the Builder config in `static/encounters.js` / `static/loottable.js`; `static/browse.js` columns; card rendering (`encounterEl`, `lootEntries`) in `static/campaign.js`; `test_enc.py` | add the field to each |
+| A new library-style record type (like encounters / loot) | `LIB_FILES`, `adopt`, `reindex`, `forget_campaign` in `encounters.py`; `LIB` in `static/campaign.js`; a Browse kind; a Builder config; `put_state` key list in `app.py` | give it its own file, campaign usage tracking, Browse list and editor |
+| A new page / tab | `templates/_nav.html`; `templates/shell.html` (iframe, `urls`, popstate, `reloadPages` list); `app.py` (shell route list, active mapping, `/_/` route); `static/errors.js` include; README table | add each |
+| A new Python module | `Dockerfile` COPY line; `app.py` import / `bind()` / blueprint registration | add each |
+| A new button that can fail | `static/errors.js` (shows the error beside the button); downloads must use `safeDownload` | use buttons, not links, for downloads; no `alert` pop-ups for new code |
+| A new route a player may use | `PLAYER_PREFIXES` in `auth.py`; the player view in `static/home.js` / `static/party.js`; `test_auth.py` | allow it, show it, test it |
+| A new list or table on Home or another page | `UI.dataTable` in `static/ui.js` (regex + Finder search, filters, tags) | use `dataTable` so search and filters match every other list |
+| A new searchable catalogue (like monsters / items) | `Catalog` and `_routes` in `encounters.py`; `Finder.panel` config; `Builder` config | add a Catalog, reuse Finder and Builder |
+| A new key stored in the campaign state | `put_state` preserved keys and `keep_campaign` in `app.py`; `adopt()` migration if it moves out | decide whether it travels with the campaign or lives outside it |
+| A new postMessage type between frames | header comment of `templates/shell.html`; receiving page's message handler | document it and handle it |
+
+## Notes
+
+- The phone layout (`MOBILE`, body class `mobile` in `static/app.js`) is dormant: no server code sets that class any more, so every device
+  gets the canvas layout and a tap works like a click. Do not build phone-only features unless the user brings the phone layout back.
+
+## Open candidates (raised only when a later request touches the area)
+
+- (none yet)
+
+## Declined
+
+- (none yet)

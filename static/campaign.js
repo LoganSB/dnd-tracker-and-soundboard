@@ -181,11 +181,18 @@ async function pollState() {
   try {
     const st = await api("/api/state");
     if (st.revision === myRevision) return;
+    await addLibrary(st);
     S = st;
     myRevision = st.revision;
     normalize();
     render();
   } catch (_) { /* server restarting: try again next time */ }
+}
+
+// addLibrary(st): the encounters and loot tables are not part of the campaign (they live in their own files and every
+// campaign can use them), so they are fetched separately and put on the state object as st.encounters and st.loots.
+async function addLibrary(st) {
+  [st.encounters, st.loots] = await Promise.all([api("/api/encounters"), api("/api/loots")]);
 }
 
 // -------------------------------------------------------- sounds from here
@@ -327,7 +334,7 @@ function flagEl(item, tile) {
 
 // ------------------------------------------------------------ encounter tiles
 // An ENCOUNTER card is a flag-like card that points at an encounter from the Encounters tab (item.encounter = its id;
-// the encounter itself lives in S.encounters, saved with the campaign). Clicking the card ADDS the encounter to the
+// the encounter itself lives in S.encounters, the shared library fetched by addLibrary: it belongs to no campaign). Clicking the card ADDS the encounter to the
 // initiative tracker (monsters rolled, party added if missing). Buttons: 🆕 start a new combat with it instead,
 // 📤 add it and pop out the tracker window, ⚙ open it in the Encounters tab, 🗑 take the card off the board.
 const encounterOf = item => (S.encounters || []).find(e => e.id === item.encounter);
@@ -767,69 +774,55 @@ fform.addEventListener("submit", ev => {
 
 
 // ------------------------------------------------------------ click menu
-// A plain click on empty canvas (or on the empty inside of a frame) opens a small menu at that spot: new section,
-// tile, flag or encounter, created where you clicked. A press that moves is a pan, not a click, and shows no menu.
-// at: the world position of the click.  where(): which section / tile the spot is inside (from the frame rectangles).
-const cmenu = el("div", { id: "canvasMenu", className: "cmenu", hidden: true });
-document.body.append(cmenu);
-const hideMenu = () => { cmenu.hidden = true; };
-
-function where(at) {
-  const fid = Canvas.frameAt(frames, at.x, at.y) || "";
-  const [kind, a] = fid.split(":");
-  const tile = kind === "tile" || kind === "sub" ? C().tiles.find(t => t.id === a) : null;
-  const sec = kind === "sec" ? C().sections.find(x => x.id === a) : tile ? C().sections.find(x => x.id === tile.section) : null;
-  return { tile, sec };
-}
-
-function showMenu(clientX, clientY) {
-  const at = Canvas.toWorld(clientX, clientY), here = where(at);
-  const item = (label, fn) => el("button", { textContent: label, onclick: () => { hideMenu(); fn(); } });
-  cmenu.replaceChildren(
-    item("New section", () => {
+// A plain click on empty canvas (or on the empty inside of a frame) opens a small menu at that spot (Canvas.clickMenu in
+// canvas.js, the same menu the soundboard uses): new section, tile, flag, encounter or loot table, created where you clicked.
+// `here` says which section / tile the click landed inside, so the new thing goes into the right one.
+Canvas.clickMenu($("#stage"), () => frames, (at, here) => {
+  const tile = (here.kind === "tile" || here.kind === "sub" ? C().tiles.find(t => t.id === here.id) : null) || C().tiles[0];
+  const sec = here.kind === "sec" ? C().sections.find(x => x.id === here.id) : C().sections.find(x => x.id === tile.section);
+  return [
+    ["New section", () => {
       const name = prompt("New section name");
       if (!name) return;
       C().sections.push({ id: uid(), name, x: Math.round(at.x), y: Math.round(at.y) });
       save(); render(true);
-    }),
-    item("New tile", () => {
+    }],
+    ["New tile", () => {
       const name = prompt("New tile name (e.g. 'The Sunken Temple')");
       if (!name) return;
-      C().tiles.push({ id: uid(), name, section: (here.sec || C().sections[0]).id, subs: [], items: [], x: Math.round(at.x), y: Math.round(at.y) });
+      C().tiles.push({ id: uid(), name, section: (sec || C().sections[0]).id, subs: [], items: [], x: Math.round(at.x), y: Math.round(at.y) });
       save(); render(true);
-    }),
-    item("New flag", () => { newAt = at; openFlagDlg(null, (here.tile || C().tiles[0]).id); }),
-    item("New encounter", () => openEncDlg(at, (here.tile || C().tiles[0]).id)));
-  cmenu.hidden = false;
-  cmenu.style.left = Math.min(clientX, innerWidth - cmenu.offsetWidth - 8) + "px";
-  cmenu.style.top = Math.min(clientY, innerHeight - cmenu.offsetHeight - 8) + "px";
-}
+    }],
+    ["New flag", () => { newAt = at; openFlagDlg(null, tile.id); }],
+    ["New encounter", () => openLibDlg("encounter", at, tile.id)],
+    ["New loot table", () => openLibDlg("loot", at, tile.id)],
+  ];
+});
 
 // newAt: where the flag being created should go (set by the menu; null = a free spot next to its tile's cards).
 let newAt = null;
-let press = null;
-$("#stage").addEventListener("pointerdown", ev => {
-  if (!ev.target.closest("#canvasMenu")) hideMenu();
-  const thing = ev.target.closest("[data-iid],.frame > header,#zoomctl,#canvasMenu,button,input,select,a,dialog");
-  press = ev.button === 0 && !thing ? { x: ev.clientX, y: ev.clientY } : null;
-});
-$("#stage").addEventListener("pointerup", ev => {
-  if (press && Math.hypot(ev.clientX - press.x, ev.clientY - press.y) < 5) showMenu(ev.clientX, ev.clientY);
-  press = null;
-});
-addEventListener("keydown", ev => { if (ev.key === "Escape") hideMenu(); });
-addEventListener("blur", hideMenu);
 
-// ------------------------------------------------------------ encounter dialog
-// "New encounter" from the menu: choose an existing encounter or make a new one, and the tile it goes in. A NEW one
-// is created empty and the Encounters tab opens on it so monsters can be added.
+// ------------------------------------------------------------ library dialog (encounters and loot tables)
+// "New encounter" / "New loot table" from the menu: choose one that already exists (they are shared by every campaign) or
+// make a new one, and the tile it goes in. A NEW one is created empty and its tab opens on it so it can be filled in.
+// An encounter becomes an encounter card; a loot table becomes a flag that rolls on the table (loot.source = "table:<id>").
+const LIB = {
+  encounter: { title: "Encounter", noun: "encounter", list: () => S.encounters || [], api: "/api/encounters", page: "encounters",
+    card: r => ({ id: uid(), name: "", encounter: r.id, checklist: [], triggered: false, loot: { entries: [], log: [] } }) },
+  loot: { title: "Loot table", noun: "loot table", list: () => S.loots || [], api: "/api/loots", page: "loot",
+    card: r => ({ id: uid(), name: r.name, checklist: [], triggered: false, loot: { entries: [], log: [], source: "table:" + r.id } }) },
+};
 const edlg = $("#encDlg"),
   eform = $("#encForm");
-let encAt = null;
-function openEncDlg(at, tileId) {
+let encAt = null, encKind = "encounter";
+function openLibDlg(kind, at, tileId) {
+  encKind = kind;
   encAt = at;
+  const k = LIB[kind];
+  $("#encDlgTitle").textContent = k.title;
+  $("#encPickLabel").textContent = k.title;
   eform.enc.textContent = "";
-  eform.enc.append(el("option", { value: "", textContent: "(new encounter)" }), ...(S.encounters || []).map(e => el("option", { value: e.id, textContent: e.name })));
+  eform.enc.append(el("option", { value: "", textContent: `(new ${k.noun})` }), ...k.list().map(e => el("option", { value: e.id, textContent: e.name })));
   eform.tile.textContent = "";
   C().tiles.forEach(t => eform.tile.append(el("option", { value: t.id, textContent: t.name })));
   eform.tile.value = tileId;
@@ -840,22 +833,23 @@ function openEncDlg(at, tileId) {
 eform.enc.addEventListener("change", () => { eform.newName.hidden = !!eform.enc.value; });
 eform.addEventListener("submit", async ev => {
   ev.preventDefault();
+  const k = LIB[encKind];
   let id = eform.enc.value, fresh = false;
   try {
     if (!id) {
-      const n = await api("/api/encounters", "POST", { name: eform.newName.value.trim() || "New encounter" });
-      (S.encounters ||= []).push(n);
+      const n = await api(k.api, "POST", { name: eform.newName.value.trim() || `New ${k.noun}` });
+      k.list().push(n);
       id = n.id;
       fresh = true;
     }
     const tile = C().tiles.find(t => t.id === eform.tile.value) || C().tiles[0];
-    const card = { id: uid(), name: "", encounter: id, checklist: [], triggered: false, loot: { entries: [], log: [] } };
+    const card = k.card(k.list().find(r => r.id === id));
     if (encAt) { card.x = Math.round(encAt.x - 120); card.y = Math.round(encAt.y - 40); } else placeFlag(card, tile);
     tile.items.push(card);
     edlg.close();
     save();
     render(true);
-    if (fresh) window.parent.postMessage({ type: "goto", page: "encounters", path: "/_/encounters?id=" + id }, location.origin);
+    if (fresh) window.parent.postMessage({ type: "goto", page: k.page, path: `/_/${k.page}?id=${id}` }, location.origin);
   } catch (e) { alert(e.message); }
 });
 
@@ -1391,6 +1385,11 @@ $("#addSectionBtn").onclick = () => {
   const name = prompt("New section name (e.g. 'Act 2')");
   if (name) { C().sections.push({ id: uid(), name }); save(); render(); }
 };
+// The toolbar offers the same things as the click menu on the canvas; with no click position, a new card goes into the first tile
+// and finds a free spot.
+$("#addFlagBtn").onclick = () => { newAt = null; openFlagDlg(null, C().tiles[0].id); };
+$("#addEncounterBtn").onclick = () => openLibDlg("encounter", null, C().tiles[0].id);
+$("#addLootTableBtn").onclick = () => openLibDlg("loot", null, C().tiles[0].id);
 // This page runs inside a frame of the app shell (shell.html), which keeps it loaded but hidden while you
 // look at other tabs. A hidden frame cannot measure layout, so when the shell shows this tab again it
 // sends { type: "shown" } and we redraw the cables.
@@ -1406,6 +1405,7 @@ async function revealNode(id) {
   try {
     if (!saveTimer && !drag) {
       S = await api("/api/state");
+      await addLibrary(S);
       myRevision = S.revision;
       normalize();
       render(true);
@@ -1428,6 +1428,7 @@ addEventListener("dragend", () => { drag = null; if (pendingRender) render(true)
   // Turn #stage / #world into the pan-and-zoom canvas; frame all the tiles on the first visit.
   const restored = Canvas.mount($("#stage"), $("#world"), "campaign");
   S = await api("/api/state");
+  await addLibrary(S);
   myRevision = S.revision;
   normalize();
   render();

@@ -138,7 +138,8 @@ const config = {
         parent.postMessage({ type: "goto", page: "campaign", node: r.item }, location.origin);
         await ctx.reload();
       } }),
-      e.onTracker?.length ? h("span", { className: "ok", textContent: "On the campaign tracker: " + e.onTracker.join(", ") }) : h("span", { className: "muted", textContent: "Not on the campaign tracker yet" }),
+      e.onTracker?.length ? h("span", { className: "ok", textContent: "On this campaign's tracker: " + e.onTracker.join(", ") }) : h("span", { className: "muted", textContent: "Not on this campaign's tracker" }),
+      e.campaigns?.length ? h("span", { className: "muted", textContent: "Used in: " + e.campaigns.join(", ") }) : null,
     ];
   },
 };

@@ -333,6 +333,7 @@ def startup(args):
     else:
         loaded = "defaults"
     state.setdefault("revision", 0)  # setdefault: set the key only if it is missing
+    encounters.adopt(state)  # encounters / loot tables saved inside the campaign by older versions move to the library
     save_live()
     print(f"Loaded {loaded}.")
     resume_media_for_state()
@@ -790,7 +791,7 @@ def put_state():
         # The soundboard page never edits the campaign tracker, but its copy of the state may carry an
         # OLD copy of the campaign data (loaded before the campaign page saved something). Keep the
         # server's campaign so a soundboard save can never overwrite campaign progress.
-        for k in ("campaign", "party", "campaignName", "encounters", "loots", "initiative"):  # party = the campaign's party characters (see below)
+        for k in ("campaign", "party", "campaignName", "initiative"):  # party = the campaign's party characters (see below)
             if k in state:
                 new[k] = state[k]
         new["revision"] = state.get("revision", 0) + 1
@@ -816,6 +817,7 @@ def put_campaign():
         return jsonify(error="campaign must contain 'sections' and 'tiles' lists"), 400
     with lock:
         state["campaign"] = camp
+        encounters.reindex(state.get("campaignName", ""), camp)  # the cards on the tracker may have changed
         state["revision"] = state.get("revision", 0) + 1
         save_live()
         rev = state["revision"]
@@ -1147,6 +1149,7 @@ def save_campaign():
     with lock:
         state["campaignName"] = name  # remembered so the Home page can say which campaign is loaded
         atomic_write(PRESETS / f"{name}.json", state)
+        encounters.reindex(name, state.get("campaign"))  # which encounters / loot tables this campaign has cards for
         save_live()
     return jsonify(name=name)
 
@@ -1168,6 +1171,8 @@ def load_campaign(name):
         shutil.copy2(LIVE, VERSIONS / f"live-{stamp()}-before-load-{safe_name(name)}.json")
         state = keep_campaign(validate_state(read_json(p)))
         state["campaignName"] = safe_name(name)
+        encounters.adopt(state)  # a campaign saved before the encounter library existed brings its encounters along
+        encounters.reindex(state["campaignName"], state.get("campaign"))
         state["revision"] = state.get("revision", 0) + 1
         save_live()
     resume_media_for_state()
@@ -1182,6 +1187,7 @@ def delete_campaign(name):
     if p.exists():
         p.unlink()  # unlink = delete the file
     auth.forget_campaign(safe_name(name))  # nobody stays a member of, or waits to join, a campaign that is gone
+    encounters.forget_campaign(safe_name(name))  # and no encounter or loot table lists it as a user
     return jsonify(ok=True)
 
 
@@ -1209,6 +1215,7 @@ def restore_version(name):
     with lock:
         shutil.copy2(LIVE, VERSIONS / f"live-{stamp()}-before-restore.json")
         state = keep_campaign(validate_state(read_json(p)))
+        encounters.adopt(state)
         state["revision"] = state.get("revision", 0) + 1
         save_live()
     resume_media_for_state()

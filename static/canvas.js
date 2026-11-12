@@ -36,6 +36,7 @@
 //   Canvas.dragItems(ev, items, hooks)    drag cards or whole frames around, with snapping
 //   Canvas.fit()                          zoom/pan so everything is visible
 //   Canvas.reveal(card)                   centre on a card and flash it (jumps between pages)
+//   Canvas.clickMenu(stage, frames, build) the menu that opens when empty canvas is clicked (both pages)
 //
 // THE MODEL: the movable things are CARDS (sounds on the soundboard, flags on the campaign page). Each
 // card has its own x, y. Tiles, subsections and sections are not boxes that hold cards: they are FRAMES
@@ -131,6 +132,56 @@ const Canvas = (() => {
     centerOn(p.x + card.offsetWidth / 2, p.y + card.offsetHeight / 2);
     card.classList.add("flash");
     setTimeout(() => card.classList.remove("flash"), 2000);
+  }
+
+  // ---- the create menu: one small pop-up menu (opened by clickMenu below)
+  let menuEl = null;
+  const hideMenu = () => { if (menuEl) menuEl.hidden = true; };
+  // popupMenu(items, clientX, clientY): show the menu [[label, function], ...] at that screen position, kept inside the window.
+  // (A tap on a touch screen is a click too, so the menu works on a phone or tablet using the normal canvas layout.)
+  function popupMenu(items, clientX, clientY) {
+    if (!menuEl) {
+      menuEl = document.createElement("div");
+      menuEl.id = "canvasMenu";
+      menuEl.className = "cmenu";
+      document.body.append(menuEl);
+      addEventListener("keydown", ev => { if (ev.key === "Escape") hideMenu(); });
+      addEventListener("blur", hideMenu);
+    }
+    menuEl.replaceChildren(...items.map(([label, fn]) => {
+      const b = document.createElement("button");
+      b.textContent = label;
+      b.onclick = () => { hideMenu(); fn(); };
+      return b;
+    }));
+    menuEl.hidden = false;
+    menuEl.style.left = Math.min(clientX, innerWidth - menuEl.offsetWidth - 8) + "px";
+    menuEl.style.top = Math.min(clientY, innerHeight - menuEl.offsetHeight - 8) + "px";
+  }
+  // Things a press must not count as "empty space": cards, frame title bars, controls, dialogs, the menu itself.
+  const BUSY = "[data-iid],.frame > header,#zoomctl,#canvasMenu,button,input,select,a,dialog";
+
+  // clickMenu(stageEl, getFrames, build) -> { hide }: the small menu that opens when EMPTY canvas is clicked (the soundboard and
+  // the campaign tracker both use this one). A press that moves is a pan, not a click, so it opens nothing; a press on a
+  // card, a frame's title bar, a button or the zoom controls opens nothing either.
+  //   getFrames()      the page's current frame rectangles ({ frameId: { l, t, r, b } }, world coordinates)
+  //   build(at, here)  returns the menu entries [[label, function], ...]; `at` is the click in world coordinates and `here` is
+  //                    { kind: "sec" | "tile" | "sub" | null, id, sub } for the frame the click landed inside, so the page can create
+  //                    the new thing in the right section or tile and at that spot.
+  function clickMenu(stageEl, getFrames, build) {
+    let press = null;
+    stageEl.addEventListener("pointerdown", ev => {
+      if (!ev.target.closest("#canvasMenu")) hideMenu();
+      press = ev.button === 0 && !ev.target.closest(BUSY) ? { x: ev.clientX, y: ev.clientY } : null;
+    });
+    stageEl.addEventListener("pointerup", ev => {
+      if (press && Math.hypot(ev.clientX - press.x, ev.clientY - press.y) < 5) {
+        const at = toWorld(ev.clientX, ev.clientY), [kind, id, sub] = (frameAt(getFrames(), at.x, at.y) || "").split(":");
+        popupMenu(build(at, { kind: kind || null, id, sub }), ev.clientX, ev.clientY);
+      }
+      press = null;
+    });
+    return { hide: hideMenu };
   }
 
   // fit(): choose the zoom and position that show everything: every card and every top-level frame.
@@ -613,5 +664,5 @@ const Canvas = (() => {
     addEventListener("pointercancel", up);
   }
 
-  return { WORLD, CENTER, CARD_W, CARD_H, mount, toWorld, posIn, itemRects, freeSpot, arrangeInGrid, layoutMissing, layoutFrames, frameAt, dragItems, fit, centerOn, reveal, view };
+  return { WORLD, CENTER, CARD_W, CARD_H, mount, toWorld, posIn, itemRects, freeSpot, arrangeInGrid, layoutMissing, layoutFrames, frameAt, dragItems, fit, centerOn, reveal, clickMenu, view };
 })();

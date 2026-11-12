@@ -92,7 +92,8 @@ const LootTables = (() => {
             const r = await api(`/api/loots/${rec.id}/tile`, "POST", { tile: sel.value });
             parent.postMessage({ type: "goto", page: "campaign", node: r.item }, location.origin);
             await ctx.reload();
-          } }), rec.onTracker?.length ? h("span", { className: "ok", textContent: "On the campaign tracker: " + rec.onTracker.join(", ") }) : h("span", { className: "muted", textContent: "Not on the campaign tracker yet" })];
+          } }), rec.onTracker?.length ? h("span", { className: "ok", textContent: "On this campaign's tracker: " + rec.onTracker.join(", ") }) : h("span", { className: "muted", textContent: "Not on this campaign's tracker" }),
+            rec.campaigns?.length ? h("span", { className: "muted", textContent: "Used in: " + rec.campaigns.join(", ") }) : null];
         })() : []),
         ...(opts.extraActions?.(rec, ctx) || []),
       ],
