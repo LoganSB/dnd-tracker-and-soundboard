@@ -1,0 +1,142 @@
+<!doctype html>
+<!--
+  shell.html - the app shell: the ONE page every address (/, /campaign, /party ...) returns.
+
+  WHY A SHELL: the soundboard must keep playing while you look at the campaign tracker or the
+  characters. Browsers throw away a page's JavaScript (and its audio) when you navigate away from it.
+  So instead of navigating, this page holds all three pages at the same time, each in an <iframe>
+  (an iframe is a complete web page embedded inside another page, with its own JavaScript and memory),
+  and the tabs just hide and show them. Hidden iframes keep running.
+
+  PIECES
+    - the header: brand + page links (from _nav.html, shared with the pop-out tracker). The brand
+      is always "DND Tracker" and always goes to the soundboard. The current page's link is highlighted.
+    - #frames: the three iframes stacked on top of each other; only the active one is visible.
+    - the script at the bottom: switches tabs without reloading anything, keeps the address bar and the
+      browser's Back button in step (history.pushState), and listens for messages from the pages.
+
+  MESSAGES (window.postMessage is how pages in different frames talk to each other):
+    from a page to the shell:  { type: "goto", page: "party", path: "/_/party/<id>" }  show that tab and
+                               load that address in its frame (used by the tracker's character links)
+    from the shell to a page:  { type: "shown" }  sent when a tab becomes visible, so a page can redraw
+                               anything it could not measure while hidden (the soundboard's cables)
+                               { type: "focusSound", id }  sent to the soundboard to centre on a sound
+    A "goto" message may also carry `sound` (a sound id): the shell then shows the Soundboard tab and
+    sends it "focusSound" (used by the campaign page's jump-to-sound buttons).
+    The party tracker panel also lives in this page, so it works on every tab.
+
+  Jinja2 variables: active (tab to show first), party_path (character frame address).
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DND Tracker</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="shell">
+<header class="appnav">
+  {% include "_nav.html" %}
+  <!-- partyBtn shows or hides the party tracker panel (below). It lives in the shell, not in a page, so it is
+       available on every tab. -->
+  <button id="partyBtn" title="Party tracker: player stats and initiative">🛡 Party</button>
+</header>
+
+<!-- The party tracker panel: a floating box under the header, hidden until the Party button adds the class
+     "open" (see #trackerPanel in style.css). tracker.js renders the Party / Initiative UI into div#tracker.
+     "pop out" opens the same tracker in its own small window (/tracker). -->
+<aside id="trackerPanel">
+  <header><h2>🛡 Party tracker</h2>
+    <span><a href="/tracker" id="popOut" title="Open in its own window">⧉ pop out</a> <button id="closeTracker" class="tiny">✕</button></span></header>
+  <div id="tracker" class="trackerlist"></div>
+</aside>
+
+<!-- All three pages are loaded immediately. allow="autoplay" lets the soundboard frame start audio. -->
+<div id="frames">
+  <iframe id="f-sound" data-page="sound" title="Soundboard" allow="autoplay" src="/_/sound"></iframe>
+  <iframe id="f-campaign" data-page="campaign" title="Campaign tracker" allow="autoplay" src="/_/campaign"></iframe>
+  <iframe id="f-party" data-page="party" title="Characters" allow="autoplay" src="{{ party_path }}"></iframe>
+</div>
+
+<script src="/static/tracker.js"></script>
+<script>
+(function () {
+  // frames: page name -> its <iframe>. urls: the address shown in the browser's address bar for each tab.
+  const frames = {};
+  document.querySelectorAll("#frames iframe").forEach(f => (frames[f.dataset.page] = f));
+  const urls = { sound: "/", campaign: "/campaign", party: "/party" };
+  let current = {{ active|tojson }};   // tojson writes the Python value as a JavaScript string literal
+
+  // show(page, push): make `page` the visible tab. Highlights its link, shows its frame and hides the
+  // others, gives its frame keyboard focus (so hotkeys and arrow keys reach the soundboard), tells it it
+  // is visible, and (when push is true) adds a browser history entry so Back/Forward work.
+  function show(page, push) {
+    current = page;
+    for (const [name, f] of Object.entries(frames)) f.classList.toggle("active", name === page);
+    document.querySelectorAll(".appnav-links a").forEach(a => a.classList.toggle("on", a.dataset.page === page));
+    if (push) history.pushState({ page }, "", urls[page]);
+    const w = frames[page].contentWindow;
+    w.focus();
+    w.postMessage({ type: "shown" }, "*");
+  }
+
+  // Clicking a page link or the brand switches tab instead of loading a new page. Clicks with a
+  // modifier key (open in a new tab, etc.) keep their normal behaviour.
+  document.querySelectorAll("[data-page]").forEach(a => {
+    if (a.tagName !== "A") return;
+    a.addEventListener("click", ev => {
+      if (ev.button !== 0 || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return;
+      ev.preventDefault();
+      show(a.dataset.page, true);
+    });
+  });
+  // Back / Forward buttons: show the tab recorded in that history entry (or work it out from the address).
+  addEventListener("popstate", ev => {
+    const p = location.pathname;
+    show(ev.state?.page || (p.startsWith("/campaign") ? "campaign" : p.startsWith("/party") ? "party" : "sound"), false);
+  });
+  // goto(page, path, sound): switch to a tab, optionally loading `path` in its frame first and, for the
+  // soundboard, asking it to centre on the sound with id `sound` (see revealSound in app.js).
+  function goto(page, path, sound) {
+    const f = frames[page];
+    if (!f) return;
+    if (path && !f.src.endsWith(path)) f.src = path;
+    show(page, true);
+    if (sound) f.contentWindow.postMessage({ type: "focusSound", id: sound }, "*");
+  }
+  window.shellGoto = goto;   // so the tracker panel (which runs in this page) can use it too
+  // Messages from the pages (see the header comment).
+  addEventListener("message", ev => {
+    if (ev.origin !== location.origin || ev.data?.type !== "goto") return;
+    goto(ev.data.page, ev.data.path, ev.data.sound);
+  });
+
+  // The party tracker panel. mountTracker() (from tracker.js) builds its contents; it is called the first
+  // time the panel is opened and then reused.
+  const panel = document.getElementById("trackerPanel"),
+    partyBtn = document.getElementById("partyBtn");
+  let trackerMounted = false;
+  partyBtn.onclick = () => {
+    const open = panel.classList.toggle("open");
+    partyBtn.classList.toggle("on-state", open);
+    if (open && !trackerMounted) {
+      mountTracker(document.getElementById("tracker"));
+      trackerMounted = true;
+    }
+  };
+  document.getElementById("closeTracker").onclick = () => {
+    panel.classList.remove("open");
+    partyBtn.classList.remove("on-state");
+  };
+  document.getElementById("popOut").onclick = ev => {
+    ev.preventDefault();
+    window.open("/tracker", "dmtracker", "width=460,height=720");
+    panel.classList.remove("open");
+    partyBtn.classList.remove("on-state");
+  };
+  history.replaceState({ page: current }, "");
+  show(current, false);
+})();
+</script>
+</body>
+</html>

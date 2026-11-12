@@ -1,0 +1,231 @@
+<!doctype html>
+<!--
+  index.html - the main soundboard page.
+
+  HOW TO READ THIS FILE (if you are not a web developer)
+  - HTML is a static outline of the page: nested tags like <header> or <button>.
+    The browser parses it into a tree of objects (the "DOM"). Think of it as a
+    parse tree that scripts can walk and modify while the page is live.
+  - An id="foo" attribute is a unique name for one element. The JavaScript finds
+    elements with document.getElementById("foo"), so ids are effectively the
+    API between this outline and the code. Renaming one breaks the script.
+  - A class="foo" attribute is a label that can be shared by many elements; CSS
+    (static/style.css) and the scripts use classes to style or select groups.
+  - Most of the visible board (tabs, sections, tiles, sound buttons, chain
+    cables) is NOT written here. app.js builds it at runtime and inserts it into
+    the empty containers below (nav#tabs, svg#links, main#tiles, and the
+    empty <select>/<div>/<ul> elements inside the dialogs).
+
+  SERVED AT: "/_/sound" (it is loaded inside the app shell, see shell.html). There is no
+  phone layout at the moment; the earlier /m page was removed.
+
+  SCRIPTS (loaded at the bottom, in this order):
+    1. /static/canvas.js, /static/cables.js - the shared canvas and cable-drawing code.
+    2. /static/app.js     - the soundboard itself. It runs after those are
+       loaded because it uses their functions, and after the whole outline
+       above exists, because it looks elements up by id as soon as it starts.
+  Scripts at the end of <body> run top to bottom as the parser reaches them,
+  so ordering is the dependency order.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- Tells phones to use their real screen width instead of pretending to be a wide desktop. -->
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DM Soundboard</title>
+<!-- One shared stylesheet for all three pages; rules are scoped by body class. -->
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<!-- The body class "canvaspage" makes style.css give this page the full-window infinite canvas layout. -->
+<body class="canvaspage">
+<!-- ===== Top header bar. Each button's id is what app.js binds a click handler to. ===== -->
+<header>
+  <div class="bar">
+    <!-- id stopAll: stops every currently playing sound -->
+    <button id="stopAll" class="danger">■ Stop all</button>
+    <!-- prevBtn / nextBtn: move along the chain of linked sounds (keyboard: left/right arrows) -->
+    <button id="prevBtn" title="Previous in chain (←)">◀</button>
+    <button id="nextBtn" title="Next in chain (→)">▶</button>
+    <!-- upBtn / downBtn: when a sound links to several next sounds, pick which branch (keyboard: up/down arrows) -->
+    <button id="upBtn" title="Previous path option (↑)">▲</button>
+    <button id="downBtn" title="Next path option (↓)">▼</button>
+    <!-- undoBtn / redoBtn: undo or redo the last chain-link change (keyboard: Ctrl/Cmd+Z and Ctrl/Cmd+Y) -->
+    <button id="undoBtn" title="Undo the last chain change (Ctrl+Z)">↶</button>
+    <button id="redoBtn" title="Redo (Ctrl+Y)">↷</button>
+    <!-- toggleBtn: its label is filled in by app.js; flips whether pressing a playing sound stops it or restarts it -->
+    <button id="toggleBtn" title="Pressing a playing sound stops it (off = restarts it)"></button>
+    <!-- master: global volume slider (0 to 1); app.js reads its value -->
+    <label class="vol">Master <input id="master" type="range" min="0" max="1" step="0.01" value="0.8"></label>
+    <!-- Editing buttons. Class "desk" = desktop only (hidden on the mobile page). -->
+    <!-- addSoundBtn opens the sound editor dialog (soundDlg below) -->
+    <button id="addSoundBtn" class="primary desk">+ Add sound</button>
+    <!-- addTileBtn creates a new tile (a card that holds sounds) -->
+    <button id="addTileBtn" class="desk">+ Tile</button>
+    <!-- addSectionBtn creates a new section (a group of tiles) -->
+    <button id="addSectionBtn" class="desk">+ Section</button>
+    <!-- presetsBtn opens the presets dialog (presetDlg below) -->
+    <button id="presetsBtn" class="desk">Presets &amp; versions</button>
+    <!-- saveState: app.js writes "saving..."/"saved" here as edits autosave -->
+    <span id="saveState" class="muted desk">saved</span>
+  </div>
+</header>
+
+<!-- Browsers refuse to play audio until the user interacts with the page.
+     Hidden by default (CSS display:none); app.js shows it until the first click. -->
+<div id="audioBanner">🔊 Click anywhere to enable audio</div>
+<!-- Tab strip. Empty here; app.js adds one button per section. Only visible on mobile (see style.css). -->
+<nav id="tabs"></nav>
+<!--
+  SVG overlay used to draw the "chain cables" (the lines joining one sound's
+  output circle to the next sound's input square). SVG is a vector-drawing
+  format; elements inside it are shapes, like a retained-mode canvas.
+  The <svg> is positioned over the whole page and has pointer-events:none in
+  CSS so mouse clicks pass through to the sound buttons underneath.
+  - <defs>: a place to declare reusable things without drawing them.
+  - <marker id="arr">: an arrowhead shape, defined once. Cable paths refer to it
+    with marker-end so every cable gets an arrow at its far end. fill="context-stroke"
+    makes the arrowhead take the colour of the line it is attached to.
+    viewBox is the marker's own coordinate space; refX/refY is the point that sits
+    on the line end; markerWidth/Height is its drawn size; orient="auto" rotates
+    it to follow the line direction.
+  - <g id="linkLayer">: group holding the permanent cables (app.js adds one
+    <path> per link and redraws on layout changes).
+  - <g id="tempLayer">: group holding the temporary dashed cable shown while you
+    drag from an output circle to a target.
+-->
+<!-- stage: the visible window onto the canvas (it fills the space under the header and clips what is outside it).
+     world: one big element (20000 x 20000 px) that holds everything. canvas.js pans and zooms the board by
+     putting a single CSS transform on #world, so the cable overlay (the svg) and the tiles inside it move
+     together. On phones none of this applies and the page scrolls normally (see style.css). -->
+<div id="stage">
+<div id="world">
+<svg id="links" aria-hidden="true"><defs><marker id="arr" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="4.5" markerHeight="4.5" orient="auto"><path d="M0 0L10 5L0 10z" fill="context-stroke"/></marker></defs><g id="linkLayer"></g><g id="tempLayer"></g></svg>
+<!-- tiles: the board. app.js fills it with section frames and tiles, each tile placed at its own position. -->
+<main id="tiles"></main>
+</div>
+</div>
+
+<!--
+  ===== Dialogs =====
+  <dialog> is a built-in modal popup. It stays hidden until script calls
+  showModal() on it. A form with method="dialog" closes the dialog on submit
+  instead of sending a request to the server; the script reads the field values.
+  Fields are found by their name attribute. Buttons with data-close are wired by
+  app.js to just close the dialog.
+-->
+<!-- add / edit sound -->
+<!-- soundDlg: used both for adding a new sound and editing an existing one (the title and the hidden Delete button change). -->
+<dialog id="soundDlg">
+  <form method="dialog" id="soundForm">
+    <h2 id="soundDlgTitle">Add sound</h2>
+    <label>Link <input name="url" required placeholder="YouTube, myinstants.com/en/instant/…, a direct .mp3 link, or use the buttons below"></label>
+    <!-- Local files. Browse opens the normal file picker (the hidden file input) and uploads the chosen
+         file into the server's mp3s/ folder. The drop-down lists everything already in that folder
+         (app.js refreshes it every few seconds). Either choice fills in the Link field above with
+         "library:<file name>". Error messages appear in the soundMsg line at the bottom of the dialog. -->
+    <div class="row libraryrow">
+      <input id="fileInput" type="file" accept="audio/*,.mp3,.ogg,.wav,.m4a,.opus,.aac,.flac" hidden>
+      <button type="button" id="browseBtn">Browse… (upload a file)</button>
+      <label>or pick from the MP3 folder <select id="libSelect"><option value="">(none)</option></select></label>
+    </div>
+    <div class="row">
+      <label>Name <input name="name" placeholder="auto-filled from the link"></label>
+      <label>Key <input name="key" maxlength="1" placeholder="hotkey" style="width:4em"></label>
+    </div>
+    <div class="row">
+      <label>Type
+        <select name="type">
+          <option value="clip">Clip (one-shot)</option>
+          <option value="music">Soundtrack (toggle)</option>
+          <option value="instant">MyInstants (one-shot)</option>
+        </select>
+      </label>
+      <!-- The Tile and Subsection menus start empty; app.js fills them from the current layout. -->
+      <label>Tile <select name="tile"></select></label>
+      <label>Subsection <select name="group"></select></label>
+    </div>
+    <div class="row">
+      <label>Start (s) <input name="start" type="number" min="0" step="0.1" placeholder="0"></label>
+      <label>End (s) <input name="end" type="number" min="0" step="0.1" placeholder="end"></label>
+      <label>Volume <input name="volume" type="range" min="0" max="1" step="0.01" value="1"></label>
+    </div>
+    <label class="check"><input name="loop" type="checkbox"> Loop this sound (a looping sound never advances along its chain)</label>
+    <label class="check"><input name="restart" type="checkbox"> Always start from the beginning (otherwise resumes where it was stopped)</label>
+    <!-- repeatDelay: timer. Seconds to wait after the sound finishes before it plays again by itself
+         (e.g. 600 = every 10 minutes). Blank = no repeat. Press the sound again to cancel the timer.
+         Ignored for sounds that loop or are chained to a next sound. -->
+    <label>Repeat after finishing (seconds) <input name="repeatDelay" type="number" min="1" step="1" placeholder="blank = no repeat (600 = 10 minutes)"></label>
+    <!-- soundMsg: status or error text from the script -->
+    <p id="soundMsg" class="muted"></p>
+    <menu>
+      <!-- deleteSound is only revealed (hidden attribute removed) when editing an existing sound -->
+      <button type="button" id="deleteSound" class="danger" hidden>Delete</button>
+      <span class="grow"></span>
+      <button type="button" data-close>Cancel</button>
+      <button type="submit" class="primary" id="soundSubmit">Save</button>
+    </menu>
+  </form>
+</dialog>
+
+<!-- tile settings -->
+<!-- tileDlg: per-tile options (name, parent section, fade-out, crossfade, subsections). -->
+<dialog id="tileDlg">
+  <form method="dialog" id="tileForm">
+    <h2>Tile settings</h2>
+    <label>Name <input name="name" required></label>
+    <label>Section <select name="section"></select></label>
+    <label class="check"><input name="fadeOn" type="checkbox"> Fade out when stopping</label>
+    <label>Fade-out length (seconds) <input name="fadeSecs" type="number" min="0.1" max="30" step="0.1"></label>
+    <label>Linked-audio crossfade (seconds; how early the next sound in a chain starts and the current one fades) <input name="linkSecs" type="number" min="0" max="30" step="0.1"></label>
+    <!-- Subsections are named groups inside a tile. subList is filled by app.js; newSub + addSubBtn add one. -->
+    <fieldset class="subsfield"><legend>Subsections</legend>
+      <div id="subList"></div>
+      <div class="row"><input id="newSub" placeholder="New subsection name"><button type="button" id="addSubBtn">Add</button></div>
+    </fieldset>
+    <menu><span class="grow"></span><button type="button" data-close>Cancel</button><button type="submit" class="primary">Save</button></menu>
+  </form>
+</dialog>
+
+<!-- presets / versions / launch -->
+<!-- presetDlg: save/load whole-board snapshots, choose what loads at server start, browse version history. Its lists are filled by app.js. -->
+<dialog id="presetDlg">
+  <h2>Presets &amp; versions</h2>
+  <p class="muted">Live changes autosave on every edit. A version snapshot of the previous live state is kept once per server start.</p>
+  <section>
+    <h3>Presets</h3>
+    <!-- presetName + savePreset: store the current board under a name; presetList shows saved ones -->
+    <div class="row"><input id="presetName" placeholder="New preset name"><button id="savePreset" class="primary">Save live as preset</button></div>
+    <ul id="presetList" class="list"></ul>
+  </section>
+  <section>
+    <h3>Launch behaviour</h3>
+    <!-- Choose whether the server starts with the live state or a named preset -->
+    <div class="row">
+      <select id="launchMode"><option value="live">Load live changes</option><option value="preset">Load a preset</option></select>
+      <select id="launchPreset"></select>
+      <button id="saveLaunch">Save</button>
+    </div>
+    <p class="muted">Override at start: <code>python app.py --live</code> or <code>--preset NAME</code> (or press L at the 5s prompt).</p>
+  </section>
+  <section>
+    <h3>Version history</h3>
+    <ul id="versionList" class="list"></ul>
+  </section>
+  <menu>
+    <!-- Plain download link to a Flask endpoint that returns the live data as JSON -->
+    <a href="/api/export" download><button type="button">Export live JSON</button></a>
+    <span class="grow"></span><button type="button" data-close>Close</button>
+  </menu>
+</dialog>
+
+<!-- nowplaying: the "chains playing" dock. app.js fills it and shows it only while two or more chains are playing;
+     one chip per chain, click a chip to move the focus (arrow keys, chain buttons, highlight) to that chain. -->
+<div id="nowplaying" hidden></div>
+
+<!-- Script order matters: the shared canvas and cable code first, then app.js (uses them). -->
+<script src="/static/canvas.js"></script>
+<script src="/static/cables.js"></script>
+<script src="/static/undo.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

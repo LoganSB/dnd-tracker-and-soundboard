@@ -1,0 +1,37 @@
+<!doctype html>
+<!--
+  party.html - the character sheets area (a list of party members, and a detail view per character).
+
+  SERVED AT: /party (the "Characters" button on the soundboard also links here).
+
+  This is a shell. The HTML is a static outline with an empty toolbar
+  (div#partyBar) and an empty content area (div#view). party.js decides what to
+  show (character list or one character), builds the elements at runtime, and
+  inserts them into those two containers. It uses no Jinja2 substitutions.
+
+  SCRIPTS (in order):
+    1. /static/tracker.js - shared tracker code. party.js reuses it (it is
+       loaded first because party.js depends on what it defines).
+    2. /static/party.js   - builds this page's UI into #partyBar and #view.
+
+  The body class "partypage" lets style.css apply rules only to this page.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Party</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="partypage">
+<header>
+  <!-- Breadcrumb: links back to the soundboard ("/") and to this page. class "plain" = links styled like normal text. -->
+  <!-- partyBar: toolbar area, filled by party.js -->
+  <div class="bar" id="partyBar"></div>
+</header>
+<!-- view: main content area, filled by party.js -->
+<div id="view"></div>
+<script src="/static/tracker.js"></script>
+<script src="/static/party.js"></script>
+</body>
+</html>

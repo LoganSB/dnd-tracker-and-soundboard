@@ -1,0 +1,2539 @@
+/*
+  style.css - the one stylesheet shared by index.html, tracker.html and party.html.
+
+  CSS IN ONE PARAGRAPH
+  A stylesheet is a list of rules. Each rule is "selector { property: value; ... }".
+  The selector says which elements of the page tree the rule matches
+  (div = every <div>; .snd = elements with class="snd"; #links = the element
+  with id="links"; a b = a "b" nested anywhere inside an "a"; a>b = "b" that is
+  a direct child of "a"; a.b = an "a" that also has class "b"; :hover and :not(...)
+  are conditions). The declarations set display properties on whatever matched.
+  When several rules match one element and set the same property, the more
+  specific selector wins; if they are equally specific, the LATER rule wins.
+
+  HOW THIS FILE IS ORGANISED (read this before deleting "duplicates")
+  This file was built up in layers over time (the original board, then mobile,
+  then sections/chains, then "v4", then "v6"). Newer layers were appended at the
+  end instead of editing the old rules. So the same selector (for example .snd,
+  .port, .sounds, .tilegrid, main#tiles) appears several times, and the LATER
+  block overrides the earlier one for any property it repeats; properties it does
+  not repeat are inherited from the earlier block. The duplicates are
+  intentional. Where an override is easy to see, a comment says "OVERRIDES ...".
+
+  CUSTOM PROPERTIES (CSS variables)
+  Names starting with two dashes, such as --accent, are variables. They are
+  defined once and read with var(--name) or var(--name, fallback). Some are set
+  per element at runtime by app.js (see the chain colour notes below).
+
+  Sections of this file, in order:
+    1. Theme variables and page basics
+    2. Header, buttons, form controls
+    3. Tiles, sound buttons, dialogs, lists (the original board)
+    4. Party / tracker pages
+    5. Mobile layer (first pass)
+    6. Sections, subsections, chains, drag and drop, connectors, SVG cables
+    7. v4 layer: roomier sounds, input squares, chain highlighting
+    8. Initiative
+    9. v6 layer: spacing tweaks, path dimming
+*/
+
+/* ==================== 1. THEME VARIABLES & PAGE BASICS ==================== */
+
+/* :root is the top element of the page. Variables defined here are visible everywhere. */
+:root {
+  --bg: #14121a;
+  --panel: #201c2b;
+  --panel2: #2a2538;
+  --text: #ece8f5;
+  --muted: #9a93ad;
+  --accent: #a06bff;
+  --ok: #3ecf8e;
+  --bad: #ff5d6c;
+  --warn: #f0b429
+}
+
+/* "*" matches every element. border-box makes width include padding and border (like a fixed-size struct rather than content plus padding). */
+* {
+  box-sizing: border-box
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.4 system-ui, sans-serif
+}
+
+/* ==================== 2. HEADER, BUTTONS, FORM CONTROLS ==================== */
+
+/* Top bar stays visible while scrolling (sticky). z-index is stacking order: bigger = drawn on top. */
+header {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: #0e0c13;
+  border-bottom: 1px solid #000;
+  padding: .6rem 1rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: .75rem;
+  align-items: center;
+  justify-content: space-between
+}
+
+h1 {
+  font-size: 1.2rem;
+  margin: 0
+}
+
+/* The row of header buttons. flex = lay children out in a row; wrap lets them flow to a second line. */
+.bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .5rem;
+  align-items: center
+}
+
+/* Buttons, dropdowns and text boxes share one look. "font: inherit" copies the page font (browsers otherwise use their own for form controls). */
+button,
+select,
+input {
+  font: inherit;
+  color: var(--text);
+  background: var(--panel2);
+  border: 1px solid #3a3450;
+  border-radius: 6px;
+  padding: .4rem .7rem
+}
+
+button {
+  cursor: pointer
+}
+
+button:hover {
+  border-color: var(--accent)
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff
+}
+
+button.danger {
+  background: #3a1d24;
+  border-color: #6b2a36
+}
+
+.muted {
+  color: var(--muted);
+  font-size: .85rem
+}
+
+/* Hidden until app.js sets display to block (while audio is still locked by the browser). */
+#audioBanner {
+  background: var(--warn);
+  color: #000;
+  text-align: center;
+  padding: .4rem;
+  display: none;
+  cursor: pointer
+}
+
+/* ==================== 3. TILES, SOUND BUTTONS, DIALOGS, LISTS (ORIGINAL BOARD) ==================== */
+
+/* Grid layout: repeat(auto-fill, minmax(320px, 1fr)) = "as many columns as fit, each at least 320px wide, sharing leftover space equally". */
+/* Section 6 later changes main#tiles to display:block and moves the grid onto .tilegrid. */
+main {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 1rem;
+  padding: 1rem
+}
+
+/* A tile is a card holding a group of sound buttons; a vertical flex column. */
+.tile {
+  background: var(--panel);
+  border: 1px solid #2f2a40;
+  border-radius: 10px;
+  padding: .7rem;
+  display: flex;
+  flex-direction: column;
+  gap: .6rem
+}
+
+/* grid-column: 1 / -1 = span from the first to the last grid line, i.e. the full row. Later OVERRIDDEN in section 6 (grid-column:auto). */
+.tile.pinned {
+  grid-column: 1 / -1;
+  border-color: var(--accent)
+}
+
+/* A tile has its own <header>; undo the sticky page-header look for it. (Section 6 re-sets display on this selector.) */
+.tile > header {
+  position: static;
+  background: none;
+  border: 0;
+  padding: 0
+}
+
+.tile h2 {
+  margin: 0;
+  font-size: 1rem
+}
+
+.tile .tools button {
+  padding: .15rem .5rem;
+  font-size: .8rem
+}
+
+/* The grid of sound buttons inside a tile (overridden again in section 7 and section 9). */
+.sounds {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: .5rem
+}
+
+/* ---- sound buttons (.snd) ---- */
+
+/* position:relative makes this box the reference for children placed with position:absolute (the corner gear, key label, etc.). */
+.snd {
+  position: relative;
+  min-height: 64px;
+  text-align: left;
+  padding: .5rem .6rem;
+  border-radius: 8px;
+  border: 1px solid #3a3450;
+  background: var(--panel2);
+  user-select: none;
+  overflow: hidden
+}
+
+.snd .nm {
+  font-weight: 600;
+  display: block;
+  padding-right: 1.2rem;
+  word-break: break-word
+}
+
+.snd .tp {
+  font-size: .7rem;
+  color: var(--muted)
+}
+
+/* Absolute positioning: placed relative to the nearest positioned ancestor (.snd). Bottom-right corner. */
+.snd .kb {
+  position: absolute;
+  right: 6px;
+  bottom: 4px;
+  font-size: .7rem;
+  color: var(--muted);
+  border: 1px solid #4a4360;
+  border-radius: 3px;
+  padding: 0 4px
+}
+
+/* Top-right corner: the gear (edit) icon. */
+.snd .gear {
+  position: absolute;
+  right: 4px;
+  top: 2px;
+  font-size: .8rem;
+  color: var(--muted);
+  padding: 0 4px;
+  cursor: pointer
+}
+
+/* Left stripe colour shows the sound type. */
+.snd.clip {
+  border-left: 4px solid #4da3ff
+}
+
+.snd.instant {
+  border-left: 4px solid var(--warn)
+}
+
+.snd.music {
+  border-left: 4px solid var(--ok)
+}
+
+/* State classes added/removed by app.js as audio loads, fails or plays. */
+.snd.loading {
+  opacity: .55
+}
+
+.snd.error {
+  border-color: var(--bad)
+}
+
+/* 55 at the end of #3ecf8e55 is alpha (transparency): a soft green halo drawn with a zero-blur shadow ring. */
+.snd.playing {
+  background: #2c4a3a;
+  border-color: var(--ok);
+  box-shadow: 0 0 0 2px #3ecf8e55
+}
+
+/* :active = while the mouse button is held down; a little shrink gives press feedback. */
+.snd:active {
+  transform: scale(.97)
+}
+
+/* ---- dialogs ---- */
+
+/* <dialog> boxes (sound editor, tile settings, presets). width: min(560px, 94vw) = at most 560px, or 94% of the viewport width on small screens. */
+dialog {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--accent);
+  border-radius: 12px;
+  width: min(560px, 94vw);
+  padding: 1.2rem
+}
+
+/* ::backdrop is the dimmed layer behind a modal dialog. #000a = black at about 67% alpha. */
+dialog::backdrop {
+  background: #000a
+}
+
+/* Each form field is a label wrapping its input: stack caption above input. flex:1 lets fields in a .row share width. */
+dialog label {
+  display: flex;
+  flex-direction: column;
+  gap: .2rem;
+  margin: .5rem 0;
+  flex: 1
+}
+
+/* Checkbox labels go back to a single row. */
+dialog label.check {
+  flex-direction: row;
+  align-items: center;
+  gap: .5rem
+}
+
+/* A horizontal group of form fields; align-items:flex-end lines inputs up along their bottoms. */
+.row {
+  display: flex;
+  gap: .6rem;
+  align-items: flex-end;
+  flex-wrap: wrap
+}
+
+.row > input,
+.row > select {
+  flex: 1
+}
+
+/* <menu> is used here as the button row at the bottom of a dialog. */
+menu {
+  display: flex;
+  gap: .5rem;
+  padding: 0;
+  margin: 1rem 0 0
+}
+
+/* An empty spacer that expands to push following buttons to the right. */
+.grow {
+  flex: 1
+}
+
+/* Scrollable lists in the presets dialog. */
+.list {
+  list-style: none;
+  margin: .5rem 0;
+  padding: 0;
+  max-height: 180px;
+  overflow: auto
+}
+
+.list li {
+  display: flex;
+  justify-content: space-between;
+  gap: .5rem;
+  padding: .25rem 0;
+  border-bottom: 1px solid #2f2a40;
+  align-items: center
+}
+
+.list button {
+  padding: .1rem .5rem;
+  font-size: .8rem
+}
+
+h3 {
+  margin: .8rem 0 .2rem;
+  font-size: .95rem
+}
+
+/* #0003 = black at 20% alpha. */
+code {
+  background: #0003;
+  padding: 0 4px;
+  border-radius: 3px
+}
+
+/* ==================== 4. PARTY / TRACKER PAGES ==================== */
+
+a {
+  color: #c4a6ff
+}
+
+a.plain {
+  color: inherit;
+  text-decoration: none
+}
+
+/* An <a> link made to look like a button. */
+a.btn {
+  display: inline-block;
+  background: var(--panel2);
+  border: 1px solid #3a3450;
+  border-radius: 6px;
+  padding: .4rem .7rem;
+  color: var(--text);
+  text-decoration: none
+}
+
+a.btn:hover {
+  border-color: var(--accent)
+}
+
+/* The floating tracker box on the soundboard page. position:fixed pins it to the window (not the page), so it stays put while scrolling. Hidden until the script adds class "open". */
+#trackerPanel {
+  position: fixed;
+  right: 12px;
+  bottom: 12px;
+  width: 360px;
+  max-width: calc(100vw - 24px);
+  max-height: 75vh;
+  z-index: 20;
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  display: none;
+  flex-direction: column;
+  box-shadow: 0 8px 30px #000a
+}
+
+/* "#trackerPanel.open" is more specific than "#trackerPanel", so display:flex wins whenever class "open" is present. */
+#trackerPanel.open {
+  display: flex
+}
+
+#trackerPanel > header {
+  position: static;
+  border-radius: 10px 10px 0 0;
+  padding: .4rem .7rem
+}
+
+#trackerPanel h2 {
+  margin: 0;
+  font-size: .95rem
+}
+
+.trackerlist {
+  overflow: auto;
+  padding: .5rem
+}
+
+/* Descendant selector: only a .trackerlist that sits inside body.trackerpage (the /tracker page). */
+.trackerpage .trackerlist {
+  max-width: 520px;
+  margin: 0 auto
+}
+
+/* .pc = a player-character card in the tracker. */
+.pc {
+  background: var(--panel2);
+  border: 1px solid #3a3450;
+  border-radius: 8px;
+  padding: .5rem;
+  margin-bottom: .6rem;
+  display: flex;
+  flex-direction: column;
+  gap: .35rem
+}
+
+.pc > header {
+  position: static;
+  background: none;
+  border: 0;
+  padding: 0;
+  display: flex;
+  justify-content: space-between;
+  gap: .5rem;
+  align-items: baseline
+}
+
+.pc button,
+.pc input {
+  padding: .15rem .45rem;
+  font-size: .85rem
+}
+
+.lbl {
+  display: inline-block;
+  min-width: 2.2em;
+  color: var(--muted);
+  font-size: .8rem
+}
+
+/* Three rows that share the same flowing layout: hit points, resources, spell slots. */
+.hprow,
+.resrow,
+.slotrow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .3rem;
+  align-items: center
+}
+
+.hpnum {
+  width: 4.2em;
+  text-align: center
+}
+
+/* Health bar: .hpbar is the track, .hpfill the coloured part (width set by script). flex-basis:100% forces the bar onto its own full-width line. */
+.hpbar {
+  flex-basis: 100%;
+  height: 6px;
+  background: #0006;
+  border-radius: 3px;
+  overflow: hidden
+}
+
+.hpfill {
+  height: 100%;
+  transition: width .2s
+}
+
+/* Spell-slot pips: round toggle buttons. border-radius:50% makes a square a circle. !important beats the .pc button padding rule above. */
+.pip {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  padding: 0 !important;
+  background: transparent;
+  border: 2px solid #6f5ab0
+}
+
+.pip.on {
+  background: var(--accent)
+}
+
+.pips {
+  display: inline-flex;
+  gap: 4px;
+  flex-wrap: wrap
+}
+
+/* A button styled like a dotted-underline link. */
+.linkish {
+  background: none;
+  border: 0;
+  text-decoration: underline dotted;
+  cursor: pointer
+}
+
+.tiny {
+  font-size: .75rem;
+  padding: .1rem .4rem
+}
+
+.cond {
+  width: 100%
+}
+
+/* Centered content column on the party and tracker pages. */
+.partypage #view,
+.trackerpage #tracker {
+  padding: 1rem;
+  max-width: 1000px;
+  margin: 0 auto
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid #2f2a40;
+  border-radius: 10px;
+  padding: .8rem 1rem;
+  margin-bottom: 1rem
+}
+
+.card h2 {
+  margin: 0 0 .5rem;
+  font-size: 1.05rem
+}
+
+.card h3 {
+  margin: .8rem 0 .3rem
+}
+
+/* Character list: as many 260px-minimum columns as fit. */
+.partygrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: .8rem
+}
+
+.pcard {
+  display: flex;
+  gap: .7rem;
+  background: var(--panel);
+  border: 1px solid #2f2a40;
+  border-radius: 10px;
+  padding: .7rem;
+  color: var(--text);
+  text-decoration: none
+}
+
+.pcard:hover {
+  border-color: var(--accent)
+}
+
+/* Portrait image, or the .noimg placeholder box with an emoji when there is no picture. object-fit:cover crops instead of stretching. flex:none stops it shrinking. */
+.pcard img,
+.noimg {
+  width: 64px;
+  height: 64px;
+  border-radius: 8px;
+  object-fit: cover;
+  background: var(--panel2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 2rem;
+  flex: none
+}
+
+.charhead {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  margin-bottom: 1rem
+}
+
+.charhead h1 {
+  margin: 0
+}
+
+.charhead img {
+  width: 96px;
+  height: 96px;
+  object-fit: cover;
+  border-radius: 12px
+}
+
+/* Six ability scores in a row; repeat(6, 1fr) = six equal columns. */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: .5rem;
+  text-align: center;
+  margin-bottom: .6rem
+}
+
+.stat {
+  background: var(--panel2);
+  border-radius: 8px;
+  padding: .4rem
+}
+
+.stat b {
+  font-size: 1.3rem;
+  display: block
+}
+
+.kv {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-bottom: .4rem
+}
+
+/* .fold = a collapsible <details> entry (summary line plus hidden body). */
+.fold {
+  border-bottom: 1px solid #2f2a40;
+  padding: .3rem 0
+}
+
+.fold summary {
+  cursor: pointer
+}
+
+.fold.equipped summary b {
+  color: var(--ok)
+}
+
+/* pre-wrap keeps the line breaks in the stored text. */
+.fold .body {
+  white-space: pre-wrap;
+  color: #cfc9de;
+  padding: .4rem 0 .4rem 1rem;
+  font-size: .9rem
+}
+
+/* Media query: these rules apply only while the window is at most 600px wide. Here, ability scores go 3 per row. */
+@media (max-width: 600px) {
+  .stats {
+    grid-template-columns: repeat(3, 1fr)
+  }
+}
+
+/* ==================== 5. MOBILE LAYER (FIRST PASS) ==================== */
+/*
+  Mobile switch: when the server renders the page for /m, body gets class "mobile"
+  (see the Jinja expression in index.html). Every ".mobile ..." selector below
+  therefore only matches on that page. This is not a screen-size test; it is a
+  deliberate mode chosen by URL.
+*/
+
+/* Visibility classes used in the HTML. .desk = desktop-only item, .mob = mobile-only item.
+   By default .mob is hidden; on a .mobile body, .desk is hidden and .mob is shown.
+   !important makes these win over any other display setting on the same element. */
+.mob {
+  display: none !important
+}
+
+.mobile .desk {
+  display: none !important
+}
+
+.mobile .mob {
+  display: inline-block !important
+}
+
+/* The tab strip is hidden on desktop, and shown as a scrolling sticky row on mobile (it replaces the multi-section layout). */
+#tabs {
+  display: none
+}
+
+.mobile #tabs {
+  display: flex;
+  gap: .4rem;
+  overflow-x: auto;
+  padding: .5rem 1rem 0;
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  background: var(--bg)
+}
+
+.mobile #tabs button {
+  white-space: nowrap;
+  padding: .6rem 1rem;
+  font-size: 1rem
+}
+
+.mobile #tabs button.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff
+}
+
+.mobile header {
+  padding: .5rem
+}
+
+.mobile h1 {
+  display: none
+}
+
+.mobile .bar {
+  width: 100%
+}
+
+/* Bigger touch targets. */
+.mobile .bar button,
+.mobile .bar a.btn {
+  padding: .6rem .8rem;
+  font-size: 1rem
+}
+
+.mobile .vol {
+  flex: 1 1 100%
+}
+
+.mobile .vol input {
+  width: 70%
+}
+
+/* One column of tiles. (Section 6 later re-sets main#tiles for mobile.) */
+.mobile main {
+  grid-template-columns: 1fr;
+  padding: .6rem
+}
+
+.mobile .tile > header {
+  position: static
+}
+
+.mobile .tile .tools {
+  display: none
+}
+
+/* Two sound buttons per row on a phone. (Sections 6 and 7 add more mobile overrides.) */
+.mobile .sounds {
+  grid-template-columns: repeat(2, 1fr)
+}
+
+/* touch-action:manipulation turns off double-tap-to-zoom so taps register immediately. */
+.mobile .snd {
+  min-height: 92px;
+  font-size: 1.05rem;
+  touch-action: manipulation
+}
+
+.mobile .gear {
+  display: none
+}
+
+.mobile #trackerPanel {
+  left: 6px;
+  right: 6px;
+  bottom: 6px;
+  width: auto;
+  max-height: 80vh
+}
+
+/* A button that is toggled on (green outline). Added by script. */
+button.on-state {
+  border-color: var(--ok);
+  color: var(--ok)
+}
+
+/* ==================== 6. SECTIONS, SUBSECTIONS, CHAINS, DRAG & DROP ==================== */
+/* Layer 3: adds sections (groups of tiles), subsections, chain connectors and drag and drop. */
+
+/* OVERRIDES the earlier "main" grid: the tiles container becomes a plain block; the grid now lives on each section's .tilegrid. */
+main#tiles {
+  display: block;
+  padding: 1rem
+}
+
+.sec {
+  margin-bottom: 1.2rem;
+  border: 1px solid #2f2a40;
+  border-radius: 12px;
+  padding: .5rem .7rem;
+  background: #17141f
+}
+
+.sec > header {
+  position: static;
+  background: none;
+  border: 0;
+  padding: .2rem 0 .5rem;
+  display: flex;
+  align-items: center;
+  gap: .5rem
+}
+
+.sec > header h2 {
+  margin: 0;
+  font-size: 1.05rem;
+  flex: 1;
+  color: #cdb8ff
+}
+
+/* Collapsing a section just hides its grid of tiles. */
+.sec.collapsed .tilegrid {
+  display: none
+}
+
+/* Tile grid inside a section. (Section 7 overrides the column minimum to 360px.) */
+.tilegrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 1rem;
+  min-height: 36px
+}
+
+/* OVERRIDES .tile.pinned from section 3: no longer spans the full row. */
+.tile.pinned {
+  grid-column: auto
+}
+
+/* OVERRIDES the section 3 ".tile > header": now a flex row (display was not set there). Same selector, later wins for the properties repeated. */
+.tile > header {
+  display: flex;
+  align-items: center;
+  gap: .4rem;
+  flex-wrap: wrap
+}
+
+.tile > header h2 {
+  flex: 1;
+  min-width: 6em
+}
+
+.tvol {
+  width: 80px;
+  padding: 0
+}
+
+.fadebtn {
+  white-space: nowrap
+}
+
+/* A subsection: dashed box grouping sounds inside a tile. */
+.sub {
+  background: #1b1726;
+  border: 1px dashed #3a3450;
+  border-radius: 8px;
+  padding: .4rem .5rem;
+  margin-top: .5rem
+}
+
+.sub > header {
+  position: static;
+  background: none;
+  border: 0;
+  padding: 0 0 .3rem;
+  display: flex;
+  gap: .4rem;
+  align-items: center
+}
+
+.sub h3 {
+  margin: 0;
+  flex: 1;
+  font-size: .85rem;
+  color: var(--muted)
+}
+
+.sub .tools button,
+.sec .tools button {
+  padding: .1rem .45rem;
+  font-size: .8rem
+}
+
+/* A subsection with no sounds yet is a visible drop target. */
+.sounds.empty {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px
+}
+
+.tilebody {
+  display: flex;
+  flex-direction: column
+}
+
+.tilebody > .sounds {
+  margin-bottom: .1rem
+}
+
+/* ---- drag handle and drag-and-drop states ---- */
+
+/* The grab handle used to drag sounds, tiles or sections. */
+.grip {
+  cursor: grab;
+  color: var(--muted);
+  user-select: none;
+  padding: 0 .2rem
+}
+
+/* Inside a sound button, the grip is pinned bottom-left and faint until you hover. (Section 7 later turns it into a normal in-flow element.) */
+.snd .grip {
+  position: absolute;
+  left: 4px;
+  bottom: 2px;
+  font-size: .8rem;
+  opacity: .35
+}
+
+.snd:hover .grip {
+  opacity: 1
+}
+
+/* OVERRIDES the padding in the original .snd rule (extra room at the bottom for the grip). Section 7 overrides it again. */
+.snd {
+  padding-bottom: 1.4rem
+}
+
+/* Class added to the item being dragged. */
+.dragging {
+  opacity: .35
+}
+
+/* Class added to the drop target under the cursor: a dashed outline, plus a faint purple fill (#a06bff22 is the accent colour at about 13% alpha). */
+.over {
+  outline: 2px dashed var(--accent);
+  outline-offset: 2px;
+  background-color: #a06bff22
+}
+
+/* ---- connectors: output ports (circles) that start a chain cable ---- */
+
+/* position:absolute inside the position:relative .snd. right:-6px pushes the circle half outside the right edge; top:50% plus a negative margin-top equal to half the height centres it vertically. touch-action:none lets a finger drag it without scrolling the page. */
+.port {
+  position: absolute;
+  right: -6px;
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  margin-top: -6px;
+  border-radius: 50%;
+  border: 2px solid #6f5ab0;
+  background: var(--bg);
+  cursor: crosshair;
+  touch-action: none;
+  z-index: 2;
+  opacity: .45
+}
+
+/* Ports are faint until you hover the sound, the port is connected (.on), or you are mid-drag (body.linking). */
+.snd:hover .port,
+.port.on,
+body.linking .port {
+  opacity: 1
+}
+
+/* A connected port is filled. (Section 7 re-colours it per chain.) */
+.port.on {
+  background: var(--accent);
+  border-color: var(--accent)
+}
+
+.port:hover {
+  transform: scale(1.35)
+}
+
+/* OVERRIDES overflow:hidden from the original .snd rule: ports and badges stick out beyond the button edge and must not be clipped. */
+.snd {
+  overflow: visible
+}
+
+/* ---- chain colours ----
+   Sounds that belong to the same chain get a hue number in the custom property --h (0 to 360),
+   and sometimes a saturation --s, set per element by app.js. hsl(var(--h) var(--s,70%) 55% / .55)
+   means: hue = --h, saturation = --s or 70% if --s is not set, lightness 55%, alpha .55.
+   Different chains therefore get different colours from the same rule. */
+.snd.chained {
+  box-shadow: 0 0 0 2px hsl(var(--h) var(--s, 70%) 55% / .55)
+}
+
+/* .cyc = the chain loops back on itself: add a second, wider, fainter ring. */
+.snd.chained.cyc {
+  box-shadow: 0 0 0 2px hsl(var(--h) var(--s, 70%) 55% / .55), 0 0 0 5px hsl(var(--h) var(--s, 70%) 55% / .2)
+}
+
+/* A playing sound in a chain gets a stronger glow (blur 12px). */
+.snd.playing.chained {
+  box-shadow: 0 0 12px 2px hsl(var(--h) var(--s, 80%) 60% / .8)
+}
+
+/* Step-number bubble in the top-left corner of a chained sound. (Section 7 nudges its position.) */
+.snd .badge {
+  position: absolute;
+  left: -7px;
+  top: -7px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 9px;
+  background: hsl(var(--h) var(--s, 70%) 50%);
+  color: #fff;
+  font-size: .7rem;
+  line-height: 18px;
+  text-align: center;
+  font-weight: 700
+}
+
+/* Highlight of a valid drop target while dragging a cable. */
+.snd.linktarget {
+  outline: 3px solid var(--ok);
+  outline-offset: 2px
+}
+
+/* While dragging a cable: crosshair cursor and no accidental text selection. */
+body.linking {
+  cursor: crosshair;
+  user-select: none
+}
+
+/* ---- SVG cable overlay ---- */
+
+/* The <svg id="links"> element covers the page from the top-left corner (position:absolute). pointer-events:none makes it invisible to the mouse so clicks pass through to the sound buttons below. z-index 3 draws the cables above tiles. overflow:visible lets paths draw outside the SVG's own box. */
+#links {
+  position: absolute;
+  left: 0;
+  top: 0;
+  pointer-events: none;
+  z-index: 3;
+  overflow: visible
+}
+
+/* Each cable is an SVG <path>. fill:none = draw only the outline (a curve, not a filled shape). stroke-* properties are the SVG equivalents of border colour/width. (Section 7 thins it down.) */
+#links .link {
+  fill: none;
+  stroke-width: 3;
+  stroke-linecap: round;
+  opacity: .85
+}
+
+/* The temporary cable shown while dragging: green and dashed (6px dash, 5px gap). */
+#links .link.temp {
+  stroke: var(--ok);
+  stroke-dasharray: 6 5
+}
+
+/* Animated cable showing the active flow. A dashed line (8 on, 6 off) whose dash offset is animated by the @keyframes named flow, so the dashes appear to crawl along the line. 0.6s per cycle, linear, forever. */
+#links .link.flow {
+  stroke-dasharray: 8 6;
+  animation: flow .6s linear infinite;
+  opacity: 1
+}
+
+/* Keyframes define the animation: end with a dash offset of -14 (= one dash plus one gap, 8+6), so the loop looks seamless. Only the end state is given; the start is the current value. */
+@keyframes flow {
+  to {
+    stroke-dashoffset: -14
+  }
+}
+
+/* ---- mobile: no editing chrome ---- */
+/* Hide the editing tools (drag handle, ports, cable overlay, tile volume) on the mobile page. */
+.mobile .grip,
+.mobile .port,
+.mobile #links,
+.mobile .tvol {
+  display: none
+}
+
+.mobile .tile > header {
+  flex-wrap: wrap
+}
+
+/* OVERRIDES section 6's main#tiles above, but only inside .mobile: back to a single-column grid. */
+.mobile main#tiles {
+  display: grid;
+  grid-template-columns: 1fr;
+  padding: .6rem
+}
+
+/* all:unset resets EVERY property of the element to its default/inherited value, so on mobile the section box loses its border, padding and background and just becomes a transparent wrapper. */
+.mobile .sec {
+  all: unset
+}
+
+.mobile .snd {
+  padding-bottom: .5rem
+}
+
+.mobile .sub {
+  margin-top: .4rem
+}
+
+/* ==================== 7. v4 LAYER: flat sections, roomier sounds, input squares / output circles ==================== */
+/* Repeats several selectors from earlier on purpose; each rule here OVERRIDES the earlier one for the properties it names. */
+
+/* OVERRIDES main#tiles from section 6 (only the padding is repeated, same value). */
+main#tiles {
+  padding: 1rem
+}
+
+/* OVERRIDES .tilegrid from section 6: wider minimum tile width, 360px instead of 320px, and a bigger gap. */
+.tilegrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+  gap: 1.1rem;
+  min-height: 36px
+}
+
+/* OVERRIDES .sounds from section 3: bigger sound buttons (160px minimum column) and gap. Section 9 changes the gap again. */
+.sounds {
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: .85rem
+}
+
+/* OVERRIDES .snd min-height and padding from sections 3 and 6: the bottom padding of 2.3rem reserves room for the volume row (.srow). Left padding of 1.1rem makes room for the input squares. */
+.snd {
+  min-height: 108px;
+  padding: .8rem .95rem 2.3rem 1.1rem;
+  border-radius: 10px
+}
+
+.snd .nm {
+  font-size: .95rem;
+  margin-bottom: .15rem
+}
+
+/* OVERRIDES the section 6 absolute positioning: the grip is now an ordinary in-flow element. */
+.snd .grip {
+  position: static;
+  opacity: .45;
+  font-size: .85rem;
+  padding: 0
+}
+
+/* OVERRIDES .snd .kb from section 3: no longer pinned to the corner. margin-left:auto pushes it to the right end of the row. */
+.snd .kb {
+  position: static;
+  margin-left: auto
+}
+
+/* Bottom row inside a sound button that holds the little volume slider. */
+.srow {
+  position: absolute;
+  left: .7rem;
+  right: .6rem;
+  bottom: .45rem;
+  display: flex;
+  align-items: center;
+  gap: .45rem
+}
+
+/* min-width:0 lets a flex item shrink below its natural size (otherwise sliders overflow). */
+.svol {
+  flex: 1;
+  min-width: 0;
+  height: 14px;
+  padding: 0;
+  accent-color: var(--accent);
+  background: none;
+  border: 0
+}
+
+/* ---- input squares: where an incoming cable attaches (left edge of a sound) ----
+   Output ports are circles on the right; inputs are squares on the left.
+   .ins is a column of squares placed down the left edge of the sound button. */
+.ins {
+  position: absolute;
+  left: -7px;
+  top: 0;
+  bottom: 0;
+  width: 12px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  z-index: 2
+}
+
+.in {
+  display: block;
+  width: 11px;
+  height: 11px;
+  border-radius: 2px;
+  box-sizing: border-box;
+  flex: none
+}
+
+/* A used input: filled with the chain's colour (via --h), lighter border. cursor:grab = can be dragged to re-route the cable. */
+.in.on {
+  background: hsl(var(--h) var(--s, 70%) 55%);
+  border: 2px solid hsl(var(--h) var(--s, 80%) 75%);
+  cursor: grab
+}
+
+.in.on:hover {
+  transform: scale(1.3)
+}
+
+/* A free input slot: dashed hollow square. */
+.in.free {
+  border: 2px dashed #7b66c4;
+  background: var(--bg);
+  opacity: .75
+}
+
+/* While dragging a cable over a candidate target, its free inputs light up green. */
+.snd.linktarget .in.free {
+  background: var(--ok);
+  border-style: solid;
+  border-color: var(--ok);
+  opacity: 1;
+  transform: scale(1.35)
+}
+
+/* OVERRIDES .port from section 6: slightly bigger, moved a hair further out. */
+.port {
+  right: -7px;
+  width: 13px;
+  height: 13px;
+  margin-top: -6px
+}
+
+/* OVERRIDES .port.on from section 6: use the chain colour. var(--h, 260) falls back to hue 260 (purple) when no chain colour is set. */
+.port.on {
+  background: hsl(var(--h, 260) 70% 55%);
+  border-color: hsl(var(--h, 260) 80% 75%)
+}
+
+/* ---- chain highlighting ---- */
+/* OVERRIDES .snd.chained from section 6: thinner, fainter ring. */
+.snd.chained {
+  box-shadow: 0 0 0 1px hsl(var(--h) var(--s, 70%) 55% / .5)
+}
+
+/* .onpath = this sound is on the currently selected route through the chain: bright ring plus glow. Appears after .snd.chained in the file, so with equal specificity, this one wins. */
+.snd.onpath {
+  box-shadow: 0 0 0 2px hsl(var(--h) var(--s, 90%) 72%), 0 0 14px hsl(var(--h) var(--s, 90%) 60% / .55)
+}
+
+/* .current = the sound that is the current position in the chain: white ring plus strongest glow. Declared last of the three, so it wins over .onpath when both apply. */
+.snd.current {
+  box-shadow: 0 0 0 3px #fff, 0 0 18px hsl(var(--h) var(--s, 90%) 65% / .9)
+}
+
+/* OVERRIDES .snd .badge from section 6 (moved slightly further out). */
+.snd .badge {
+  left: -9px;
+  top: -9px
+}
+
+/* ---- SVG cables, v4 ---- */
+/* OVERRIDES #links .link from section 6: thinner and slightly more transparent by default. */
+#links .link {
+  stroke-width: 1.75;
+  opacity: .8
+}
+
+/* Cables on the selected path are thicker and fully opaque. */
+#links .link.onpath {
+  stroke-width: 3.2;
+  opacity: 1
+}
+
+/* Cables not on the path: faint. (Section 9 raises this to .4.) */
+#links .link.off {
+  opacity: .28
+}
+
+/* ---- mobile, v4 ---- */
+/* Hide the input squares, volume slider and volume row on mobile. */
+.mobile .ins,
+.mobile .svol {
+  display: none
+}
+
+.mobile .srow {
+  display: none
+}
+
+/* OVERRIDES the v4 .snd padding (and the earlier mobile padding-bottom) just for the mobile page: uniform padding, no room reserved for a volume row. */
+.mobile .snd {
+  padding: .9rem 1rem
+}
+
+.mobile .tilegrid {
+  display: block
+}
+
+/* ==================== 8. INITIATIVE (tracker turn order) ==================== */
+
+.trtabs {
+  display: flex;
+  gap: .3rem;
+  margin-bottom: .5rem
+}
+
+.trtabs button {
+  flex: 1
+}
+
+.trtabs button.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff
+}
+
+.ictl,
+.npcform {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .35rem;
+  align-items: center;
+  margin-bottom: .5rem
+}
+
+.npcform input {
+  min-width: 0
+}
+
+/* Attribute selector: matches the input whose name attribute is "name". */
+.npcform input[name=name] {
+  flex: 1;
+  min-width: 6em
+}
+
+.inum {
+  width: 3.8em;
+  padding: .15rem .3rem;
+  text-align: center
+}
+
+/* One combatant in the initiative order. */
+.irow {
+  background: var(--panel2);
+  border: 1px solid #3a3450;
+  border-radius: 8px;
+  padding: .45rem .55rem;
+  margin-bottom: .45rem;
+  display: flex;
+  flex-direction: column;
+  gap: .3rem
+}
+
+/* The combatant whose turn it is: green outline and tint. */
+.irow.active {
+  border-color: var(--ok);
+  box-shadow: 0 0 0 2px #3ecf8e55;
+  background: #223a31
+}
+
+/* Player characters get an accent bar on the left. */
+.irow.pc {
+  border-left: 4px solid var(--accent)
+}
+
+.ihead,
+.istats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .3rem;
+  align-items: center
+}
+
+.iname {
+  cursor: pointer
+}
+
+.mods {
+  margin-left: auto;
+  font-size: .75rem;
+  color: var(--muted);
+  font-family: ui-monospace, monospace
+}
+
+.irow button,
+.irow input {
+  font-size: .85rem
+}
+
+/* ==================== 9. v6 LAYER: spacing tweaks and path dimming ==================== */
+
+/* OVERRIDES .sounds gap from section 7: wider spacing (row gap 1.6rem, column gap 1.9rem) so cables have room to run between buttons. */
+.sounds {
+  gap: 1.6rem 1.9rem
+}
+
+.sec {
+  padding: .5rem .9rem
+}
+
+main#tiles {
+  padding: 1rem 1.4rem
+}
+
+/* An empty rule (no declarations): it does nothing. Probably a leftover placeholder; kept because it is harmless and removing it would change the file's contents. */
+.snd.chained:not(.onpath) {
+}
+
+/* Path dimming: when a path is selected, app.js adds class "haspath" to <body>. Then any chained sound that is NOT on the path (:not(.onpath) means "does not have class onpath") is faded to 40% opacity so the active route stands out. */
+body.haspath .snd.chained:not(.onpath) {
+  opacity: .4
+}
+
+/* OVERRIDES #links .link.off from section 7: dimmed off-path cables go from .28 to .4, matching the sound dimming above. */
+#links .link.off {
+  opacity: .4
+}
+
+/* Fieldset in the tile settings dialog that lists subsections. */
+.subsfield {
+  border: 1px solid #3a3450;
+  border-radius: 8px;
+  margin: .6rem 0;
+  padding: .4rem .7rem
+}
+
+.subrow input {
+  flex: 1
+}
+
+.subrow {
+  margin: .25rem 0
+}
+
+/* ============================================================================
+   Repeat timers. A sound with a repeat delay that is silent and counting down to its
+   next play gets the class "waiting" (set in soundEl in app.js). A dashed amber outline
+   and amber label show it is armed; the label text itself ("next in 9:41") is written by
+   JavaScript.
+   ============================================================================ */
+.snd.waiting {
+  outline: 2px dashed var(--warn);
+  outline-offset: 2px;
+}
+.snd.waiting .tp {
+  color: var(--warn);
+}
+
+/* ============================================================================
+   Layout fixes layer (later rules override earlier ones).
+   ============================================================================ */
+
+/* #stage wraps the board and the cable overlay. position:relative makes it the reference box for the
+   absolutely positioned SVG, so the overlay covers exactly the board and moves with it. */
+#stage {
+  position: relative;
+}
+
+/* OVERRIDES #links from section 6: size the overlay to the stage with CSS instead of JavaScript-set pixel sizes. */
+#links {
+  width: 100%;
+  height: 100%;
+}
+
+/* Range sliders (the master volume, each tile's volume, the dialog volume): the generic
+   button/select/input rule above gives every input padding, a border and a background. On a slider
+   that padding is taken out of the track, so the thumb stopped short of the right end at 100%.
+   Zeroing them lets the thumb travel the full width. (.svol already did this for the per-sound sliders.) */
+input[type="range"] {
+  padding: 0;
+  border: 0;
+  background: none;
+  accent-color: var(--accent);
+}
+
+/* The "Browse / MP3 folder" row in the sound dialog: the button keeps its natural width and the
+   drop-down takes the remaining space. */
+.libraryrow {
+  align-items: flex-end;
+  margin-bottom: .3rem;
+}
+.libraryrow label {
+  flex: 1;
+  min-width: 12em;
+  margin: 0;
+}
+
+/* ============================================================================
+   OLDER canvas and panning layer (the scrolling-page version, pan.js). It is now SUPERSEDED by the
+   "Infinite canvas layer" at the end of this file, which overrides these rules on the desktop; the rules
+   here still apply to the phone page. Later rules override earlier ones with the same selector.
+   ============================================================================ */
+
+/* The board sits on a canvas bigger than the window, so the page scrolls in both directions
+   (pan.js adds drag-to-pan on top of that). The board itself (main#tiles) keeps roughly the
+   window's width; the extra canvas to the right and below is empty room to pan into. A board whose
+   content is wider or taller than that (for example campaign tiles with long checklists) simply
+   makes the canvas grow. calc(100vw - 20px) leaves room for the vertical scrollbar. */
+#stage {
+  min-width: 170vw;
+  min-height: 160vh;
+}
+#stage > main#tiles {
+  width: calc(100vw - 20px);
+  box-sizing: border-box;
+}
+/* Phones use the normal single-column scrolling page, not the big canvas. */
+.mobile #stage {
+  min-width: 0;
+  min-height: 0;
+}
+.mobile #stage > main#tiles {
+  width: auto;
+}
+
+/* Pan mode (the Pan button or the Space bar): a grab cursor over the board; while dragging, a
+   closed hand and no text selection anywhere. The !important beats the cursors set on buttons. */
+body.panmode #stage,
+body.panmode #stage * {
+  cursor: grab;
+}
+body.panning,
+body.panning * {
+  cursor: grabbing !important;
+  user-select: none;
+}
+
+/* ============================================================================
+   Death saving throws (party tracker). The row appears under HP when a character is at 0 HP.
+   ============================================================================ */
+.deathrow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .3rem;
+  align-items: center;
+  padding: .25rem .4rem;
+  border: 1px solid #6b2a36;
+  border-radius: 6px;
+  background: #2a1519;
+}
+/* Success pips glow green and failure pips red when filled (the base .pip/.on colours are purple). */
+.pip.death-s.on {
+  background: var(--ok);
+  border-color: var(--ok);
+}
+.pip.death-f.on {
+  background: var(--bad);
+  border-color: var(--bad);
+}
+.pip.death-s {
+  border-color: #2f7d5b;
+}
+.pip.death-f {
+  border-color: #8a3a46;
+}
+/* The status word: Dying (amber), Stable (green), Dead (red). */
+.death-dying {
+  color: var(--warn);
+}
+.death-stable {
+  color: var(--ok);
+}
+.death-dead {
+  color: var(--bad);
+}
+
+/* ============================================================================
+   Campaign tracker page (campaign.html / campaign.js). It reuses the soundboard's section, tile and
+   subsection styles above; only the flag cards, the loot popup and a few tweaks are new.
+   ============================================================================ */
+
+/* Flags sit in a wrapping row. Each card is only as wide as its content needs (width: max-content),
+   but never wider than its own --maxw (set per flag from the "Max width" box) and never narrower than
+   140px. Past the maximum the checklist text wraps and the card gets taller instead. */
+.flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .9rem;
+  align-items: flex-start;
+}
+.flags.empty {
+  min-height: 34px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+}
+.flag {
+  position: relative;
+  width: max-content;
+  min-width: 140px;
+  max-width: var(--maxw, 320px);
+  background: var(--panel2);
+  border: 1px solid #3a3450;
+  border-left: 4px solid #6f5ab0;
+  border-radius: 10px;
+  padding: .6rem .75rem .5rem;
+  cursor: pointer;
+  user-select: none;
+}
+.flag:hover {
+  border-color: var(--accent);
+}
+/* A triggered flag turns green; one whose checklist is fully ticked gets a brighter edge. */
+.flag.done {
+  background: #223a31;
+  border-color: #2f7d5b;
+  border-left-color: var(--ok);
+}
+.flag.complete {
+  box-shadow: 0 0 0 1px var(--ok);
+}
+.ftitle {
+  display: flex;
+  align-items: flex-start;
+  gap: .4rem;
+}
+.fmark {
+  color: var(--ok);
+}
+.fname {
+  flex: 1;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.ftools {
+  display: flex;
+  gap: .25rem;
+  flex: none;
+}
+.ftools button {
+  padding: .05rem .35rem;
+  font-size: .75rem;
+}
+.checks {
+  list-style: none;
+  margin: .45rem 0 .3rem;
+  padding: 0;
+}
+.checks li {
+  margin: .15rem 0;
+}
+.checks label {
+  display: flex;
+  gap: .4rem;
+  align-items: flex-start;
+  cursor: pointer;
+  font-size: .85rem;
+  overflow-wrap: anywhere;
+}
+.checks label.ckdone span {
+  text-decoration: line-through;
+  color: var(--muted);
+}
+.checks input {
+  margin-top: .2rem;
+}
+/* Thin progress bar under the checklist. */
+.fprog {
+  height: 4px;
+  background: #0006;
+  border-radius: 2px;
+  overflow: hidden;
+}
+.fprog > div {
+  height: 100%;
+  background: var(--ok);
+}
+.ffoot {
+  display: flex;
+  align-items: center;
+  gap: .4rem;
+  margin-top: .35rem;
+  font-size: .75rem;
+}
+.flag .grip {
+  opacity: .45;
+}
+.flag:hover .grip {
+  opacity: 1;
+}
+
+/* The campaign page has no mobile layout and no cables, so nothing else is needed here. */
+.campaignpage .tile > header h2 {
+  min-width: 6em;
+}
+
+/* Loot popup: a compact table of rewards. */
+#lootDlg {
+  width: min(680px, 96vw);
+}
+table.loot {
+  width: 100%;
+  border-collapse: collapse;
+  margin: .5rem 0;
+}
+table.loot th {
+  text-align: left;
+  font-size: .75rem;
+  color: var(--muted);
+  padding: .2rem .3rem;
+}
+table.loot td {
+  padding: .2rem .3rem;
+  border-top: 1px solid #2f2a40;
+}
+.lootroll {
+  margin: .6rem 0;
+}
+.lootroll label {
+  flex: 0;
+  flex-direction: row;
+  align-items: center;
+  gap: .4rem;
+  margin: 0;
+}
+/* Latest roll results, large and bright so they can be read across a table. */
+.lootresult {
+  min-height: 1.5rem;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: #cdb8ff;
+}
+
+/* ============================================================================
+   Infinite canvas layer (canvas.js). Applies to the soundboard and the campaign page on the desktop
+   (their <body> has the class "canvaspage"; phones do not, and keep the normal scrolling page).
+   Later rules override earlier ones, including the older #stage / main#tiles / .tile rules above.
+   ============================================================================ */
+
+/* The page fills the window: header on top, the stage taking all the remaining height. Nothing scrolls;
+   you move around the canvas by panning (canvas.js). */
+body.canvaspage {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+body.canvaspage > header {
+  position: static;   /* the older rule made it sticky; it no longer needs to be */
+  flex: none;
+}
+
+/* The stage is the window onto the canvas: it clips everything outside it. The faint dot grid is its
+   background (canvas.js moves and scales the grid together with the view). OVERRIDES the older
+   min-width / min-height rules that made the page itself scroll. */
+body.canvaspage #stage {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background-image: radial-gradient(circle, #34304a 1.3px, transparent 1.6px);
+  background-size: 28px 28px;
+  cursor: grab;
+}
+
+/* The world: one huge element that holds the cable overlay and the board. canvas.js pans and zooms by
+   changing this element's CSS transform. transform-origin 0 0 makes the transform work from the top-left corner. */
+body.canvaspage #world {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 20000px;
+  height: 20000px;
+  transform-origin: 0 0;
+}
+/* The board fills the world; the tiles inside it position themselves. */
+body.canvaspage #world > main#tiles {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+}
+body.canvaspage #links {
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* A tile is a node on the canvas: absolutely positioned at its own left/top (set from JavaScript, in
+   world pixels), with a fixed width and a height that follows its content. */
+body.canvaspage .tile {
+  position: absolute;
+  box-sizing: border-box;
+  margin: 0;
+  cursor: default;
+}
+/* The title bar is the handle for moving the tile. */
+body.canvaspage .tile > header {
+  cursor: grab;
+}
+/* A tile (or section) being dragged: lifted above the others with a bigger shadow. */
+.dragging-node {
+  z-index: 50;
+  box-shadow: 0 14px 34px #000a;
+}
+/* The resize handle in a tile's bottom-right corner: a small triangle. */
+.tile .rz {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 18px;
+  height: 18px;
+  cursor: nwse-resize;
+  background: linear-gradient(135deg, transparent 52%, #7b66c4 52%);
+  border-bottom-right-radius: 10px;
+  opacity: .55;
+  touch-action: none;
+}
+.tile .rz:hover {
+  opacity: 1;
+}
+
+/* Section frames (like ComfyUI "groups"): a translucent coloured box drawn around a section's tiles. The
+   colour comes from --gh (a hue set per section in JavaScript). Its position and size are set by
+   Canvas.layoutGroups. The title bar is a handle that moves the section's tiles together. */
+.group {
+  position: absolute;
+  box-sizing: border-box;
+  border: 2px solid hsl(var(--gh, 260) 45% 48% / .55);
+  background: hsl(var(--gh, 260) 40% 38% / .10);
+  border-radius: 16px;
+}
+.group > header {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 46px;
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  padding: 0 .8rem;
+  background: hsl(var(--gh, 260) 40% 36% / .28);
+  border-radius: 14px 14px 0 0;
+  cursor: grab;
+}
+.group > header h2 {
+  flex: 1;
+  margin: 0;
+  font-size: 1rem;
+  color: hsl(var(--gh, 260) 85% 84%);
+}
+.group > header .tools button {
+  padding: .1rem .5rem;
+  font-size: .8rem;
+}
+
+/* Zoom buttons (bottom-right) and the hint line (bottom-left), created by canvas.js. */
+#zoomctl {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  z-index: 10;
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  background: #000a;
+  border-radius: 8px;
+}
+#zoomctl button {
+  padding: .25rem .6rem;
+}
+#canvashint {
+  position: absolute;
+  left: 14px;
+  bottom: 12px;
+  z-index: 10;
+  font-size: .75rem;
+  color: var(--muted);
+  opacity: .8;
+  pointer-events: none;
+}
+
+/* While Space is held every part of the board shows the grab cursor (Space + drag pans anywhere). */
+body.spacepan #stage,
+body.spacepan #stage * {
+  cursor: grab;
+}
+
+/* Campaign flag cards: cap the width at the tile's own width as well as the flag's max width, so a
+   card can never stick out of its tile. OVERRIDES .flag's max-width above. */
+.flag {
+  max-width: min(var(--maxw, 320px), 100%);
+}
+
+/* ============================================================================
+   App shell and shared header (shell.html, _nav.html). The shell is one page that holds the
+   soundboard, the campaign tracker and the characters in three iframes (pages inside the page);
+   only the active tab is visible, the others keep running in the background.
+   ============================================================================ */
+
+/* The shell fills the window: the header on top, the frames taking all the remaining height. */
+body.shell {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  margin: 0;
+}
+
+/* The shared header bar (also used by the stand-alone tracker window). */
+.appnav {
+  display: flex;
+  align-items: center;
+  gap: .8rem;
+  flex: none;
+  padding: .45rem 1rem;
+  background: #0b0911;
+  border-bottom: 1px solid #000;
+}
+/* The brand: always "DND Tracker", always a link to the soundboard. */
+.appnav .brand {
+  font-size: 1.15rem;
+  font-weight: 800;
+  color: var(--text);
+  text-decoration: none;
+  margin-right: .4rem;
+}
+.appnav-links {
+  display: flex;
+  gap: .3rem;
+}
+.appnav-links a {
+  padding: .35rem .9rem;
+  border-radius: 8px;
+  color: var(--muted);
+  text-decoration: none;
+  border: 1px solid transparent;
+}
+.appnav-links a:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+/* The current page's link is highlighted. */
+.appnav-links a.on {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* The three iframes sit on top of each other filling #frames. Hidden ones use visibility:hidden (not
+   display:none) so they keep their size and keep running; they also ignore the mouse. */
+#frames {
+  flex: 1;
+  position: relative;
+  min-height: 0;
+}
+#frames iframe {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: var(--bg);
+  visibility: hidden;
+  pointer-events: none;
+}
+#frames iframe.active {
+  visibility: visible;
+  pointer-events: auto;
+  z-index: 1;
+}
+
+/* Pages inside the frames have a thin toolbar instead of the old title bar. */
+body.canvaspage > header,
+body.campaignpage > header,
+body.partypage > header {
+  padding: .4rem .8rem;
+}
+
+/* Phones: the shared header is tighter. */
+@media (max-width: 600px) {
+  .appnav { gap: .4rem; padding: .35rem .5rem; flex-wrap: wrap; }
+  .appnav .brand { font-size: 1rem; }
+  .appnav-links a { padding: .3rem .55rem; }
+}
+
+/* Delete button on a campaign flag card (red on hover). */
+.ftools .fdel:hover {
+  background: #3a1d24;
+  border-color: #6b2a36;
+}
+
+/* ============================================================================
+   Campaign links: ports on every item and the cables between them (campaign.js).
+   ============================================================================ */
+
+/* Every linkable item (section frame, tile, flag, checklist row, loot button) gets two small ports as
+   children: an input square on the left edge and an output circle on the right edge, vertically
+   centred. position:relative on the item makes them position against it. */
+.linkable {
+  position: relative;
+}
+.tile.linkable,
+.group.linkable {
+  position: absolute;   /* tiles and frames are already absolutely positioned on the canvas */
+}
+.lp {
+  position: absolute;
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  margin-top: -6px;
+  z-index: 4;
+  box-sizing: border-box;
+  background: var(--bg);
+  touch-action: none;
+}
+.lp-in {
+  left: -7px;
+  border: 2px dashed #7b66c4;
+  border-radius: 2px;
+  opacity: .75;
+}
+.lp-out {
+  right: -7px;
+  border: 2px solid #6f5ab0;
+  border-radius: 50%;
+  cursor: crosshair;
+  opacity: .55;
+}
+/* A frame's ports sit level with its title bar, not in the middle of its (possibly tall) body. */
+.group > .lp {
+  top: 23px;
+}
+/* A linked port is solid and bright. */
+.linkable.hasin > .lp-in {
+  background: var(--accent);
+  border-style: solid;
+  border-color: var(--accent);
+  opacity: 1;
+}
+.linkable.hasout > .lp-out {
+  background: var(--accent);
+  border-color: var(--accent);
+  opacity: 1;
+}
+.linkable:hover > .lp-out {
+  opacity: 1;
+}
+/* Small items (checklist rows, the loot button) only show their ports on hover, and the ports are smaller. */
+.smallports > .lp {
+  width: 9px;
+  height: 9px;
+  margin-top: -4.5px;
+  opacity: 0;
+}
+.smallports:hover > .lp,
+.smallports.hasin > .lp-in,
+.smallports.hasout > .lp-out {
+  opacity: 1;
+}
+.smallports > .lp-in { left: -11px; }
+.smallports > .lp-out { right: -11px; }
+.checks li { position: relative; }
+.lootbtn { position: relative; }
+/* The item under the pointer while dragging a new cable. */
+.linktarget {
+  outline: 3px solid var(--ok);
+  outline-offset: 2px;
+}
+/* Something still waiting for another item (a link into it comes from something not done yet). */
+.linkable.locked {
+  filter: saturate(.55) brightness(.82);
+}
+.flag.locked,
+.tile.locked {
+  border-style: dashed;
+}
+
+/* The cables: solid green when the item they come from is done, dashed grey-violet while it is not.
+   The "hit" copy is a wide invisible stroke on top, so a cable is easy to click (pointer-events:stroke
+   makes only the stroke itself receive the mouse; the svg as a whole ignores it). */
+#links .link.sat {
+  stroke: var(--ok);
+  opacity: .95;
+}
+#links .link.wait {
+  stroke: #8f84b5;
+  stroke-dasharray: 6 5;
+}
+#links .linkhit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 14;
+  pointer-events: stroke;
+  cursor: pointer;
+}
+
+/* ============================================================================
+   Chain focus: the "chains playing" dock and the focusable badge (app.js: drawDock, setFocus).
+   When several chains play at once, one of them is "in focus" (the arrow keys and chain buttons act on
+   it, and the others are dimmed). The dock lists every playing chain so you can move the focus without
+   starting or stopping anything.
+   ============================================================================ */
+
+/* The dock: a bar floating at the bottom centre of the page, above the canvas. It is only shown (the
+   `hidden` attribute is removed by JavaScript) while two or more chains are playing. */
+#nowplaying {
+  position: fixed;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: .45rem;
+  max-width: calc(100vw - 180px);
+  padding: .35rem .55rem;
+  background: #0e0c13ee;
+  border: 1px solid #3a3450;
+  border-radius: 12px;
+  box-shadow: 0 6px 24px #000a;
+  overflow-x: auto;
+}
+#nowplaying[hidden] {
+  display: none;
+}
+.dockhint {
+  font-size: .7rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+/* One chip per playing chain. The coloured dot is the chain's colour; the focused chip has a bright ring. */
+.dockchip {
+  display: flex;
+  align-items: center;
+  gap: .4rem;
+  max-width: 220px;
+  padding: .25rem .4rem .25rem .6rem;
+  background: var(--panel2);
+  border: 1px solid #3a3450;
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.dockchip:hover {
+  border-color: hsl(var(--h, 250) var(--s, 70%) 65%);
+}
+.dockchip.focused {
+  border-color: #fff;
+  box-shadow: 0 0 0 2px hsl(var(--h, 250) var(--s, 70%) 60% / .7);
+}
+.dockdot {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: hsl(var(--h, 250) var(--s, 70%) 60%);
+  animation: dockpulse 1.4s ease-in-out infinite;
+}
+@keyframes dockpulse {
+  50% { opacity: .35; }
+}
+.dockname {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: .85rem;
+}
+.dockstop {
+  flex: none;
+  padding: .05rem .4rem;
+}
+.dockstop:hover {
+  background: #3a1d24;
+  border-color: #6b2a36;
+}
+
+/* The corner badge of a sound that is playing in a chain NOT in focus becomes a focus button: it pulses
+   and shows a target symbol. (Pressing it is handled in JavaScript and never plays or stops the sound.) */
+.snd .badge.focusable {
+  cursor: pointer;
+  animation: dockpulse 1.4s ease-in-out infinite;
+  box-shadow: 0 0 0 2px #fff6;
+}
+.snd .badge.focusable:hover {
+  animation: none;
+  box-shadow: 0 0 0 3px #fff;
+}
+
+/* Sounds that are playing in an out-of-focus chain are dimmed less than idle chained sounds (80% instead
+   of 40%), so you can still see what is going on there. OVERRIDES the 40% dimming rule above. */
+body.haspath .snd.chained.playing:not(.onpath) {
+  opacity: .8;
+}
+
+/* Phones: the dock sits a little higher, above the browser's bottom edge. */
+.mobile #nowplaying {
+  bottom: 8px;
+  max-width: calc(100vw - 16px);
+}
+
+/* ============================================================================
+   Free-floating cards and nested frames (canvas.js: layoutFrames). The movable things are the CARDS
+   (sounds, flags), absolutely positioned at their own x, y. Sections, tiles and subsections are FRAMES drawn
+   behind them and sized to fit the cards inside. These rules OVERRIDE the older .tile / .group / .sounds layout.
+   ============================================================================ */
+
+/* A sound card on the canvas: absolutely positioned (left/top come from JavaScript) with a fixed width. */
+body.canvaspage #tiles > .snd {
+  position: absolute;
+  width: 190px;
+  box-sizing: border-box;
+  margin: 0;
+  padding-top: 1.45rem;   /* room for the drag bar along the top */
+}
+/* The drag bar: a strip along the top edge of a card (sound or flag). Pressing it and moving drags the card;
+   the rest of the card keeps its normal click / press behaviour. */
+.dragbar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 1.15rem;
+  line-height: 1.15rem;
+  text-align: center;
+  font-size: .7rem;
+  letter-spacing: .15em;
+  color: var(--muted);
+  background: #ffffff0d;
+  border-radius: 9px 9px 0 0;
+  cursor: grab;
+  opacity: .55;
+  user-select: none;
+  touch-action: none;
+}
+.dragbar:hover {
+  opacity: 1;
+  background: #ffffff1c;
+}
+
+/* Frames: translucent boxes behind the cards. Each has a title bar (its header) pinned to the top; the
+   height of the title bar differs per level. The colour is the --gh hue set from JavaScript. */
+.frame {
+  position: absolute;
+  box-sizing: border-box;
+  border-radius: 16px;
+  border: 2px solid hsl(var(--gh, 260) 45% 48% / .55);
+  background: hsl(var(--gh, 260) 40% 38% / .08);
+}
+.frame > header {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  padding: 0 .7rem;
+  background: hsl(var(--gh, 260) 40% 36% / .26);
+  border-radius: 14px 14px 0 0;
+  cursor: grab;
+  overflow: hidden;
+}
+.frame > header h2,
+.frame > header h3 {
+  flex: 1;
+  margin: 0;
+  min-width: 4em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: hsl(var(--gh, 260) 85% 84%);
+}
+.frame > header .tools button {
+  padding: .1rem .5rem;
+  font-size: .8rem;
+}
+/* Section frames: the biggest, boldest title bar. */
+.f-sec > header {
+  height: 46px;
+}
+.f-sec > header h2 {
+  font-size: 1.05rem;
+}
+/* Tile frames: slightly inset look, with room for the volume slider and fade button. */
+.f-tile {
+  border-radius: 14px;
+  background: hsl(var(--gh, 260) 35% 30% / .14);
+}
+.f-tile > header {
+  height: 46px;
+  border-radius: 12px 12px 0 0;
+}
+.f-tile > header h2 {
+  font-size: .95rem;
+}
+/* Subsection frames: dashed, with a small title. */
+.f-sub {
+  border-radius: 10px;
+  border: 2px dashed hsl(var(--gh, 260) 35% 55% / .5);
+  background: hsl(var(--gh, 260) 30% 40% / .08);
+}
+.f-sub > header {
+  height: 34px;
+  border-radius: 8px 8px 0 0;
+}
+.f-sub > header h3 {
+  font-size: .8rem;
+  color: var(--muted);
+}
+
+/* Snap guide lines: thin lines shown while a dragged card lines up with another card (see canvas.js). */
+#snapguides {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+  z-index: 6;
+}
+.snapguide {
+  position: absolute;
+  background: #ff4fd8;
+}
+
+/* ============================================================================
+   Campaign link ports, v2: columns of ports. Each linkable item has a column of input squares on its
+   left edge and a column of output circles on its right edge: one per link, plus one empty (dashed) one at
+   the end ("N + 1"). These rules OVERRIDE the earlier single-port .lp rules.
+   ============================================================================ */
+.lports {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  pointer-events: none;   /* the column itself is not clickable; only the ports in it are (below) */
+}
+.lports-in { left: -7px; }
+.lports-out { right: -7px; }
+.lports .lp {
+  position: static;
+  margin: 0;
+  flex: none;
+  pointer-events: auto;
+}
+/* Frames: the ports line up with the title bar, not the middle of a possibly tall frame. */
+.frame > .lports {
+  bottom: auto;
+  height: 46px;
+}
+.f-sub > .lports {
+  height: 34px;
+}
+/* Filled ports are solid and bright; the empty "new link" ports are dashed. */
+.lp.on {
+  background: var(--accent);
+  border-style: solid;
+  border-color: var(--accent);
+  opacity: 1;
+}
+.lp.on.lp-in { cursor: grab; }
+.lp.on.lp-out { cursor: crosshair; }
+.lp.free { opacity: .6; }
+.lp-out.free { border-style: dashed; }
+.linkable:hover > .lports-out .lp { opacity: 1; }
+/* Small items: ports (including the empty ones) only on hover, but filled ones always. */
+.smallports > .lports .lp {
+  width: 9px;
+  height: 9px;
+  opacity: 0;
+}
+.smallports:hover > .lports .lp,
+.smallports > .lports .lp.on {
+  opacity: 1;
+}
+.smallports > .lports-in { left: -11px; }
+.smallports > .lports-out { right: -11px; }
+/* Flags are absolutely positioned cards on the canvas now (the older .linkable rule made them relative). */
+body.canvaspage #tiles > .flag {
+  position: absolute;
+}
+.frame.linkable { position: absolute; }
+
+/* A sound's name shows at most three lines (the full name is in the tooltip), so cards keep a predictable
+   height and a long YouTube title cannot make one huge card. */
+body.canvaspage #tiles > .snd .nm {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* ============================================================================
+   Frame title bars, padding and the snapping menu (later rules override the earlier frame rules).
+   ============================================================================ */
+
+/* The title bars are taller and never wrap: the name is cut with "..." if it is too long and the buttons
+   stay on the same line (canvas.js also keeps every frame wide enough for its title bar). Each frame level
+   has some air between its title bar and what is inside (see LEVEL in canvas.js). */
+.frame > header {
+  flex-wrap: nowrap;
+  white-space: nowrap;
+  padding: 0 .85rem;
+}
+.f-sec > header,
+.f-tile > header {
+  height: 52px;
+}
+.f-sub > header {
+  height: 40px;
+}
+.f-sub > header h3 {
+  font-size: .85rem;
+}
+/* The link ports of a frame line up with its (now taller) title bar. */
+.frame > .lports { height: 52px; }
+.f-sub > .lports { height: 40px; }
+
+/* Smaller grid dots (the dots are the background of the stage; the same grid spacing is used for snapping). */
+body.canvaspage #stage {
+  background-image: radial-gradient(circle, #34304a .7px, transparent 1.05px);
+}
+
+/* The snapping menu opened by the gear in the corner controls. */
+#snapmenu {
+  position: absolute;
+  right: 14px;
+  bottom: 62px;
+  z-index: 11;
+  display: flex;
+  flex-direction: column;
+  gap: .45rem;
+  width: 270px;
+  padding: .7rem .8rem;
+  background: #0e0c13f2;
+  border: 1px solid #3a3450;
+  border-radius: 10px;
+  box-shadow: 0 8px 28px #000a;
+  font-size: .85rem;
+}
+#snapmenu[hidden] { display: none; }
+#snapmenu label { display: flex; flex-direction: column; gap: .2rem; }
+#snapmenu label:has(input[type="checkbox"]) { flex-direction: row; align-items: flex-start; gap: .45rem; }
+
+/* The party tracker panel now lives in the app shell: pinned under the header at the right, over any tab. */
+body.shell #trackerPanel {
+  top: 58px;
+  bottom: auto;
+  right: 14px;
+  max-height: calc(100vh - 80px);
+  z-index: 40;
+}
+body.shell #partyBtn {
+  margin-left: .2rem;
+}
+
+/* A card that was just jumped to (revealSound in app.js) pulses with a bright ring for two seconds. */
+.snd.flash {
+  animation: flashring .5s ease-in-out 4;
+}
+@keyframes flashring {
+  50% { box-shadow: 0 0 0 4px #fff, 0 0 26px 8px #ff4fd8; }
+}
+
+/* Checklist rows: the entry and, when it has a linked sound, its small 🎯 button side by side. */
+.checks li {
+  display: flex;
+  align-items: flex-start;
+  gap: .3rem;
+}
+.checks li > label {
+  flex: 1;
+}
+.jumpbtn {
+  flex: none;
+  padding: 0 .3rem;
+  font-size: .7rem;
+}
+.subrow select.cksound {
+  max-width: 11rem;
+}
+
+/* The shared header keeps its items together at the left (the older generic header rule spread them out). */
+.appnav {
+  justify-content: flex-start;
+}
+
+/* Undo / redo buttons and the little message ("Undid: removed a link") that appears at the bottom-left. */
+#undoBtn:disabled,
+#redoBtn:disabled {
+  opacity: .35;
+  cursor: default;
+}
+#toast {
+  position: fixed;
+  left: 50%;
+  bottom: 54px;
+  transform: translateX(-50%) translateY(8px);
+  z-index: 60;
+  padding: .45rem .9rem;
+  background: #0e0c13f2;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  font-size: .85rem;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .2s, transform .2s;
+}
+#toast.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}

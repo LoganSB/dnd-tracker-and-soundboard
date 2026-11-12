@@ -1,0 +1,19 @@
+# Your own saved data and audio: never commit these (they are large and personal; they live in the
+# Cloud Storage bucket when deployed).
+data/
+media/
+mp3s/
+
+# Zip files, including the Fight Club expansion download and the code zip made for Cloud Shell.
+*.zip
+
+# Fight Club exports and backups.
+FightClub5.backup
+FightClub5eXML*/
+*.backup
+
+# Python and editor leftovers.
+.venv/
+__pycache__/
+*.pyc
+.DS_Store

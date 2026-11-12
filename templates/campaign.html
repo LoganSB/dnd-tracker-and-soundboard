@@ -1,0 +1,135 @@
+<!doctype html>
+<!--
+  campaign.html - the Campaign Tracker page.
+
+  SERVED AT: /campaign (linked from the soundboard's header).
+
+  WHAT IT IS: a sibling of the soundboard with the same layout (sections that hold tiles, tiles that
+  hold subsections, drag and drop everywhere), but the clickable items are "flags" instead of
+  sounds: things the party has done or triggered. A flag can hold a checklist, a loot table, and
+  (optionally) a soundboard sound that plays when you trigger it.
+
+  Like the soundboard, this file is only an outline. The JavaScript in static/campaign.js builds the
+  visible board into <main id="tiles"> and finds the dialogs below by their ids.
+
+  SAVING: campaign data is stored inside the same state file as the sounds (data/live.json), so every
+  preset and version snapshot of the soundboard includes the campaign too.
+
+  SCRIPTS (in order): canvas.js (the pan-and-zoom canvas shared with the soundboard), then campaign.js (the page).
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Campaign Tracker</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="campaignpage canvaspage">
+<header>
+  <div class="bar">
+    <!-- addTileBtn adds a tile (a card) to the first section; each section header also has its own "+ Tile". -->
+    <button id="addTileBtn" class="primary">+ Tile</button>
+    <!-- undoBtn / redoBtn: undo or redo the last link change (keyboard: Ctrl/Cmd+Z and Ctrl/Cmd+Y) -->
+    <button id="undoBtn" title="Undo the last link change (Ctrl+Z)">↶</button>
+    <button id="redoBtn" title="Redo (Ctrl+Y)">↷</button>
+    <button id="addSectionBtn">+ Section</button>
+    <!-- saveState: "saved" / "saving…" text updated by campaign.js. -->
+    <span id="saveState" class="muted">saved</span>
+  </div>
+</header>
+
+<!-- stage: the visible window onto the canvas; world: the big element inside it that canvas.js pans and zooms
+     (see static/canvas.js). The board is built into #tiles, which fills the world. -->
+<div id="stage">
+<div id="world">
+  <!-- The cable overlay for links between items (see "campaign links" in campaign.js). Same idea as the
+       soundboard's: it sits inside the world so cables pan and zoom with the board; the arrow marker
+       is defined once and shared by every cable; linkLayer holds the cables, tempLayer the one being dragged. -->
+  <svg id="links" aria-hidden="true"><defs><marker id="arr" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="4.5" markerHeight="4.5" orient="auto"><path d="M0 0L10 5L0 10z" fill="context-stroke"/></marker></defs><g id="linkLayer"></g><g id="tempLayer"></g></svg>
+  <!-- tiles: campaign.js fills this with section frames, tiles, subsections and flag tiles. -->
+  <main id="tiles"></main>
+</div>
+</div>
+
+<!--
+  ===== Dialogs =====
+  <dialog> is a built-in modal popup shown by script (showModal). A form with method="dialog"
+  closes the dialog on submit instead of sending a request; the script reads the fields by name.
+  Buttons with data-close just close the dialog.
+-->
+
+<!-- flagDlg: add or edit one flag tile. Delete is hidden when adding. -->
+<dialog id="flagDlg">
+  <form method="dialog" id="flagForm">
+    <h2 id="flagDlgTitle">Flag</h2>
+    <label>Name <input name="name" required placeholder="e.g. Found the hidden door"></label>
+    <div class="row">
+      <label>Tile <select name="tile"></select></label>
+      <label>Subsection <select name="group"></select></label>
+    </div>
+    <div class="row">
+      <!-- maxWidth: how wide this tile may grow (in pixels) before its checklist text wraps onto more lines. -->
+      <label>Max width (px) <input name="maxWidth" type="number" min="140" max="1200" step="10" placeholder="320"></label>
+      <!-- sound: optional soundboard sound that plays when the flag is triggered (filled in by campaign.js). -->
+      <label>Play sound when triggered <select name="sound"></select></label>
+    </div>
+    <label>Notes <textarea name="notes" rows="2" placeholder="optional notes shown on hover"></textarea></label>
+    <fieldset class="subsfield">
+      <legend>Checklist</legend>
+      <div id="checkList"></div>
+      <div class="row"><input id="newCheck" placeholder="New checklist item"><button type="button" id="addCheckBtn">Add</button></div>
+    </fieldset>
+    <p id="flagMsg" class="muted"></p>
+    <menu>
+      <button type="button" id="deleteFlag" class="danger" hidden>Delete</button>
+      <span class="grow"></span>
+      <button type="button" data-close>Cancel</button>
+      <button type="submit" class="primary">Save</button>
+    </menu>
+  </form>
+</dialog>
+
+<!-- tileDlg: rename a tile, move it to another section, and manage its subsections. -->
+<dialog id="tileDlg">
+  <form method="dialog" id="tileForm">
+    <h2>Tile settings</h2>
+    <label>Name <input name="name" required></label>
+    <label>Section <select name="section"></select></label>
+    <fieldset class="subsfield">
+      <legend>Subsections</legend>
+      <div id="subList"></div>
+      <div class="row"><input id="newSub" placeholder="New subsection name"><button type="button" id="addSubBtn">Add</button></div>
+    </fieldset>
+    <menu><span class="grow"></span><button type="button" data-close>Cancel</button><button type="submit" class="primary">Save</button></menu>
+  </form>
+</dialog>
+
+<!-- lootDlg: the reward popup for one flag. A loot table is a list of possible rewards with weights;
+     Roll picks one at random (like rolling a die whose size is the total of the weights). -->
+<dialog id="lootDlg">
+  <h2 id="lootTitle">Rewards</h2>
+  <p class="muted">Each entry's weight is how many faces of the die it owns. The table is rolled as a d{total}.</p>
+  <table id="lootTable" class="loot"></table>
+  <div class="row">
+    <input id="lootName" placeholder="Reward (e.g. Potion of healing)">
+    <input id="lootWeight" type="number" min="1" step="1" value="1" title="Weight" class="inum">
+    <input id="lootNote" placeholder="note (optional)">
+    <button type="button" id="addLootBtn">Add</button>
+  </div>
+  <div class="row lootroll">
+    <label>Rolls <input id="lootCount" type="number" min="1" max="20" value="1" class="inum"></label>
+    <button type="button" id="rollLootBtn" class="primary">🎲 Roll for rewards</button>
+    <button type="button" id="clearLootLog">Clear history</button>
+  </div>
+  <div id="lootResult" class="lootresult"></div>
+  <h3>History</h3>
+  <ul id="lootLog" class="list"></ul>
+  <menu><span class="grow"></span><button type="button" data-close>Close</button></menu>
+</dialog>
+
+<script src="/static/canvas.js"></script>
+<script src="/static/cables.js"></script>
+<script src="/static/undo.js"></script>
+<script src="/static/campaign.js"></script>
+</body>
+</html>

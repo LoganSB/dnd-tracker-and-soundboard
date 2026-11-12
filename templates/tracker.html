@@ -1,0 +1,35 @@
+<!doctype html>
+<!--
+  tracker.html - the Party Tracker on its own page ("pop out" window).
+
+  SERVED AT: /tracker (linked from the "pop out" link in the soundboard's floating tracker panel).
+  Handy as a second-monitor or second-window view of HP, spell slots and initiative.
+
+  This page is its own little window: it deliberately has NO shared header, only the tracker
+  (the Party tab with the player stats and the Initiative tab). The HTML is a static outline: one
+  empty <div id="tracker">. The script tracker.js builds the whole UI
+  and puts it inside that div. The page uses no Jinja2 substitutions.
+
+  SCRIPTS:
+    1. /static/tracker.js - defines mountTracker(element), which renders the tracker into an element.
+    2. the inline <script> below - runs once the div exists (it is placed after it)
+       and calls mountTracker with that div, found by its id.
+
+  The body class "trackerpage" lets style.css apply rules only to this page
+  (for example, centring the list at a maximum width).
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Party Tracker</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="trackerpage">
+<!-- Empty container: tracker.js fills it. The id is how mountTracker is told where to draw. -->
+<div id="tracker" class="trackerlist"></div>
+<script src="/static/tracker.js"></script>
+<!-- Inline script: "find the element with id tracker and mount the tracker widget into it". -->
+<script>mountTracker(document.getElementById("tracker"));</script>
+</body>
+</html>

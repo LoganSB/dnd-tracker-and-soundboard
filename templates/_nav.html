@@ -1,0 +1,10 @@
+{#- _nav.html: the brand and the page links shared by the app shell and the stand-alone tracker window.
+    Jinja2 include: `active` ("sound", "campaign" or "party") marks the current page's link; the shell's
+    script keeps the highlight in step as you switch tabs. The brand is always "DND Tracker" and always
+    links to the soundboard. -#}
+<a class="brand" href="/" data-page="sound">🎲 DND Tracker</a>
+<nav class="appnav-links">
+  <a href="/" data-page="sound" class="{{ 'on' if active == 'sound' }}">Soundboard</a>
+  <a href="/campaign" data-page="campaign" class="{{ 'on' if active == 'campaign' }}">Campaign</a>
+  <a href="/party" data-page="party" class="{{ 'on' if active == 'party' }}">Characters</a>
+</nav>
