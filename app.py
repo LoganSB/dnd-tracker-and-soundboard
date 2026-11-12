@@ -33,8 +33,9 @@ Where data lives on disk (all paths are relative to the folder holding this file
   mp3s/                - YOUR OWN audio files. Drop files in (or use Browse in the sound dialog, which
                          uploads into it); a background thread notices additions and removals and the
                          page offers them in a drop-down. Sounds refer to them as "library:<file name>".
-Files owned by party.py (see that file): data/party/*.xml, data/party_extra.json,
-data/initiative.json. Accounts, sign-in and the DM / player permission levels are in auth.py.
+Files owned by party.py (see that file): data/party/*.xml, data/party_extra.json.
+Encounters and the initiative order live inside the campaign state (encounters.py). Accounts, sign-in and the
+DM / player permission levels are in auth.py.
 
 How the files connect: party.py defines a Flask "Blueprint" (a bundle of routes written in
 another file). This file imports it and calls app.register_blueprint(), which merges those
@@ -658,8 +659,23 @@ def library_status(name):
 import party  # noqa: E402
 from party import bp as party_bp  # noqa: E402  (needs `app` paths set up first)
 
-# Merge all of party.py's routes (/api/party..., /api/initiative, ...) into this app.
+# Merge all of party.py's routes (/api/party..., ...) into this app.
 app.register_blueprint(party_bp)
+
+import encounters  # noqa: E402  (encounters, monster search and the initiative order; see encounters.py)
+
+
+def commit_state(revision=True):
+    """Save the live state. `revision` bumps the number the other pages poll for; leave it False for changes
+    (the initiative order) that those pages do not show, so they do not reload on every click."""
+    with lock:
+        if revision:
+            state["revision"] = state.get("revision", 0) + 1
+        save_live()
+
+
+encounters.bind(lambda: state, commit_state, lock)
+app.register_blueprint(encounters.bp)
 
 
 # Decorators (@something above a def) wrap the function that follows. Here @app.get("/")
@@ -678,6 +694,7 @@ app.register_blueprint(party_bp)
 @app.get("/")
 @app.get("/sound")
 @app.get("/campaign")
+@app.get("/encounters")
 @app.get("/party")
 @app.get("/party/<cid>")
 def shell(cid=None):
@@ -691,7 +708,7 @@ def shell(cid=None):
     if not user:
         return render_template("landing.html")
     path = request.path
-    active = "campaign" if path == "/campaign" else "party" if path.startswith("/party") else \
+    active = "campaign" if path == "/campaign" else "encounters" if path == "/encounters" else "party" if path.startswith("/party") else \
         "sound" if path == "/sound" else "home"
     return render_template("shell.html", active=active, user=user, role=user["role"],
                            party_path="/_/party" + (f"/{cid}" if cid else ""))
@@ -717,6 +734,12 @@ def inner_campaign():
     return render_template("campaign.html")
 
 
+@app.get("/_/encounters")
+def inner_encounters():
+    """GET /_/encounters : the encounter builder page (the shell's Encounters tab)."""
+    return render_template("encounters.html")
+
+
 @app.get("/_/party")
 @app.get("/_/party/<cid>")
 def inner_party(cid=None):
@@ -728,7 +751,7 @@ def inner_party(cid=None):
 @app.get("/tracker")
 def tracker_page():
     """GET /tracker : the combat/initiative tracker on its own page (the pop-out window). It is not
-    part of the shell. Its data comes from the /api/party and /api/initiative routes in party.py."""
+    part of the shell. Its data comes from the /api/party and /api/initiative route in encounters.py."""
     return render_template("tracker.html")
 
 
@@ -760,7 +783,7 @@ def put_state():
         # The soundboard page never edits the campaign tracker, but its copy of the state may carry an
         # OLD copy of the campaign data (loaded before the campaign page saved something). Keep the
         # server's campaign so a soundboard save can never overwrite campaign progress.
-        for k in ("campaign", "party", "campaignName"):  # party = the campaign's list of party characters (see below)
+        for k in ("campaign", "party", "campaignName", "encounters", "initiative"):  # party = the campaign's party characters (see below)
             if k in state:
                 new[k] = state[k]
         new["revision"] = state.get("revision", 0) + 1
@@ -812,7 +835,7 @@ def active_party():
 
 
 # party.py asks this (through party.active_ids) when the tracker wants only the active party.
-party.active_ids = lambda: [r["id"] for r in state.get("party", [])] or None
+party.active_ids = lambda: [r["id"] for r in state.get("party", [])]
 
 
 @app.get("/api/active-party")
@@ -847,6 +870,7 @@ def put_active_party():
             elif cid in old:
                 refs.append(old[cid])
         state["party"] = refs
+        encounters.forget_characters({r["id"] for r in refs})  # a character who left the party leaves the combat too
         # A character's owner is a member of the loaded campaign as soon as the character is in its party.
         for ref in refs:
             if ref.get("owner"):

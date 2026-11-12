@@ -17,8 +17,9 @@ HOW SIGNING IN WORKS
 * Players cannot register on their own. The DM makes an invite link (valid for 7 days, usable once); opening
   it lets the person choose their own user name and a password (or link their Google account).
 * One account can have several ways to sign in: a password and/or one or more Google addresses. If the same
-  person ended up with two accounts (say a password one and, later, a Google one), the DM can link them: the
-  second account is folded into the first (see merge_users), keeping characters and campaign memberships.
+  person ended up with two logins (a password one and, later, a Google one), the PERSON links them, not the
+  DM: signed in with Google they ask to link to an existing user name, and prove it is theirs by typing
+  that account's password (see link_account). From then on both logins open the same account and data.
 * Each account also records the campaigns the person belongs to ("campaigns") and the ones they have asked
   to join ("requests"); the DM approves or denies requests.
 * Google sign-in is optional. It is switched on by giving the server a Google "OAuth client" through the
@@ -270,9 +271,11 @@ def _create(name, role, password=None, email=""):
 @bp.get("/api/auth/me")
 def me():
     """GET /api/auth/me -> who is signed in, and what the sign-in page needs to know:
-    {"user": {"name","role"} | null, "open": bool, "needsSetup": bool, "google": bool}."""
+    {"user": {"name","role"} | null, "open": bool, "hasPassword": bool, "needsSetup": bool, "google": bool}."""
     d = _load()
-    return jsonify(user=current_user(), open=auth_open(),
+    user = current_user()
+    rec = d["users"].get(_key(user["name"])) if user else None
+    return jsonify(user=user, open=auth_open(), hasPassword=bool(rec and rec.get("hash")),
                    needsSetup=not any(u.get("role") == "dm" for u in d["users"].values()),
                    google=google_enabled())
 
@@ -464,74 +467,70 @@ def invite_check():
     return jsonify(ok=True)
 
 
-# ------------------------------------------------------------------ DM: linking accounts
-# Called with the old and new user name after accounts are merged or renamed, so other parts of the app
+# ------------------------------------------------------------------ linking logins (done by the person)
+# Called with the old and new user name after two logins are linked, so other parts of the app
 # (the loaded campaign's party list, character owners) can follow. app.py and party.py add their functions.
 rename_hooks = []
 
 
-@bp.post("/api/auth/merge")
-def merge_users():
-    """POST /api/auth/merge {"keep","merge"} (DM) -> "these two logins are the same person".
+def _fold(d, keep_k, drop_k):
+    """Fold account `drop_k` into account `keep_k` inside the loaded users data `d` (the caller saves it).
 
-    The account `merge` is folded into the account `keep`, then deleted:
-      * sign-in methods: `keep` gains `merge`'s Google addresses, and `merge`'s password if `keep` has none
-        (if both have one, `keep`'s stays);
-      * characters owned by `merge` become `keep`'s; campaign memberships and join requests are combined;
-      * the person signs in with any of the methods and lands in the one account (`keep`).
-    Refused: merging an account into itself, merging the DM account you are using, or folding a DM account
-    into a player account (that would quietly take the DM's powers away or hand them over).
+    `keep` gains `drop`'s Google addresses, campaign memberships and join requests, and `drop` is deleted.
+    Returns (old name, new name) so the caller can move characters and other references over."""
+    keep, drop = d["users"][keep_k], d["users"][drop_k]
+    keep["emails"] = _emails(keep) + [e for e in _emails(drop) if e not in _emails(keep)]
+    keep.pop("email", None)
+    keep["campaigns"] = sorted(set(keep.get("campaigns", [])) | set(drop.get("campaigns", [])))
+    keep["requests"] = sorted((set(keep.get("requests", [])) | set(drop.get("requests", []))) - set(keep["campaigns"]))
+    del d["users"][drop_k]
+    return drop.get("name", drop_k), keep.get("name", keep_k)
+
+
+@bp.post("/api/auth/link")
+def link_account():
+    """POST /api/auth/link {"username","password"} -> "my Google login and this user name are the same person".
+
+    Done by the person, never by the DM. They are signed in with a Google-only login and name an existing
+    account; typing that account's password proves it is theirs. The Google login is then folded into the
+    named account: its Google address becomes another way to sign in to it, and its campaigns and characters
+    move across. From then on the password and Google both open that one account. The browser is signed in
+    as the named account right away.
+
+    Refused: a login that already has a password (nothing to link, and two password accounts would be
+    ambiguous), a wrong password (counts toward the sign-in throttle), and folding a DM login into a player
+    account (the DM's powers must not vanish).
     """
-    require_dm()
+    user = current_user()
+    if not user or user["name"] == "local":
+        abort(401)
     body = request.get_json(force=True, silent=True) or {}
-    keep_k, drop_k = _key(body.get("keep")), _key(body.get("merge"))
+    target = str(body.get("username", ""))
+    if _throttled(target):
+        return jsonify(error="Too many attempts: wait a few minutes"), 429
     with lock:
         d = _load()
-        keep, drop = d["users"].get(keep_k), d["users"].get(drop_k)
-        if not keep or not drop:
-            abort(404)
-        if keep_k == drop_k:
-            return jsonify(error="Choose two different accounts"), 400
-        if drop_k == _key(current_user()["name"]):
-            return jsonify(error="You cannot fold the account you are signed in with into another one; sign in as the other one, or choose it as the main account"), 400
-        if drop.get("role") == "dm" and keep.get("role") != "dm":
-            return jsonify(error="A DM account cannot be folded into a player account"), 400
-        keep["emails"] = _emails(keep) + [e for e in _emails(drop) if e not in _emails(keep)]
-        keep.pop("email", None)
-        if not keep.get("hash") and drop.get("hash"):
-            keep["hash"] = drop["hash"]
-        keep["campaigns"] = sorted(set(keep.get("campaigns", [])) | set(drop.get("campaigns", [])))
-        keep["requests"] = sorted((set(keep.get("requests", [])) | set(drop.get("requests", []))) - set(keep["campaigns"]))
-        keep["ver"] = secrets.token_hex(8)  # signs the kept account out everywhere; they sign in again
-        del d["users"][drop_k]
+        me_k, t_k = _key(user["name"]), _key(target)
+        mine, theirs = d["users"].get(me_k), d["users"].get(t_k)
+        if not mine:
+            abort(401)
+        if mine.get("hash"):
+            return jsonify(error="This login already has a password, so there is nothing to link"), 400
+        if not theirs or not theirs.get("hash") or not check_password_hash(theirs["hash"], str(body.get("password", ""))):
+            _fail(target)
+            return jsonify(error="Wrong user name or password"), 401
+        if me_k == t_k:
+            return jsonify(error="That is the login you are using"), 400
+        if mine.get("role") == "dm" and theirs.get("role") != "dm":
+            return jsonify(error="A DM login cannot be linked into a player account"), 400
+        old, new = _fold(d, t_k, me_k)
         _save(d)
-        old, new = drop.get("name", drop_k), keep.get("name", keep_k)
+    _forgive(target)
     import party
     party.reown(old, new)
     for hook in rename_hooks:
         hook(old, new)
-    return jsonify(ok=True)
-
-
-@bp.post("/api/auth/users/<name>/email")
-def add_email(name):
-    """POST /api/auth/users/<name>/email {"email"} (DM) -> let this account also sign in with a Google address.
-    The address may not belong to another account (link the accounts instead)."""
-    require_dm()
-    email = str((request.get_json(force=True, silent=True) or {}).get("email", "")).strip().lower()
-    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
-        return jsonify(error="That does not look like an email address"), 400
-    with lock:
-        d = _load()
-        rec = d["users"].get(_key(name))
-        if not rec:
-            abort(404)
-        if any(email in _emails(u) for u in d["users"].values()):
-            return jsonify(error="That address is already linked to an account"), 409
-        rec["emails"] = _emails(rec) + [email]
-        rec.pop("email", None)
-        _save(d)
-    return jsonify(ok=True)
+    return _start_session(jsonify(ok=True, name=new), t_k)
 
 
 @bp.delete("/api/auth/users/<name>/email/<email>")

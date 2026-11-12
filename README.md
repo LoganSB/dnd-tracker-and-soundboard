@@ -15,13 +15,20 @@ versions/ snapshot per server start, presets/ = your saved campaigns, config.jso
 - **Player** sees only Home and **My character**: they can upload a Fight Club file (the same import as before) and view or edit what they uploaded. Everyone else's characters, and every other page, answer "forbidden".
 
 The DM's **Home** tab lists the saved campaigns, the party, every uploaded character with the player who owns it (changeable), the accounts, and invite links. Players cannot register on their own: the DM creates a single-use invite link (valid 7 days). The player opens it, types a user name and presses **Next**, then either sets a password (typed twice) or presses the standard **Sign up with Google** button.
-- **Linking accounts.** One person can end up with two accounts (say a password one and later a Google one). On the Home tab, under "Link accounts", the DM picks the account to keep and the one that is "the same person": the second is folded into the first, with its characters, campaign memberships and sign-in methods, and then deleted. The DM can also attach a Google address to an existing account ("Add Google address"), so that person signs in with Google into the account they already have.
+- **Linking logins (done by the person, not the DM).** Someone who signed up with Google and also has a user name and password here opens their Home tab and uses "Link this login to a password login": they type that user name and its password. The Google login is folded into that account (characters, campaign memberships and the Google address move across) and the browser is signed in as it. From then on either way of signing in opens the same account and data. A DM can still unlink a Google address from the Players list; the DM cannot link accounts.
 - **Password resets** are offered only for accounts that have a password. A Google-only account has nothing to reset (the person's Google account handles that), and setting one would quietly add a second way in that the DM chose.
 - **Campaigns and join requests.** Players see the campaign names (nothing inside them) and press **Request to join**; the request appears at the top of the DM's Home tab to approve or deny. Each account records the campaigns it belongs to; a player whose character is added to a campaign's party joins that campaign automatically.
 Sign-in is by user name and password (stored only as salted hashes in `data/users.json`) and optionally Google. **First run:** a local copy with no accounts stays open (everyone is the DM) until you create an account on `/login`; a deployed copy (which has `DND_PASSWORD` set) is locked, and `/login` offers "Create the DM account", which asks for `DND_PASSWORD` as the setup key. Google sign-in needs `DND_GOOGLE_CLIENT_ID`, `DND_GOOGLE_CLIENT_SECRET` and (optionally) `DND_DM_EMAIL`; see the top of `auth.py`.
 
 ## Campaigns
 **Campaign** is the new name for what used to be called a preset: a named snapshot of the soundboard and the campaign tracker (stored in `data/presets/`). It now also carries the list of **party members**, saved as references only (character id, name, owner), never the character sheets. Each sheet stays with the player who uploaded it (`data/party/<id>.xml`), so loading a campaign brings back who is in the party, and each member appears as soon as their file is on the server (until then Home says "waiting for <player>"). On the Home tab, the **Characters** list holds every uploaded character that is not in the campaign; **Add to campaign** moves one into **Party in <campaign>** (and out of the Characters list), and **Remove from campaign** moves it back. Because the party list is part of the campaign file, loading another campaign swaps the lists automatically. The party tracker panel shows just the party.
+
+## Encounters, initiative and the canvas menu
+- **Encounters tab (DM).** Search monsters on [Open5e](https://open5e.com) (free; includes the Kobold Press books such as Tome of Beasts) by name, type, book and CR, add them to an encounter, and see its difficulty for the party (DMG thresholds; party size and level come from the campaign's party and can be changed). Encounters are stored in the campaign file (`state["encounters"]`), so each campaign has its own. Buttons: load into the initiative tracker (new combat or add to the current one), load and pop out the tracker window, and put the encounter on the campaign tracker as a tile.
+- **Encounter tiles** on the campaign canvas point at the same encounter: clicking one adds it to the initiative tracker; its buttons start a new combat, load and pop out, or open it in the Encounters tab. Making a tile with "New encounter" from the canvas creates the encounter too, and opens the Encounters tab on it.
+- **Initiative is per campaign** (`state["initiative"]`) and the tracker only lists the loaded campaign's party; characters who leave the party leave the combat. A monster's book button opens its stat block (`/monster/<slug>`).
+- **Click menu.** Click empty canvas on the campaign tracker for a menu: new section, tile, flag or encounter, created where you clicked.
+- **Home lists** are all collapsible (click the heading), searchable with a regular expression and filterable per column; the Party and Characters lists are one table with the same columns.
 
 ## Party
 - `/party` import (.backup/.xml/.zip from Fight Club 5), export (zip with FightClub5.backup), per-character full pages at `/party/<id>`.
@@ -33,8 +40,11 @@ Sign-in is by user name and password (stored only as salted hashes in `data/user
 |---|---|
 | `app.py` | Flask server: saves/loads the soundboard, downloads audio, campaigns, versions, launch options |
 | `auth.py` | Flask blueprint: accounts, sign-in (password and Google), invites, and which requests each level may make |
-| `party.py` | Flask blueprint: Fight Club character import/export, tracker edits, initiative storage |
+| `party.py` | Flask blueprint: Fight Club character import/export, tracker edits |
+| `encounters.py` | Flask blueprint: Open5e monster search, encounters, the initiative order (both stored in the campaign state) |
 | `templates/*.html` | Page outlines (JavaScript fills in the rest) |
+| `static/ui.js` | Small helpers shared by Home and Encounters: collapsible boxes, searchable/filterable tables |
+| `static/encounters.js` | The Encounters tab: monster search, encounter builder, difficulty, loading into the tracker |
 | `static/home.js` | The Home tab: campaigns, party, roster and accounts for the DM; the player's own character and upload |
 | `static/app.js` | The soundboard: audio engine, chains, cable routing, drag and drop (long header explains the data model) |
 | `static/tracker.js`, `static/party.js` | Party/initiative tracker widget and the /party pages |

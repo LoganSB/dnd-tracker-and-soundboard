@@ -30,7 +30,7 @@ Where data lives on disk (relative to this file's folder):
                           round-trips cleanly, and unknown tags might be rejected or lost by
                           the app. So the "mana" bar and the conditions text live here and
                           are not part of the exported backup.
-  data/initiative.json    the initiative tracker's order/round/active turn
+  (the initiative order now lives with the campaign: see encounters.py)
 Who may see a character: its owner (the player who uploaded it, stored as "owner" in party_extra.json) and
 the DM. Every route below checks this with _guard()/_may_use() using the signed-in user from auth.py.
 
@@ -289,6 +289,8 @@ def summary(cid, root):
     ex = _extra().get(cid, {})  # this character's sidecar record, or {}
     return {
         "id": cid, "name": _t(root, "name"), "class": levels, "owner": ex.get("owner", ""),
+        # total character level (the encounter builder uses it to rate difficulty)
+        "level": sum(int(_num(_t(c, "level"))) for c in cls),
         "race": _t(root.find("race"), "name") if root.find("race") is not None else "",
         "hp": int(_num(_t(root, "hpCurrent"))), "hpMax": int(_num(_t(root, "hpMax"))),
         # <slots> and <slotsCurrent> are comma lists like "4,3,2,0,0,0,0,0,0," (index 0 =
@@ -462,8 +464,8 @@ def import_party():
 
 
 # ------------------------------------------------------------------ routes
-# Set by app.py: a function giving the ids in the loaded campaign's party, or None when the campaign has no
-# party list yet. Used by "?active=1" below.
+# Set by app.py: a function giving the ids in the loaded campaign's party (a list, possibly empty).
+# Used by "?active=1" below.
 active_ids = lambda: None  # noqa: E731
 
 
@@ -472,8 +474,8 @@ def list_party():
     """GET /api/party -> JSON list of summary() records for every character the signed-in user may see
     (the DM: everyone; a player: their own), sorted by id.
 
-    "?active=1" (DM) narrows the list to the loaded campaign's party, if that campaign has one; the party
-    tracker panel asks for it this way."""
+    "?active=1" (DM) narrows the list to the loaded campaign's party ONLY (an empty party gives an empty
+    list); the party tracker panel asks for it this way."""
     keep = active_ids() if request.args.get("active") and auth.is_dm() else None
     with lock:
         return jsonify([summary(i, _load(i)) for i in _ids() if _may_use(i) and (keep is None or i in keep)])
@@ -649,42 +651,6 @@ def export_party():
     buf.seek(0)
     # as_attachment=True makes the browser save a file rather than display it.
     return send_file(buf, mimetype="application/zip", as_attachment=True, download_name="FightClub5-party.zip")
-
-
-# Initiative tracker storage: one JSON file shared by everyone who opens the tracker page.
-INIT = ROOT / "data" / "initiative.json"
-
-
-@bp.get("/api/initiative")
-def get_initiative():
-    """GET /api/initiative -> {"round": int, "active": ..., "order": [...]} as last saved.
-    If nothing has been saved yet (or the file is unreadable) returns a fresh combat:
-    round 1, nobody active, empty order. The shape of "order" entries is chosen by the
-    tracker page's JavaScript; the server stores it opaquely. DM only."""
-    auth.require_dm()
-    try:
-        return jsonify(json.loads(INIT.read_text()))
-    except Exception:
-        return jsonify(round=1, active=None, order=[])
-
-
-@bp.put("/api/initiative")
-def put_initiative():
-    """PUT /api/initiative : replace the saved initiative state with the request body.
-
-    Body: JSON object that must contain "order" as a list (other keys such as round/active
-    are stored as sent). Response {"ok": true}, or {"error": ...} (400) if "order" is not a
-    list. Written atomically (temp file + os.replace). Unlike the character routes this
-    takes no lock: the whole file is replaced in one rename, last writer wins. DM only.
-    """
-    auth.require_dm()
-    body = request.get_json(force=True) or {}
-    if not isinstance(body.get("order"), list):
-        return jsonify(error="order must be a list"), 400
-    tmp = INIT.with_suffix(".tmp")
-    tmp.write_text(json.dumps(body, indent=2))
-    os.replace(tmp, INIT)
-    return jsonify(ok=True)
 
 
 @bp.get("/download/collection.zip")

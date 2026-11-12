@@ -2585,3 +2585,44 @@ button.gsi:focus-visible, a.gsi:focus-visible { outline: 3px solid #a8c7fa; outl
 .authbox .or { text-align: center; color: var(--muted); margin: 1rem 0; }
 .authbox .or::before, .authbox .or::after { content: ""; display: inline-block; width: 3rem; height: 1px; background: var(--muted); vertical-align: middle; margin: 0 .6rem; opacity: .5; }
 .ok { color: var(--ok); }
+
+
+/* ==================== 10. Home lists, encounters, canvas menu (ui.js, home.js, encounters.js, campaign.js) ==================== */
+/* A collapsible box: the heading is the button. */
+.boxhead { cursor: pointer; user-select: none; margin: 0 0 8px; }
+.boxhead:hover { color: var(--accent); }
+.boxbody[hidden] { display: none; }
+/* dataTable: search box, filter menus and the "3 of 10" count above the table. */
+.dtable .dbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
+.dtable .dsearch { flex: 1 1 200px; min-width: 160px; }
+.dtable .dsearch.badre { outline: 2px solid var(--bad); }   /* typed text is not a valid regular expression: matched as plain text */
+.dtable .dcount { margin-left: auto; }
+.dtable td.acts, .loot td.acts { white-space: nowrap; text-align: right; }
+
+/* Encounter builder */
+.encpage h1 { margin-top: 0; }
+.verdict { margin: 8px 0; padding: 8px 12px; border-radius: 8px; border-left: 4px solid var(--muted); background: var(--panel2); }
+.verdict.easy { border-color: #3ecf8e; }
+.verdict.medium { border-color: #f0b429; }
+.verdict.hard { border-color: #ff9248; }
+.verdict.deadly { border-color: #ff5d6c; }
+.encpage textarea { width: 100%; box-sizing: border-box; margin: 8px 0; }
+
+/* Encounter card on the campaign canvas */
+.flag.encounter { border-color: #ff9248; }
+.flag.encounter .emons { margin: 4px 0; padding-left: 18px; font-size: 13px; }
+.flag.encounter .ffoot { display: flex; }
+
+/* The small menu that opens when the empty canvas is clicked. */
+.cmenu { position: fixed; z-index: 50; display: flex; flex-direction: column; min-width: 150px; padding: 4px;
+  background: var(--panel); border: 1px solid var(--accent); border-radius: 8px; box-shadow: 0 6px 20px rgba(0, 0, 0, .5); }
+.cmenu[hidden] { display: none; }
+.cmenu button { text-align: left; border: 0; background: none; padding: 6px 10px; }
+.cmenu button:hover { background: var(--panel2); }
+
+/* Monster stat block page (/monster/<slug>) */
+.monsterpage { padding: 16px; max-width: 520px; margin: 0 auto; }
+.statblock h1 { margin: 0; font-size: 24px; }
+.statblock h3 { margin: 14px 0 4px; border-bottom: 1px solid var(--accent); }
+.statblock p { margin: 4px 0; }
+.statblock .scores { display: grid; grid-template-columns: repeat(6, 1fr); text-align: center; gap: 4px; margin: 10px 0; font-size: 13px; }

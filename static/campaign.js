@@ -119,7 +119,20 @@ function normalize() {
   // tidy grid where their tile used to be, loose ones first, then each subsection's. Flags that already have
   // x, y are never touched.
   c.tiles.forEach(t => {
-    if (!t.items.some(i => !Number.isFinite(i.x) || !Number.isFinite(i.y))) return;
+    const missing = t.items.filter(i => !Number.isFinite(i.x) || !Number.isFinite(i.y));
+    if (!missing.length) return;
+    // Some cards already have places (a card was added from outside this page, for example an encounter put on the
+    // tracker from the Encounters tab): give only the new ones a free spot next to their tile's other cards.
+    if (missing.length < t.items.length) {
+      const box = i => ({ l: i.x, t: i.y, r: i.x + 260, b: i.y + 150 });
+      const placed = c.tiles.flatMap(o => o.items).filter(i => Number.isFinite(i.x) && Number.isFinite(i.y));
+      missing.forEach(i => {
+        const near = t.items.filter(o => Number.isFinite(o.x) && Number.isFinite(o.y)).map(box);
+        Object.assign(i, Canvas.freeSpot(placed.map(box), 240, 130, near));
+        placed.push(i);
+      });
+      return;
+    }
     const subIds = new Set(t.subs.map(x => x.id));
     const groups = [t.items.filter(i => !i.group || !subIds.has(i.group)), ...t.subs.map(x => t.items.filter(i => i.group === x.id))];
     Canvas.arrangeInGrid(t, groups, 250, 150);
@@ -223,6 +236,7 @@ const timeText = ms => new Date(ms).toLocaleString([], { month: "short", day: "n
 //     text wraps and the card grows taller instead. The width limit is the --maxw CSS variable.
 //   - Buttons: 🔊 plays the linked sound again, 🎁 opens the reward popup, ⚙ edits the flag.
 function flagEl(item, tile) {
+  if (item.encounter) return encounterEl(item, tile);
   const total = item.checklist.length,
     ticked = item.checklist.filter(c => c.done).length;
   const cls = ["flag", item.triggered ? "done" : "", total && ticked === total ? "complete" : ""];
@@ -305,6 +319,80 @@ function flagEl(item, tile) {
     if (item.triggered) playLinked(item);
     save();
     render();
+  });
+  card.addEventListener("keydown", ev => { if (ev.key === "Enter" && ev.target === card) card.click(); });
+  return card;
+}
+
+
+// ------------------------------------------------------------ encounter tiles
+// An ENCOUNTER card is a flag-like card that points at an encounter from the Encounters tab (item.encounter = its id;
+// the encounter itself lives in S.encounters, saved with the campaign). Clicking the card ADDS the encounter to the
+// initiative tracker (monsters rolled, party added if missing). Buttons: 🆕 start a new combat with it instead,
+// 📤 add it and pop out the tracker window, ⚙ open it in the Encounters tab, 🗑 take the card off the board.
+const encounterOf = item => (S.encounters || []).find(e => e.id === item.encounter);
+const POPOUT = ["/tracker", "dmtracker", "width=460,height=720"];
+
+// loadEncounter(item, mode, popout): ask the server to put the encounter into the initiative order. The pop-out
+// window is opened first (a pop-up must start from the click), then refreshed once the order is saved.
+async function loadEncounter(item, mode, popout) {
+  const w = popout ? window.open(...POPOUT) : null;
+  try {
+    await api(`/api/encounters/${item.encounter}/load`, "POST", { mode });
+    item.triggered = true;
+    item.triggeredAt = Date.now();
+    save();
+    render();
+    try { w?.location.reload(); } catch (_) { /* the window was closed */ }
+  } catch (e) { alert(e.message); }
+}
+
+function encounterEl(item, tile) {
+  const enc = encounterOf(item);
+  if (enc) item.name = enc.name;   // keep the name the links and menus use in step (saved with the next save)
+  const card = el("div", { className: "flag encounter" + (item.triggered ? " done" : ""), role: "button", tabIndex: 0 });
+  card.dataset.id = item.id;
+  card.dataset.iid = item.id;
+  card.dataset.sec = tile.section;
+  card.dataset.tile = tile.id;
+  card.dataset.sub = tile.id + ":" + (item.group || "");
+  card.style.left = item.x + "px";
+  card.style.top = item.y + "px";
+  if (C().sections.find(x => x.id === tile.section)?.collapsed) card.style.display = "none";
+  card.style.setProperty("--maxw", (item.maxWidth || 320) + "px");
+  card.title = enc ? "Click to add this encounter to the initiative tracker" : "This encounter was deleted from the Encounters tab";
+  const lines = enc ? enc.monsters.map(m => `${m.count}× ${m.name}`) : [];
+  const xp = enc ? enc.monsters.reduce((s, m) => s + (m.xp || 0) * m.count, 0) : 0;
+  const title = el("div", { className: "ftitle" },
+    el("span", { className: "fmark", textContent: "⚔" }),
+    el("span", { className: "fname", textContent: enc ? enc.name : "(deleted encounter)" }),
+    el("span", { className: "ftools" },
+      enc ? el("button", { className: "tiny", textContent: "🆕", title: "Start a NEW combat with this encounter", onclick: ev => { ev.stopPropagation(); loadEncounter(item, "replace", false); } }) : "",
+      enc ? el("button", { className: "tiny", textContent: "📤", title: "Add to the initiative tracker and pop it out", onclick: ev => { ev.stopPropagation(); loadEncounter(item, "append", true); } }) : "",
+      enc ? el("button", { className: "tiny gear", textContent: "⚙", title: "Edit in the Encounters tab", onclick: ev => {
+        ev.stopPropagation();
+        window.parent.postMessage({ type: "goto", page: "encounters", path: "/_/encounters?id=" + enc.id }, location.origin);
+      } }) : "",
+      el("button", { className: "tiny fdel", textContent: "🗑", title: "Take this card off the board (the encounter stays in the Encounters tab)", onclick: ev => {
+        ev.stopPropagation();
+        const loc = locate(item.id);
+        if (loc) loc.tile.items.splice(loc.i, 1);
+        save();
+        render();
+      } })));
+  card.append(title);
+  addPorts(card, "flag:" + item.id);
+  card.append(el("ul", { className: "emons" }, ...(lines.length ? lines.map(t => el("li", { textContent: t })) : [el("li", { className: "muted", textContent: enc ? "No monsters yet" : "" })])),
+    el("div", { className: "ffoot" }, el("span", { className: "muted", textContent: [enc ? `${xp.toLocaleString()} XP` : "", item.triggered ? "Loaded " + timeText(item.triggeredAt || Date.now()) : ""].filter(Boolean).join(" · ") })));
+  const bar = el("div", { className: "dragbar", textContent: "⠿⠿⠿", title: "Drag to move this card" });
+  bar.addEventListener("pointerdown", ev => {
+    if (ev.button !== 0) return;
+    Canvas.dragItems(ev, [{ obj: item, el: card }], dragHooks(() => adoptFlag(item)));
+  });
+  card.prepend(bar);
+  card.addEventListener("click", ev => {
+    if (ev.target.closest(".ftools,.dragbar,.lp") || !enc) return;
+    loadEncounter(item, "append", false);
   });
   card.addEventListener("keydown", ev => { if (ev.key === "Enter" && ev.target === card) card.click(); });
   return card;
@@ -552,6 +640,7 @@ const fdlg = $("#flagDlg"),
 let editingFlag = null,
   draftChecks = [];
 document.querySelectorAll("[data-close]").forEach(b => (b.onclick = () => b.closest("dialog").close()));
+fdlg.addEventListener("close", () => { newAt = null; });
 
 // fillGroups(tileId, selected): fill the Subsection menu with the chosen tile's subsections.
 function fillGroups(tileId, selected) {
@@ -599,6 +688,7 @@ $("#newCheck").addEventListener("keydown", ev => { if (ev.key === "Enter") { ev.
 // (item = null) pre-selecting a tile and optionally a subsection.
 function openFlagDlg(item, tileId, groupId) {
   editingFlag = item;
+  if (item) newAt = null;
   fform.reset();
   $("#flagDlgTitle").textContent = item ? "Edit flag" : "New flag";
   $("#deleteFlag").hidden = !item;
@@ -657,12 +747,107 @@ fform.addEventListener("submit", ev => {
     }
   } else {
     const flag = { id: uid(), ...data, checklist, triggered: false, loot: { entries: [], log: [] } };
-    placeFlag(flag, dest);   // a free spot next to the tile's other flags
+    if (newAt) { flag.x = Math.round(newAt.x - 120); flag.y = Math.round(newAt.y - 40); newAt = null; }   // where the canvas was clicked
+    else placeFlag(flag, dest);   // a free spot next to the tile's other flags
     dest.items.push(flag);
   }
   fdlg.close();
   save();
   render(true);
+});
+
+
+// ------------------------------------------------------------ click menu
+// A plain click on empty canvas (or on the empty inside of a frame) opens a small menu at that spot: new section,
+// tile, flag or encounter, created where you clicked. A press that moves is a pan, not a click, and shows no menu.
+// at: the world position of the click.  where(): which section / tile the spot is inside (from the frame rectangles).
+const cmenu = el("div", { id: "canvasMenu", className: "cmenu", hidden: true });
+document.body.append(cmenu);
+const hideMenu = () => { cmenu.hidden = true; };
+
+function where(at) {
+  const fid = Canvas.frameAt(frames, at.x, at.y) || "";
+  const [kind, a] = fid.split(":");
+  const tile = kind === "tile" || kind === "sub" ? C().tiles.find(t => t.id === a) : null;
+  const sec = kind === "sec" ? C().sections.find(x => x.id === a) : tile ? C().sections.find(x => x.id === tile.section) : null;
+  return { tile, sec };
+}
+
+function showMenu(clientX, clientY) {
+  const at = Canvas.toWorld(clientX, clientY), here = where(at);
+  const item = (label, fn) => el("button", { textContent: label, onclick: () => { hideMenu(); fn(); } });
+  cmenu.replaceChildren(
+    item("New section", () => {
+      const name = prompt("New section name");
+      if (!name) return;
+      C().sections.push({ id: uid(), name, x: Math.round(at.x), y: Math.round(at.y) });
+      save(); render(true);
+    }),
+    item("New tile", () => {
+      const name = prompt("New tile name (e.g. 'The Sunken Temple')");
+      if (!name) return;
+      C().tiles.push({ id: uid(), name, section: (here.sec || C().sections[0]).id, subs: [], items: [], x: Math.round(at.x), y: Math.round(at.y) });
+      save(); render(true);
+    }),
+    item("New flag", () => { newAt = at; openFlagDlg(null, (here.tile || C().tiles[0]).id); }),
+    item("New encounter", () => openEncDlg(at, (here.tile || C().tiles[0]).id)));
+  cmenu.hidden = false;
+  cmenu.style.left = Math.min(clientX, innerWidth - cmenu.offsetWidth - 8) + "px";
+  cmenu.style.top = Math.min(clientY, innerHeight - cmenu.offsetHeight - 8) + "px";
+}
+
+// newAt: where the flag being created should go (set by the menu; null = a free spot next to its tile's cards).
+let newAt = null;
+let press = null;
+$("#stage").addEventListener("pointerdown", ev => {
+  if (!ev.target.closest("#canvasMenu")) hideMenu();
+  const thing = ev.target.closest("[data-iid],.frame > header,#zoomctl,#canvasMenu,button,input,select,a,dialog");
+  press = ev.button === 0 && !thing ? { x: ev.clientX, y: ev.clientY } : null;
+});
+$("#stage").addEventListener("pointerup", ev => {
+  if (press && Math.hypot(ev.clientX - press.x, ev.clientY - press.y) < 5) showMenu(ev.clientX, ev.clientY);
+  press = null;
+});
+addEventListener("keydown", ev => { if (ev.key === "Escape") hideMenu(); });
+addEventListener("blur", hideMenu);
+
+// ------------------------------------------------------------ encounter dialog
+// "New encounter" from the menu: choose an existing encounter or make a new one, and the tile it goes in. A NEW one
+// is created empty and the Encounters tab opens on it so monsters can be added.
+const edlg = $("#encDlg"),
+  eform = $("#encForm");
+let encAt = null;
+function openEncDlg(at, tileId) {
+  encAt = at;
+  eform.enc.textContent = "";
+  eform.enc.append(el("option", { value: "", textContent: "(new encounter)" }), ...(S.encounters || []).map(e => el("option", { value: e.id, textContent: e.name })));
+  eform.tile.textContent = "";
+  C().tiles.forEach(t => eform.tile.append(el("option", { value: t.id, textContent: t.name })));
+  eform.tile.value = tileId;
+  eform.newName.value = "";
+  eform.newName.hidden = false;
+  edlg.showModal();
+}
+eform.enc.addEventListener("change", () => { eform.newName.hidden = !!eform.enc.value; });
+eform.addEventListener("submit", async ev => {
+  ev.preventDefault();
+  let id = eform.enc.value, fresh = false;
+  try {
+    if (!id) {
+      const n = await api("/api/encounters", "POST", { name: eform.newName.value.trim() || "New encounter" });
+      (S.encounters ||= []).push(n);
+      id = n.id;
+      fresh = true;
+    }
+    const tile = C().tiles.find(t => t.id === eform.tile.value) || C().tiles[0];
+    const card = { id: uid(), name: "", encounter: id, checklist: [], triggered: false, loot: { entries: [], log: [] } };
+    if (encAt) { card.x = Math.round(encAt.x - 120); card.y = Math.round(encAt.y - 40); } else placeFlag(card, tile);
+    tile.items.push(card);
+    edlg.close();
+    save();
+    render(true);
+    if (fresh) window.parent.postMessage({ type: "goto", page: "encounters", path: "/_/encounters?id=" + id }, location.origin);
+  } catch (e) { alert(e.message); }
 });
 
 // ------------------------------------------------------------ tile dialog

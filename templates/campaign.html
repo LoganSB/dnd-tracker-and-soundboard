@@ -89,6 +89,18 @@
   </form>
 </dialog>
 
+<!-- encDlg: put an encounter on the board (from the click menu): pick an existing one or make a new one. -->
+<dialog id="encDlg">
+  <form method="dialog" id="encForm">
+    <h2>Encounter</h2>
+    <label>Encounter <select name="enc"></select></label>
+    <label>New encounter name <input name="newName" placeholder="e.g. Goblin ambush"></label>
+    <label>Tile <select name="tile"></select></label>
+    <p class="muted">Clicking the card adds the encounter to the initiative tracker. A new encounter opens in the Encounters tab so you can add monsters.</p>
+    <menu><span class="grow"></span><button type="button" data-close>Cancel</button><button type="submit" class="primary">Add</button></menu>
+  </form>
+</dialog>
+
 <!-- tileDlg: rename a tile, move it to another section, and manage its subsections. -->
 <dialog id="tileDlg">
   <form method="dialog" id="tileForm">

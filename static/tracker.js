@@ -29,8 +29,8 @@
 //   (members, init) and the draw functions render them.
 //
 // SERVER ENDPOINTS USED (all JSON over HTTP, relative to the current site)
-//   GET   /api/party?active=1 -> array of character summaries (the loaded campaign's party when it has
-//                               one, otherwise everyone). Fields used here:
+//   GET   /api/party?active=1 -> array of character summaries: ONLY the loaded campaign's party (empty when
+//                               it has none). Fields used here:
 //                                 id, name, class, hp, hpMax,
 //                                 slots[]         max slots per spell level
 //                                                 (index 0 = level 1),
@@ -45,14 +45,15 @@
 //                                 {inspiration: 2}, {conditions: "prone"}.
 //                               The reply is the updated character (same shape
 //                               as one element of GET /api/party).
-//   GET   /api/initiative    -> {round, active, order[]}
+//   GET   /api/initiative    -> {round, active, order[]}   the LOADED CAMPAIGN's combat (each campaign has its
+//                               own; the encounter builder and campaign tiles can fill it too)
 //   PUT   /api/initiative    -> same shape, replaces the stored state.
 //                               "active" is the id of whose turn it is (or
 //                               null). Each entry of order[] is:
 //                                 PC:  {id, kind:"pc",  pc:<party id>, name,
 //                                       bonus, init}
 //                                 NPC: {id, kind:"npc", name, bonus, init,
-//                                       hp, hpMax, ac}
+//                                       hp, hpMax, ac, mid?}   mid = Open5e slug (from an encounter)
 //                               init is the rolled total, bonus the modifier.
 //
 // HOW THE PIECES FIT
@@ -431,7 +432,8 @@
       // opts.only narrows the list to a single character (the per-character page).
       const shown = opts.only ? members.filter(m => m.id === opts.only) : members;
       if (!shown.length) {
-        root.append(h("p", { className: "muted" }, "No party members yet. ", h("a", { href: "/party", textContent: "Import characters →", onclick: ev => openParty(ev, "") })));
+        root.append(h("p", { className: "muted" }, opts.only ? "Character not found. " : "No one is in this campaign's party yet. Add characters from the Home tab. ",
+          h("a", { href: "/party", textContent: "Characters →", onclick: ev => openParty(ev, "") })));
         return;
       }
       shown.forEach(m => {
@@ -577,6 +579,8 @@
         h("span", { className: "muted", textContent: m ? m.class : "" }),
         // Empty flexible spacer that pushes the AC/remove controls right.
         h("span", { className: "grow" }),
+        // Monsters from the encounter builder carry their Open5e id (c.mid): the book button opens the stat block.
+        c.mid ? h("button", { className: "tiny", textContent: "📖", title: "Stat block", onclick: () => window.open("/monster/" + c.mid, "dmmonster", "width=540,height=760") }) : "",
         h("span", { className: "lbl", textContent: "AC" }), numInput(c.ac, "inum", "Armor class", v => { c.ac = v; }),
         h("button", { className: "tiny danger", textContent: "✕", title: "Remove", onclick: () => {
           // filter() builds a new array without this combatant. If the removed

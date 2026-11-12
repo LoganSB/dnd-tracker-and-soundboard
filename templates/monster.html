@@ -1,0 +1,44 @@
+<!doctype html>
+<!--
+  monster.html - one stat block from Open5e, as a small page. Opened by the encounter builder (preview pane) and
+  by the book button on a monster in the initiative tracker. Jinja2 variables: m (the Open5e record), mod
+  (ability score -> modifier), xp (challenge rating -> experience points).
+  Open5e's text fields are plain text with **bold** marks; they are shown as text, never as HTML.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ m.name }}</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="monsterpage">
+{%- macro score(label, v) -%}<div><b>{{ label }}</b><br>{{ v }} ({{ '%+d' % mod(v) }})</div>{%- endmacro -%}
+{%- macro line(label, v) -%}{% if v %}<p><b>{{ label }}</b> {{ v }}</p>{% endif %}{%- endmacro -%}
+{%- macro block(title, items) -%}
+{% if items %}<h3>{{ title }}</h3>{% for a in items %}<p><b><i>{{ a.name }}.</i></b> {{ a.desc | replace('**', '') }}</p>{% endfor %}{% endif %}
+{%- endmacro -%}
+<article class="statblock">
+  <h1>{{ m.name }}</h1>
+  <p class="muted"><i>{{ m.size }} {{ m.type }}{{ ' (' ~ m.subtype ~ ')' if m.subtype }}, {{ m.alignment }}</i></p>
+  <p><b>Armor Class</b> {{ m.armor_class }}{{ ' (' ~ m.armor_desc ~ ')' if m.armor_desc }}<br>
+     <b>Hit Points</b> {{ m.hit_points }}{{ ' (' ~ m.hit_dice ~ ')' if m.hit_dice }}<br>
+     <b>Speed</b> {% for k, v in (m.speed or {}).items() %}{{ k ~ ' ' if k != 'walk' }}{{ v }} ft.{{ ', ' if not loop.last }}{% endfor %}</p>
+  <div class="scores">{{ score('STR', m.strength) }}{{ score('DEX', m.dexterity) }}{{ score('CON', m.constitution) }}{{ score('INT', m.intelligence) }}{{ score('WIS', m.wisdom) }}{{ score('CHA', m.charisma) }}</div>
+  {{ line('Skills', (m.skills or {}).items() | map('join', ' +') | join(', ')) }}
+  {{ line('Damage vulnerabilities', m.damage_vulnerabilities) }}
+  {{ line('Damage resistances', m.damage_resistances) }}
+  {{ line('Damage immunities', m.damage_immunities) }}
+  {{ line('Condition immunities', m.condition_immunities) }}
+  {{ line('Senses', m.senses) }}
+  {{ line('Languages', m.languages) }}
+  <p><b>Challenge</b> {{ m.challenge_rating }} ({{ '{:,}'.format(xp.get(m.cr | float, 0)) }} XP)</p>
+  {{ block('Traits', m.special_abilities) }}
+  {{ block('Actions', m.actions) }}
+  {{ block('Bonus actions', m.bonus_actions) }}
+  {{ block('Reactions', m.reactions) }}
+  {% if m.legendary_actions %}<h3>Legendary actions</h3>{% if m.legendary_desc %}<p>{{ m.legendary_desc }}</p>{% endif %}{{ block('', m.legendary_actions) }}{% endif %}
+  <p class="muted">Source: {{ m.document__title }}{{ ', page ' ~ m.page_no if m.page_no }} · via Open5e</p>
+</article>
+</body>
+</html>
