@@ -39,6 +39,7 @@
 //                                   name and text.
 //   GET    /api/party/<id>/portrait image, used directly as an <img src>
 //   DELETE /api/party/<id>          remove a character from the party
+//   POST   /api/party/preview (lists the characters in an upload) and /api/party/import (saves the chosen ones; see importer.js)
 //   POST   /api/party/import        multipart file upload (Fight Club 5
 //                                   .backup / .xml, or a .zip containing one)
 //                                   -> {error:"..."} on failure
@@ -156,24 +157,16 @@ async function renderList() {
   // Import button. Its click handler is an async arrow function (it awaits
   // network calls); the browser just sees a callback and ignores the Promise.
   const imp = h("button", { className: "primary", textContent: "Import", onclick: async () => {
-    // file.files is the list of chosen files; [0] is the first. Undefined means
-    // nothing chosen yet.
+    // file.files is the list of chosen files; [0] is the first. Undefined means nothing chosen yet.
     if (!file.files[0]) { msg.textContent = "Choose a .backup, .xml or .zip file first."; return; }
-    // FormData builds a multipart/form-data body (the format of an HTML file
-    // upload form). The field name "file" is what the server looks for.
-    const fd = new FormData(); fd.append("file", file.files[0]);
-    msg.textContent = "Importing…";
-    // POST the upload; no Content-Type header is set because the browser must
-    // add it itself (it includes the multipart boundary string).
-    const r = await fetch("/api/party/import", { method: "POST", body: fd });
-    const j = await r.json();
-    // On error the server sends {error: "..."}; show it and stay on the page.
-    if (!r.ok) { msg.textContent = j.error; return; }
+    msg.textContent = "Reading the file…";
+    // Importer (importer.js) looks inside the file, asks which characters to import and imports each chosen one on its own.
     // On success reload so the list shows the new characters.
-    location.reload();
+    const res = await Importer.start(file.files[0], { onDone: () => location.reload() });
+    msg.textContent = res ? "" : "Nothing imported.";
   } });
   const box = section("Import characters",
-    h("p", { className: "muted", textContent: "Fight Club 5 backup (.backup / .xml) or a zip containing one. Only characters are imported; existing ones with the same id are updated." }),
+    h("p", { className: "muted", textContent: "Fight Club 5 backup (.backup / .xml) or a zip containing one. You choose which characters in it to import; existing ones with the same id are updated." }),
     h("div", { className: "row" }, file, imp), msg);
   const grid = h("div", { className: "partygrid" });
   // Wait for the party list from the server (the function pauses here; the

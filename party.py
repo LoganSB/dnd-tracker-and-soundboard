@@ -163,6 +163,11 @@ def _write(cid, root):
     os.replace(tmp, p)
 
 
+def _class_line(root):
+    """"Wizard 5 / Cleric 1": a multiclassed character has several <class> elements."""
+    return " / ".join(f"{_t(c, 'name')} {_t(c, 'level', '?')}" for c in root.findall("class"))
+
+
 def _image_b64(cid, root):
     """The character's portrait as base64 text, or "" when it has none. A Fight Club backup keeps the picture OUTSIDE the
     character (the character only holds <imageData><uid>), so import saves it as data/party_images/<id>.b64; an older
@@ -297,7 +302,7 @@ def summary(cid, root):
     Pure read: nothing is written.
     """
     cls = root.findall("class")  # a multiclassed character has several <class> elements
-    levels = " / ".join(f"{_t(c, 'name')} {_t(c, 'level', '?')}" for c in cls)
+    levels = _class_line(root)
     ex = _extra().get(cid, {})  # this character's sidecar record, or {}
     return {
         "id": cid, "name": _t(root, "name"), "class": levels, "owner": ex.get("owner", ""),
@@ -439,13 +444,47 @@ def _cid_for(ch, taken):
     return base
 
 
+@bp.post("/api/party/preview")
+def preview_import():
+    """POST /api/party/preview : look inside an upload (multipart form field "file") WITHOUT saving anything.
+
+    Response: {"characters": [{"id", "name", "class", "hp", "exists", "blocked", "portrait"}]} where `exists` means a character
+    with that id is already on the server (importing would update it) and `blocked` means the signed-in player may not replace
+    it because it belongs to someone else. The page shows these as a checklist; the chosen ones are then sent to /api/party/import.
+    400 {"error"} if the file is missing, unreadable, or holds no characters."""
+    f = request.files.get("file")
+    if not f:
+        return jsonify(error="No file uploaded"), 400
+    try:
+        chars, images = _read_upload(f)
+    except Exception as e:
+        return jsonify(error=f"Could not read file: {e}"), 400
+    if not chars:
+        return jsonify(error="No <character> entries found in that file"), 400
+    user = auth.current_user()
+    out = []
+    with lock:
+        for ch in chars:
+            cid = _cid_for(ch, [])
+            exists = (DIR / f"{cid}.xml").exists()
+            out.append({"id": cid, "name": _t(ch, "name"), "class": _class_line(ch), "hp": f"{_t(ch, 'hpCurrent')}/{_t(ch, 'hpMax')}",
+                        "exists": exists, "blocked": bool(user["role"] != "dm" and exists and not _may_use(cid)),
+                        "portrait": bool(images.get((ch.findtext("imageData/uid") or "").strip()) or (ch.findtext("imageData") or "").strip())})
+    return jsonify(characters=out)
+
+
 @bp.post("/api/party/import")
 def import_party():
     """POST /api/party/import : upload a Fight Club backup (multipart form field "file").
 
-    Response: {"imported": ["<id>", ...]} (200), or {"error": "..."} (400) when no file was
-    sent, the file cannot be parsed, or it holds no <character> entries.
-    Side effects: writes one data/party/<id>.xml per character (overwriting same-id files).
+    By default EVERY character in the file is imported. To import only some, send the form field "select" (any value) and one
+    "only" field per character id wanted (the ids /api/party/preview listed); with "select" and no "only" nothing is imported.
+
+    Each character is imported INDIVIDUALLY: one that cannot be (a player may not replace somebody else's character) is
+    reported and skipped, and the others are still saved. Response: {"imported": ["<id>", ...], "failed": [{"id", "name",
+    "error"}]} (200); {"error", "failed"} (409) when every wanted character failed; or {"error": "..."} (400) when no file was sent, the file cannot be parsed, it holds no <character>
+    entries, or the named owner does not exist.
+    Side effects: writes data/party/<id>.xml (overwriting a same-id file) and the portrait for each imported character.
     """
     f = request.files.get("file")  # uploaded files arrive in request.files, not the JSON body
     if not f:
@@ -457,6 +496,7 @@ def import_party():
     if not chars:
         return jsonify(error="No <character> entries found in that file"), 400
     user = auth.current_user()
+    wanted = set(request.form.getlist("only")) if "select" in request.form else None
     with lock:
         ex = _extra()
         # Who the characters belong to: a player's upload is always theirs; the DM may name an owner in the
@@ -464,24 +504,31 @@ def import_party():
         owner = user["name"] if user["role"] != "dm" else (request.form.get("owner") or "").strip()
         if owner and user["role"] == "dm" and owner.lower() not in auth._load()["users"]:
             return jsonify(error=f"No user named {owner}"), 400
-        ids = []
+        imported, failed = [], []
         for ch in chars:
-            cid = _cid_for(ch, ids)
+            cid = _cid_for(ch, imported)
+            if wanted is not None and cid not in wanted:
+                continue
             # A player may add new characters or update their own, never replace somebody else's.
             if user["role"] != "dm" and (DIR / f"{cid}.xml").exists() and not _may_use(cid):
-                return jsonify(error=f"{_t(ch, 'name')} already belongs to someone else"), 409
-            ids.append(cid)
-        for ch, cid in zip(chars, ids):
-            _write(cid, ch)
-            # The portrait travels beside the characters in the backup: keep it with this character (see _image_b64).
-            ref = (ch.findtext("imageData/uid") or "").strip()
-            if ref in images and images[ref]:
-                IMG.mkdir(parents=True, exist_ok=True)
-                (IMG / f"{cid}.b64").write_text(images[ref])
-            if owner:
-                ex.setdefault(cid, {})["owner"] = owner
+                failed.append({"id": cid, "name": _t(ch, "name"), "error": "already belongs to someone else"})
+                continue
+            try:
+                _write(cid, ch)
+                # The portrait travels beside the characters in the backup: keep it with this character (see _image_b64).
+                ref = (ch.findtext("imageData/uid") or "").strip()
+                if ref in images and images[ref]:
+                    IMG.mkdir(parents=True, exist_ok=True)
+                    (IMG / f"{cid}.b64").write_text(images[ref])
+                if owner:
+                    ex.setdefault(cid, {})["owner"] = owner
+                imported.append(cid)
+            except Exception as e:  # one character failing must not stop the others
+                failed.append({"id": cid, "name": _t(ch, "name"), "error": str(e)})
         _save_extra(ex)
-    return jsonify(imported=ids)
+    if failed and not imported:   # nothing could be imported: an error, with the reasons
+        return jsonify(error=f"{failed[0]['name']}: {failed[0]['error']}", imported=[], failed=failed), 409
+    return jsonify(imported=imported, failed=failed)
 
 
 # ------------------------------------------------------------------ routes

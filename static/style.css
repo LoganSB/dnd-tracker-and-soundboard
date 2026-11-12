@@ -2661,3 +2661,11 @@ body.canvaspage .flag {
 .flag .emons { margin: .45rem 0 .2rem; }
 .flag .fprog { margin-top: .15rem; }
 .flag .ffoot { margin-top: .5rem; }
+
+/* The "which characters to import" pop-up (importer.js). */
+.importdlg { min-width: min(480px, 92vw); }
+.importlist { max-height: 50vh; overflow: auto; margin: .6rem 0; border: 1px solid var(--panel2); border-radius: 8px; }
+.importrow { display: flex; gap: .6rem; align-items: flex-start; padding: .5rem .7rem; cursor: pointer; border-bottom: 1px solid var(--panel2); }
+.importrow:last-child { border-bottom: 0; }
+.importrow:hover { background: var(--panel2); }
+.importrow.off { opacity: .6; cursor: not-allowed; }

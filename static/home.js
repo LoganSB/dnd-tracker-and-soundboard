@@ -10,7 +10,8 @@
 //
 // SERVER ROUTES USED
 //   GET  /api/party                      characters you may see (DM: all; player: yours), each with "owner"
-//   POST /api/party/import               multipart upload "file" (DM may add field "owner")
+//   POST /api/party/preview              multipart upload "file": lists the characters inside (saves nothing)
+//   POST /api/party/import               multipart upload "file" + the chosen ids (DM may add field "owner"); see importer.js
 //   PUT  /api/party/<id>/owner           {owner}  DM: give a character to a user
 //   GET/PUT /api/active-party            the loaded campaign's party {campaign, party:[{id,name,owner,present}]} / {ids}
 //   GET/POST /api/campaigns, POST /api/campaigns/<name>/load, DELETE /api/campaigns/<name>
@@ -66,20 +67,17 @@ function uploadBox(users) {
   const owner = users && h("select", {}, h("option", { value: "", textContent: "(no owner)" }),
     users.map(u => h("option", { value: u.name, textContent: u.name })));
   const msg = status();
+  // Importer (importer.js) looks inside the file, asks which characters to import, then imports each chosen one on its own.
   const btn = h("button", { className: "primary", textContent: "Upload", onclick: async () => {
     if (!file.files[0]) return msg.say("Choose a file first", true);
-    const fd = new FormData();
-    fd.append("file", file.files[0]);
-    if (owner && owner.value) fd.append("owner", owner.value);
-    msg.say("Uploading…");
-    const r = await fetch("/api/party/import", { method: "POST", body: fd });
-    const j = await r.json().catch(() => ({}));
-    if (!r.ok) return msg.say(j.error || "Upload failed", true);
-    msg.say(`Imported ${j.imported.length} character(s)`);
-    boot();
-    parent.document.getElementById("f-party")?.contentWindow.location.reload();   // the Characters tab shows the new sheet
+    msg.say("Reading the file…");
+    const res = await Importer.start(file.files[0], { owner: owner?.value, onDone: () => {
+      boot();
+      parent.document.getElementById("f-party")?.contentWindow.location.reload();   // the Characters tab shows the new sheets
+    } });
+    msg.say(res ? `Imported ${res.imported.length} character(s)` : "Nothing imported");
   } });
-  return h("div", {}, h("p", { className: "muted", textContent: "Fight Club 5 backup (.backup / .xml) or a zip containing one. Characters with the same id are updated." }),
+  return h("div", {}, h("p", { className: "muted", textContent: "Fight Club 5 backup (.backup / .xml) or a zip containing one. You choose which characters in it to import; characters with the same id are updated." }),
     h("div", { className: "row" }, file, owner, btn), msg);
 }
 
