@@ -60,6 +60,7 @@ import hashlib
 import hmac
 import json
 import logging
+import mimetypes
 import os
 import re
 import select
@@ -73,6 +74,7 @@ from urllib.parse import urlparse, parse_qs, urljoin, quote
 
 import requests
 from flask import Flask, Response, abort, jsonify, render_template, request, send_from_directory
+from werkzeug.security import safe_join
 
 # ---- paths and constants. Path objects overload "/" to join path components.
 # __file__ is this script; resolve() makes it absolute; .parent is its folder.
@@ -824,6 +826,60 @@ def media_status(key):
     return jsonify(jobs.get(key, {"status": "missing"}))
 
 
+# Cloud Run refuses any single HTTP response over 32 MiB (the browser sees a 500), and an hour or more of
+# audio is bigger than that. So audio files larger than this are sent in slices (HTTP 206 "partial content"):
+# the <audio> element asks for a range, we answer at most this many bytes of it, and it asks again for the
+# next slice as it plays or seeks. Kept well under the limit.
+MAX_SLICE = 16 * 1024 * 1024
+
+
+def send_audio(directory, name, max_age=None):
+    """Send an audio file, in slices of at most MAX_SLICE bytes when the file is large.
+
+    Small files and conditional requests (304) go through send_from_directory exactly as before.
+    A large file is answered with the byte range the browser asked for ("Range: bytes=START-END",
+    or from byte 0 when it sent none), shortened to MAX_SLICE bytes. The Content-Range header tells the
+    browser how much it got and how big the whole file is, so it can request the rest.
+    """
+    path = safe_join(str(directory), name)  # None if the name tries to climb out of the folder
+    if path is None or not os.path.isfile(path):
+        abort(404)
+    size = os.path.getsize(path)
+    if size <= MAX_SLICE:
+        return send_from_directory(directory, name, conditional=True, max_age=max_age)
+
+    start, end = 0, size - 1
+    m = re.match(r"bytes=(\d*)-(\d*)$", request.headers.get("Range", ""))
+    if m and (m.group(1) or m.group(2)):
+        if m.group(1):  # "bytes=START-" or "bytes=START-END"
+            start = int(m.group(1))
+            end = int(m.group(2)) if m.group(2) else size - 1
+        else:  # "bytes=-N": the last N bytes
+            start = max(0, size - int(m.group(2)))
+    if start >= size:
+        return Response(status=416, headers={"Content-Range": f"bytes */{size}"})
+    end = min(end, size - 1, start + MAX_SLICE - 1)
+    length = end - start + 1
+
+    def body():
+        with open(path, "rb") as fh:
+            fh.seek(start)
+            left = length
+            while left > 0:
+                chunk = fh.read(min(1 << 16, left))
+                if not chunk:
+                    break
+                left -= len(chunk)
+                yield chunk
+
+    headers = {"Content-Range": f"bytes {start}-{end}/{size}", "Content-Length": str(length),
+               "Accept-Ranges": "bytes"}
+    if max_age:
+        headers["Cache-Control"] = f"public, max-age={max_age}"
+    mime = mimetypes.guess_type(path)[0] or "application/octet-stream"
+    return Response(body(), status=206, mimetype=mime, headers=headers)
+
+
 @app.get("/media/<path:name>")
 def serve_media(name):
     """GET /media/<file> : send a cached audio file to the browser.
@@ -833,7 +889,7 @@ def serve_media(name):
     (seeking, 304 Not Modified); max_age=31536000 (one year, in seconds) lets the browser
     cache it, which is safe because a key's file never changes once downloaded.
     """
-    return send_from_directory(MEDIA, name, conditional=True, max_age=31536000)
+    return send_audio(MEDIA, name, max_age=31536000)
 
 
 @app.get("/library/<path:name>")
@@ -844,7 +900,7 @@ def serve_library(name):
     file under the same name; conditional=True still lets the browser skip re-downloading an
     unchanged one. A missing file is a normal 404, which the page handles as an error on the card.
     """
-    return send_from_directory(LIBRARY, name, conditional=True)
+    return send_audio(LIBRARY, name)
 
 
 @app.get("/api/library")
