@@ -39,6 +39,7 @@ Sign-in is by user name and password (stored only as salted hashes in `data/user
 ## Party
 - `/party` import (.backup/.xml/.zip from Fight Club 5), export (zip with FightClub5.backup), per-character full pages at `/party/<id>`.
 - Tracker: the **Party** button on the soundboard (floating panel) or `/tracker` (pop-out window).
+- **Exports are Fight Club's own file format**: one plain XML `.backup` (not a zip), written by `fcformat.py` so that the six real characters come out byte for byte as Fight Club wrote them, portraits included (they are now kept on import). The rules are in `FIGHTCLUB-FORMAT.md`; `?format=zip` still gives the old zipped form.
 - Characters are stored as their original Fight Club XML in `data/party/`; HP, slots, hit dice, inspiration and money edits are written back so export round-trips. "Mana"/conditions have no Fight Club field, so they are kept in `data/party_extra.json` and are not exported.
 
 ## Where to start reading the code

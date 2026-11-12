@@ -44,6 +44,7 @@ Each row: the thing that changes, the components linked to it, and what must be 
 | Anything that edits encounters or loot tables (a new editor, import, bulk action) | `UI.libraryChanged()` / `UI.onLibraryChanged()` in `static/ui.js`; `Builder` (`changed()`); `Browse.mount` listener; `campaign.js` save | call `UI.libraryChanged()` after the change so Browse lists on other pages refresh |
 | Cables / links between items (soundboard chains, campaign links) | `Cables.paths`, `Cables.pair`, `Cables.live`, `Cables.tempPath` in `static/cables.js`; `drawLinks` and `startLink` in `static/app.js` and `static/campaign.js` | change the shared function once; keep both `drawLinks` link records `{a, b, sx, ex, cs, ct}` and both obstacle lists in step |
 | The result-list size (10 / 20 / 50 / 100) | `Finder.pageSize` in `static/finder.js` (saved in localStorage `finder.pageSize`), used by `Finder.panel` and `UI.dataTable`; the compact pop-up is fixed at 6 | change it once in `Finder.pageSize`; the menu only appears when a list is longer than the choice |
+| The Fight Club file format (new character fields, export rules) | `fcformat.py` (encoder); `party._characters_from` / `_read_upload` / `_backup_download`; `FIGHTCLUB-FORMAT.md`; `test_fc.py` against a real `FightClub5.backup`; Dockerfile COPY | change the encoder and the rules doc together and re-run the byte-for-byte test |
 | A new postMessage type between frames | header comment of `templates/shell.html`; receiving page's message handler | document it and handle it |
 
 ## Notes

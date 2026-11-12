@@ -144,7 +144,7 @@ async function renderList() {
   // Downloads are buttons, not links: safeDownload (errors.js) checks the answer first, so a "not found" is printed next to
   // the button instead of replacing this page.
   bar.append(h("button", { className: "btn", onclick: () => safeDownload("/api/party/export.zip"),
-    textContent: isDM ? "⬇ Export party (Fight Club zip)" : "⬇ Export my character (Fight Club zip)" }));
+    textContent: isDM ? "⬇ Export party (Fight Club backup)" : "⬇ Export my character (Fight Club backup)" }));
   bar.append(h("button", { className: "btn", onclick: () => safeDownload("/download/collection.zip"), textContent: "⬇ Fight Club 5e collection zip" }));
   if (isDM) bar.append(
     h("a", { href: "/tracker", target: "dmtracker", className: "btn", textContent: "Open tracker window",
@@ -203,7 +203,7 @@ async function renderList() {
         h("div", { className: "muted", textContent: [m.race, m.class].filter(Boolean).join(" · ") }),
         h("div", { textContent: `HP ${m.hp}/${m.hpMax}` }),
         // The download sits inside the card's <a> link, so the click is handled by hand (no nested links).
-        h("button", { className: "tiny", textContent: "⬇ Download", title: "Download this character (Fight Club zip)", onclick: e => { e.preventDefault(); safeDownload(`/api/party/${m.id}/export.zip`); } }), del)));
+        h("button", { className: "tiny", textContent: "⬇ Download", title: "Download this character (Fight Club backup)", onclick: e => { e.preventDefault(); safeDownload(`/api/party/${m.id}/export.zip`); } }), del)));
   });
   // The live tracker (the same widget as the popup: HP, spell slots, death saves, mana, conditions and
   // the Initiative tab), built right into this page. mountTracker comes from tracker.js, which

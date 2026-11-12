@@ -58,6 +58,7 @@ import xml.etree.ElementTree as ET
 from flask import Blueprint, Response, abort, jsonify, request, send_file
 
 import auth
+import fcformat
 
 try:  # hardened parser if available (entity-expansion attacks), stdlib otherwise
     # defusedxml is a third-party drop-in for ElementTree's parsing functions that refuses
@@ -76,6 +77,7 @@ BASE = Path(__file__).resolve().parent  # folder containing this file
 ROOT = Path(os.environ.get("DND_DATA_ROOT") or BASE)
 DIR = ROOT / "data" / "party"  # Path "/" joins path pieces
 EXTRA = ROOT / "data" / "party_extra.json"
+IMG = ROOT / "data" / "party_images"   # portraits: <character id>.b64 (the base64 text from the backup)
 DIR.mkdir(parents=True, exist_ok=True)  # create the folder if missing (mkdir -p)
 lock = threading.RLock()  # see "Locking" in the module docstring
 
@@ -159,6 +161,16 @@ def _write(cid, root):
     tmp = p.with_suffix(".tmp")
     ET.ElementTree(root).write(tmp, encoding="utf-8", xml_declaration=True)
     os.replace(tmp, p)
+
+
+def _image_b64(cid, root):
+    """The character's portrait as base64 text, or "" when it has none. A Fight Club backup keeps the picture OUTSIDE the
+    character (the character only holds <imageData><uid>), so import saves it as data/party_images/<id>.b64; an older
+    file may hold the picture inline in <imageData> itself, which is still honoured."""
+    f = IMG / f"{cid}.b64"
+    if f.exists():
+        return f.read_text().strip()
+    return (root.findtext("imageData") or "").strip()
 
 
 def _ids():
@@ -297,7 +309,7 @@ def summary(cid, root):
         # 1st-level slots). slots = maximum, slotsCurrent = how many are still unspent.
         "slots": _ints(_t(root, "slots")), "slotsCurrent": _ints(_t(root, "slotsCurrent")),
         "inspiration": int(_num(_t(root, "inspiration"))),
-        "hasImage": bool((root.findtext("imageData") or "").strip()),
+        "hasImage": bool(_image_b64(cid, root)),
         "trackers": _trackers(ex),
         "conditions": ex.get("conditions", ""),
         # death saving throws, kept in the sidecar file (Fight Club has no field for them)
@@ -375,38 +387,42 @@ def detail(cid, root):
 
 # ------------------------------------------------------------------- import
 def _characters_from(data: bytes):
-    """Parse XML bytes and return a list of <character> elements found in them.
+    """Parse XML bytes and return ([<character> elements], {portrait uid: base64 text}).
 
-    Fight Club backups have <data> as the root with several <character> children; a single
-    exported character may have <character> itself as the root. Handles both. Raises
-    ET.ParseError on malformed XML.
+    A Fight Club backup has <data> as the root with <character> children and, after them, the portraits as
+    <imageData><uid>U</uid><encoded>..</encoded></imageData>; a single exported character may have <character> itself as
+    the root. Handles both. Raises ET.ParseError on malformed XML.
     """
     root = SafeET.fromstring(data)
-    return [root] if root.tag == "character" else root.findall("character")
+    if root.tag == "character":
+        return [root], {}
+    images = {(i.findtext("uid") or "").strip(): "".join((i.findtext("encoded") or "").split()) for i in root.findall("imageData") if i.find("encoded") is not None}
+    return root.findall("character"), images
 
 
 def _read_upload(f):
-    """Extract <character> elements from an uploaded file object `f`.
+    """Extract ([<character> elements], {portrait uid: base64}) from an uploaded file object `f`.
 
-    The upload may be plain XML or a zip (Fight Club's .backup files are zips of XML).
-    zipfile.is_zipfile() sniffs the content; io.BytesIO wraps the in-memory bytes so the
-    zip library can treat them as a file (like fmemopen() in C). For zips, every entry
-    ending .xml/.backup is parsed; directories, entries over 200 MiB uncompressed (a
-    "zip bomb" guard) and unparsable entries are skipped.
+    Fight Club's own .backup files are PLAIN XML; a zip (older exports from this app, or one the user made) containing
+    one is accepted too. zipfile.is_zipfile() sniffs the content; io.BytesIO wraps the in-memory bytes so the zip library
+    can treat them as a file. For zips, every entry ending .xml/.backup is parsed; directories, entries over 200 MiB
+    uncompressed (a "zip bomb" guard) and unparsable entries are skipped.
     """
     raw = f.read()  # whole upload as a bytes object
     if zipfile.is_zipfile(io.BytesIO(raw)):
-        out = []
+        chars, images = [], {}
         with zipfile.ZipFile(io.BytesIO(raw)) as z:
             for info in z.infolist():
                 if info.is_dir() or info.file_size > 200 * 1024 * 1024:
                     continue
                 if info.filename.lower().endswith((".xml", ".backup")):
                     try:
-                        out += _characters_from(z.read(info))  # += on a list appends all items
+                        c, i = _characters_from(z.read(info))
+                        chars += c
+                        images.update(i)
                     except ET.ParseError:
                         continue
-        return out
+        return chars, images
     return _characters_from(raw)
 
 
@@ -435,7 +451,7 @@ def import_party():
     if not f:
         return jsonify(error="No file uploaded"), 400
     try:
-        chars = _read_upload(f)
+        chars, images = _read_upload(f)
     except Exception as e:
         return jsonify(error=f"Could not read file: {e}"), 400
     if not chars:
@@ -457,6 +473,11 @@ def import_party():
             ids.append(cid)
         for ch, cid in zip(chars, ids):
             _write(cid, ch)
+            # The portrait travels beside the characters in the backup: keep it with this character (see _image_b64).
+            ref = (ch.findtext("imageData/uid") or "").strip()
+            if ref in images and images[ref]:
+                IMG.mkdir(parents=True, exist_ok=True)
+                (IMG / f"{cid}.b64").write_text(images[ref])
             if owner:
                 ex.setdefault(cid, {})["owner"] = owner
         _save_extra(ex)
@@ -500,7 +521,7 @@ def portrait(cid):
     JPEG. 404 if there is no image. Cached by the browser for 60 s.
     """
     _guard(cid)
-    data = (_load(cid).findtext("imageData") or "").strip()
+    data = _image_b64(cid, _load(cid))
     if not data:
         abort(404)
     raw = base64.b64decode(data)
@@ -601,6 +622,7 @@ def delete_member(cid):
         p = _path(cid)
         if p.exists():
             p.unlink()  # delete the file
+        (IMG / f"{cid}.b64").unlink(missing_ok=True)
         ex = _extra()
         if ex.pop(cid, None) is not None:  # pop returns the removed value, or None if absent
             _save_extra(ex)
@@ -636,47 +658,50 @@ def _stream_download(source, filename, mimetype="application/zip"):
                                                           "Cache-Control": "private, no-store" if source.__class__ is io.BytesIO else "private, max-age=3600"})
 
 
-def _backup_zip(ids, download_name):
-    """A Fight Club-importable backup (an XML <data> document with a version and uid header followed by the stored
-    <character> elements for `ids`), zipped as "FightClub5.backup" and returned as a download. The sidecar-only data
-    (mana, conditions) is NOT included. The "version"/"uid" values are fixed numbers that mimic a Fight Club header
-    so the app accepts the file. The caller has already checked the user may use every id."""
+def _backup_download(ids, download_name):
+    """Send the characters `ids` as a Fight Club backup. By default that is Fight Club's own format: ONE PLAIN XML FILE named
+    <something>.backup (see fcformat.py for the rules). "?format=zip" gives the old form, the same file inside a zip, in case the
+    plain file is not accepted. The caller has already checked the user may use every id. The sidecar-only data (mana,
+    conditions) is NOT included."""
     with lock:
-        data = ET.Element("data")  # new root element <data>
-        ET.SubElement(data, "version").text = "37"
-        ET.SubElement(data, "uid").text = "1031"
-        for i in ids:
-            data.append(_load(i))
-        xml = ET.tostring(data, encoding="utf-8", xml_declaration=True)  # tree -> bytes
-    # Build the zip in memory (BytesIO ~ a growable in-RAM file), then rewind to the start
-    # with seek(0) so send_file reads from the beginning.
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr("FightClub5.backup", xml)
-    buf.seek(0)
-    return _stream_download(buf, download_name)
+        chars = [_load(i) for i in ids]
+        images = {}
+        for cid, ch in zip(ids, chars):
+            ref = (ch.findtext("imageData/uid") or "").strip()
+            b64 = _image_b64(cid, ch) if ref else ""
+            if ref and b64 and not (ch.findtext("imageData") or "").strip():   # the picture is held outside the character
+                images[ref] = b64
+        xml = fcformat.encode(chars, images)
+    if request.args.get("format") == "zip":
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr("FightClub5.backup", xml)
+        buf.seek(0)
+        return _stream_download(buf, download_name + ".zip")
+    return _stream_download(io.BytesIO(xml), download_name + ".backup", "application/octet-stream")
 
 
 # NOTE: this literal route (".../export.zip") must not be shadowed by "/api/party/<cid>";
 # Flask prefers the more specific literal match, and GET <cid> would never contain ".zip".
 @bp.get("/api/party/export.zip")
 def export_party():
-    """GET /api/party/export.zip downloads FightClub5-party.zip: every character the signed-in user may see (the DM:
-    all; a player: only their own)."""
+    """GET /api/party/export.zip downloads FightClub5.backup: every character the signed-in user may see (the DM: all; a
+    player: only their own), as a Fight Club backup (plain XML; add ?format=zip for a zipped copy). The address keeps its old
+    name ("export.zip") so existing links and buttons still work."""
     with lock:
         ids = [i for i in _ids() if _may_use(i)]
-    return _backup_zip(ids, "FightClub5-party.zip")
+    return _backup_download(ids, "FightClub5")
 
 
 @bp.get("/api/party/<cid>/export.zip")
 def export_member(cid):
-    """GET /api/party/<id>/export.zip downloads ONE character as a Fight Club backup zip, named after the character.
-    The DM may download any; a player only a character assigned to them (anything else is a 404, like every other
-    character route, see _guard)."""
+    """GET /api/party/<id>/export.zip downloads ONE character as a Fight Club backup named FightClub5-<Name>.backup. The DM may
+    download any; a player only a character assigned to them (anything else is a 404, like every other character route, see
+    _guard). Add ?format=zip for a zipped copy."""
     _guard(cid)
     with lock:
         name = _t(_load(cid), "name") or cid
-    return _backup_zip([cid], re.sub(r"[^\w.-]+", "_", name).strip("_") + ".zip")
+    return _backup_download([cid], "FightClub5-" + re.sub(r"[^\w.-]+", "_", name).strip("_"))
 
 
 @bp.get("/download/collection.zip")

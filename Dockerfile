@@ -35,7 +35,7 @@ RUN pip install -r requirements.txt
 
 # 2) Copy only what the app needs at run time. (.dockerignore keeps everything else out of the build:
 #    your saved data, the Fight Club files, the virtual environment ...)
-COPY app.py party.py auth.py encounters.py gunicorn.conf.py ./
+COPY app.py party.py auth.py encounters.py fcformat.py gunicorn.conf.py ./
 COPY templates ./templates
 COPY static ./static
 
