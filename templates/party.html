@@ -7,7 +7,9 @@
   This is a shell. The HTML is a static outline with an empty toolbar
   (div#partyBar) and an empty content area (div#view). party.js decides what to
   show (character list or one character), builds the elements at runtime, and
-  inserts them into those two containers. It uses no Jinja2 substitutions.
+  inserts them into those two containers. Its only Jinja2 substitution is role ("dm" or
+  "player") on the body tag: a player's page leaves out the DM-only extras (the whole-party tracker, the
+  expansion download). The server refuses those requests from a player anyway; see auth.py.
 
   SCRIPTS (in order):
     1. /static/tracker.js - shared tracker code. party.js reuses it (it is
@@ -23,7 +25,7 @@
 <title>Party</title>
 <link rel="stylesheet" href="/static/style.css">
 </head>
-<body class="partypage">
+<body class="partypage" data-role="{{ role }}">
 <header>
   <!-- Breadcrumb: links back to the soundboard ("/") and to this page. class "plain" = links styled like normal text. -->
   <!-- partyBar: toolbar area, filled by party.js -->

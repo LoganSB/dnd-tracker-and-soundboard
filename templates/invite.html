@@ -1,0 +1,64 @@
+<!doctype html>
+<!--
+  invite.html - where a player uses the invite link the DM gave them (/invite/<token>).
+
+  They choose a user name and a password (POST /api/auth/redeem), or choose a user name and press
+  "Continue with Google" (the Google address is then linked to the new account). A link that has expired
+  or been used shows a message instead.
+
+  Jinja2 variables: token (the invite), valid (is it still usable), google (is Google sign-in on).
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Join - DND Tracker</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="authpage">
+<header class="appnav">
+  <a class="brand" href="/">🎲 DND Tracker</a>
+  <span class="grow"></span>
+</header>
+<main class="authbox">
+  {% if not valid %}
+  <h1>Invite not valid</h1>
+  <p>This invite link has expired or was already used. Ask your DM for a new one.</p>
+  {% else %}
+  <h1>Join the table</h1>
+  <p id="msg" class="bad"></p>
+  <form id="joinForm">
+    <label>Choose a user name <input name="username" id="username" autocomplete="username" required autofocus
+      pattern="[A-Za-z0-9_.\-]{2,32}" title="2 to 32 letters, digits, dots, dashes or underscores"></label>
+    <label>Choose a password (8 or more characters) <input name="password" id="password" type="password" autocomplete="new-password" minlength="8" required></label>
+    <button class="primary" type="submit">Create my account</button>
+  </form>
+  {% if google %}
+  <p><button class="btn" id="googleBtn" type="button">Use my Google account instead (needs the user name above)</button></p>
+  {% endif %}
+  {% endif %}
+</main>
+{% if valid %}
+<script>
+(function () {
+  const token = {{ token|tojson }};
+  const msg = document.getElementById("msg");
+  document.getElementById("joinForm").onsubmit = async ev => {
+    ev.preventDefault();
+    const f = ev.target;
+    const r = await fetch("/api/auth/redeem", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token, username: f.username.value, password: f.password.value }) });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok) location.href = "/"; else msg.textContent = j.error || "Something went wrong";
+  };
+  const g = document.getElementById("googleBtn");
+  if (g) g.onclick = () => {
+    const u = document.getElementById("username");
+    if (!u.reportValidity()) return;     // ask for a valid user name first
+    location.href = "/auth/google?invite=" + encodeURIComponent(token) + "&username=" + encodeURIComponent(u.value);
+  };
+})();
+</script>
+{% endif %}
+</body>
+</html>

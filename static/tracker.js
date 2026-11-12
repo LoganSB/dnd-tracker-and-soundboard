@@ -29,7 +29,8 @@
 //   (members, init) and the draw functions render them.
 //
 // SERVER ENDPOINTS USED (all JSON over HTTP, relative to the current site)
-//   GET   /api/party         -> array of character summaries. Fields used here:
+//   GET   /api/party?active=1 -> array of character summaries (the loaded campaign's party when it has
+//                               one, otherwise everyone). Fields used here:
 //                                 id, name, class, hp, hpMax,
 //                                 slots[]         max slots per spell level
 //                                                 (index 0 = level 1),
@@ -675,7 +676,11 @@
         // Promise.all starts both requests at once and waits for both (like
         // launching two async I/O operations and joining them). The result is
         // an array, unpacked by destructuring into `next` and `ini`.
-        const [next, ini] = await Promise.all([call("/api/party"), call("/api/initiative")]);
+        // The initiative order is the DM's, so a page without the Initiative tab does not ask for it (a player
+        // would be refused). "?active=1" narrows the DM's list to the campaign's party, but a single
+        // character's page needs that character even when it is not in the party.
+        const [next, ini] = await Promise.all([call(opts.only ? "/api/party" : "/api/party?active=1"),
+          opts.initiative === false ? init : call("/api/initiative")]);
         // Compare by JSON text; the server returns the same field order each
         // time, so equal data gives equal strings.
         const j = JSON.stringify(next), ij = JSON.stringify(ini);

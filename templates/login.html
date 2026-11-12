@@ -1,0 +1,69 @@
+<!doctype html>
+<!--
+  login.html - the sign-in page.
+
+  Shows the user name / password form, a "Continue with Google" button when the server has Google sign-in
+  switched on, and, only while no DM account exists yet, a "Create the DM account" form (which needs the
+  server's setup key, DND_PASSWORD). The script asks GET /api/auth/me which of these to show, posts to
+  /api/auth/login (or /api/auth/setup), then goes to the page the visitor first asked for (?next=).
+
+  Jinja2 variable: error (a message to show, set when a Google sign-in was refused).
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Log in - DND Tracker</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="authpage">
+<header class="appnav">
+  <a class="brand" href="/">🎲 DND Tracker</a>
+  <span class="grow"></span>
+</header>
+<main class="authbox">
+  <h1>Log in</h1>
+  <p id="msg" class="bad">{{ error or "" }}</p>
+  <form id="loginForm">
+    <label>User name <input name="username" autocomplete="username" required autofocus></label>
+    <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+    <button class="primary" type="submit">Log in</button>
+  </form>
+  <p id="googleRow" hidden><a class="btn" id="googleBtn" href="/auth/google">Continue with Google</a></p>
+
+  <form id="setupForm" hidden>
+    <h2>Create the DM account</h2>
+    <p class="muted">First time here. The setup key is the site password you set when deploying (DND_PASSWORD). It is only asked for now.</p>
+    <label>Setup key <input name="key" type="password" autocomplete="off"></label>
+    <label>DM user name <input name="username" autocomplete="username" required></label>
+    <label>Password (8 or more characters) <input name="password" type="password" autocomplete="new-password" minlength="8" required></label>
+    <button class="primary" type="submit">Create DM account</button>
+  </form>
+</main>
+<script>
+(function () {
+  const msg = document.getElementById("msg");
+  // Where to go after signing in: the page asked for, but only a path on this site (never another address).
+  const next = (() => { const n = new URLSearchParams(location.search).get("next") || "/";
+    return n.startsWith("/") && !n.startsWith("//") ? n : "/"; })();
+  // send(url, form): post the form's fields as JSON; on success go on to `next`, otherwise show the error.
+  async function send(url, form) {
+    msg.textContent = "";
+    const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(Object.fromEntries(new FormData(form))) });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok) location.href = next;
+    else msg.textContent = j.error || "Something went wrong";
+  }
+  document.getElementById("loginForm").onsubmit = ev => { ev.preventDefault(); send("/api/auth/login", ev.target); };
+  document.getElementById("setupForm").onsubmit = ev => { ev.preventDefault(); send("/api/auth/setup", ev.target); };
+  fetch("/api/auth/me").then(r => r.json()).then(me => {
+    if (me.user && !me.open) location.href = next;          // already signed in
+    document.getElementById("setupForm").hidden = !me.needsSetup;
+    document.getElementById("googleRow").hidden = !me.google;
+    document.getElementById("googleBtn").href = "/auth/google?next=" + encodeURIComponent(next);
+  });
+})();
+</script>
+</body>
+</html>

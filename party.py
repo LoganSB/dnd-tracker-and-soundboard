@@ -31,6 +31,8 @@ Where data lives on disk (relative to this file's folder):
                           the app. So the "mana" bar and the conditions text live here and
                           are not part of the exported backup.
   data/initiative.json    the initiative tracker's order/round/active turn
+Who may see a character: its owner (the player who uploaded it, stored as "owner" in party_extra.json) and
+the DM. Every route below checks this with _guard()/_may_use() using the signed-in user from auth.py.
 
 Why characters are stored as raw XML (not converted to our own JSON): a conversion would
 drop every field we do not know about (Fight Club has many). Keeping the original element
@@ -54,6 +56,8 @@ from pathlib import Path
 import xml.etree.ElementTree as ET
 
 from flask import Blueprint, Response, abort, jsonify, request, send_file
+
+import auth
 
 try:  # hardened parser if available (entity-expansion attacks), stdlib otherwise
     # defusedxml is a third-party drop-in for ElementTree's parsing functions that refuses
@@ -224,6 +228,39 @@ def _item(it):
     }
 
 
+def _may_use(cid):
+    """True if the signed-in user may see and change character `cid`: the DM always, a player only for
+    the characters they own (owner names compare ignoring upper/lower case, like user names)."""
+    user = auth.current_user()
+    if not user:
+        return False
+    if user["role"] == "dm":
+        return True
+    return _extra().get(cid, {}).get("owner", "").lower() == user["name"].lower()
+
+
+def _guard(cid):
+    """Stop the request with 404 unless the signed-in user may use character `cid`. A player asking for
+    someone else's character gets the same "not found" as for a character that does not exist, so the
+    answer does not reveal who else is in the party. _path() first rejects an unsafe id (400)."""
+    _path(cid)
+    if not _may_use(cid):
+        abort(404)
+
+
+def disown(name):
+    """Clear the owner of every character that belonged to user `name` (used when the account is deleted)."""
+    with lock:
+        ex = _extra()
+        changed = False
+        for rec in ex.values():
+            if rec.get("owner", "").lower() == name.lower():
+                rec["owner"] = ""
+                changed = True
+        if changed:
+            _save_extra(ex)
+
+
 def summary(cid, root):
     """The short per-character record used by the party list and tracker.
 
@@ -238,7 +275,7 @@ def summary(cid, root):
     levels = " / ".join(f"{_t(c, 'name')} {_t(c, 'level', '?')}" for c in cls)
     ex = _extra().get(cid, {})  # this character's sidecar record, or {}
     return {
-        "id": cid, "name": _t(root, "name"), "class": levels,
+        "id": cid, "name": _t(root, "name"), "class": levels, "owner": ex.get("owner", ""),
         "race": _t(root.find("race"), "name") if root.find("race") is not None else "",
         "hp": int(_num(_t(root, "hpCurrent"))), "hpMax": int(_num(_t(root, "hpMax"))),
         # <slots> and <slotsCurrent> are comma lists like "4,3,2,0,0,0,0,0,0," (index 0 =
@@ -388,27 +425,52 @@ def import_party():
         return jsonify(error=f"Could not read file: {e}"), 400
     if not chars:
         return jsonify(error="No <character> entries found in that file"), 400
+    user = auth.current_user()
     with lock:
+        ex = _extra()
+        # Who the characters belong to: a player's upload is always theirs; the DM may name an owner in the
+        # form (field "owner"), otherwise a re-imported character keeps the owner it already had.
+        owner = user["name"] if user["role"] != "dm" else (request.form.get("owner") or "").strip()
+        if owner and user["role"] == "dm" and owner.lower() not in auth._load()["users"]:
+            return jsonify(error=f"No user named {owner}"), 400
         ids = []
         for ch in chars:
             cid = _cid_for(ch, ids)
-            _write(cid, ch)
+            # A player may add new characters or update their own, never replace somebody else's.
+            if user["role"] != "dm" and (DIR / f"{cid}.xml").exists() and not _may_use(cid):
+                return jsonify(error=f"{_t(ch, 'name')} already belongs to someone else"), 409
             ids.append(cid)
+        for ch, cid in zip(chars, ids):
+            _write(cid, ch)
+            if owner:
+                ex.setdefault(cid, {})["owner"] = owner
+        _save_extra(ex)
     return jsonify(imported=ids)
 
 
 # ------------------------------------------------------------------ routes
+# Set by app.py: a function giving the ids in the loaded campaign's party, or None when the campaign has no
+# party list yet. Used by "?active=1" below.
+active_ids = lambda: None  # noqa: E731
+
+
 @bp.get("/api/party")
 def list_party():
-    """GET /api/party -> JSON list of summary() records for every character, sorted by id."""
+    """GET /api/party -> JSON list of summary() records for every character the signed-in user may see
+    (the DM: everyone; a player: their own), sorted by id.
+
+    "?active=1" (DM) narrows the list to the loaded campaign's party, if that campaign has one; the party
+    tracker panel asks for it this way."""
+    keep = active_ids() if request.args.get("active") and auth.is_dm() else None
     with lock:
-        return jsonify([summary(i, _load(i)) for i in _ids()])
+        return jsonify([summary(i, _load(i)) for i in _ids() if _may_use(i) and (keep is None or i in keep)])
 
 
 @bp.get("/api/party/<cid>")
 def get_member(cid):
     """GET /api/party/<cid> -> detail() JSON for one character; 404 if unknown, 400 if the
     id has illegal characters. <cid> in the URL is passed in as the `cid` argument."""
+    _guard(cid)
     with lock:
         return jsonify(detail(cid, _load(cid)))
 
@@ -422,6 +484,7 @@ def portrait(cid):
     detected from the first bytes (the PNG magic number \\x89PNG); anything else is assumed
     JPEG. 404 if there is no image. Cached by the browser for 60 s.
     """
+    _guard(cid)
     data = (_load(cid).findtext("imageData") or "").strip()
     if not data:
         abort(404)
@@ -451,6 +514,7 @@ def update_member(cid):
     Side effects: rewrites data/party/<cid>.xml (always) and data/party_extra.json (only if
     trackers/conditions/deaths were sent). The lock makes the whole read-modify-write one step.
     """
+    _guard(cid)
     body = request.get_json(force=True) or {}  # force=True: parse body as JSON regardless of Content-Type
     with lock:
         root = _load(cid)
@@ -514,7 +578,10 @@ def update_member(cid):
 @bp.delete("/api/party/<cid>")
 def delete_member(cid):
     """DELETE /api/party/<cid> : remove a character's XML file and sidecar entry.
-    Response {"ok": true}; deleting an unknown (but well-formed) id is not an error."""
+    Response {"ok": true}; deleting an unknown (but well-formed) id is not an error. A player may delete
+    only their own characters (someone else's is "not found")."""
+    if _path(cid).exists():
+        _guard(cid)
     with lock:
         p = _path(cid)
         if p.exists():
@@ -522,6 +589,22 @@ def delete_member(cid):
         ex = _extra()
         if ex.pop(cid, None) is not None:  # pop returns the removed value, or None if absent
             _save_extra(ex)
+    return jsonify(ok=True)
+
+
+@bp.put("/api/party/<cid>/owner")
+def set_owner(cid):
+    """PUT /api/party/<cid>/owner {"owner": "name" | ""} : give a character to a user (or to nobody). DM only."""
+    auth.require_dm()
+    if not _path(cid).exists():
+        abort(404)
+    owner = str((request.get_json(force=True, silent=True) or {}).get("owner", "")).strip()
+    if owner and owner.lower() not in auth._load()["users"]:
+        return jsonify(error=f"No user named {owner}"), 400
+    with lock:
+        ex = _extra()
+        ex.setdefault(cid, {})["owner"] = owner
+        _save_extra(ex)
     return jsonify(ok=True)
 
 
@@ -542,7 +625,8 @@ def export_party():
         ET.SubElement(data, "version").text = "37"
         ET.SubElement(data, "uid").text = "1031"
         for i in _ids():
-            data.append(_load(i))
+            if _may_use(i):  # a player's backup holds only their own characters
+                data.append(_load(i))
         xml = ET.tostring(data, encoding="utf-8", xml_declaration=True)  # tree -> bytes
     # Build the zip in memory (BytesIO ~ a growable in-RAM file), then rewind to the start
     # with seek(0) so send_file reads from the beginning.
@@ -563,7 +647,8 @@ def get_initiative():
     """GET /api/initiative -> {"round": int, "active": ..., "order": [...]} as last saved.
     If nothing has been saved yet (or the file is unreadable) returns a fresh combat:
     round 1, nobody active, empty order. The shape of "order" entries is chosen by the
-    tracker page's JavaScript; the server stores it opaquely."""
+    tracker page's JavaScript; the server stores it opaquely. DM only."""
+    auth.require_dm()
     try:
         return jsonify(json.loads(INIT.read_text()))
     except Exception:
@@ -577,8 +662,9 @@ def put_initiative():
     Body: JSON object that must contain "order" as a list (other keys such as round/active
     are stored as sent). Response {"ok": true}, or {"error": ...} (400) if "order" is not a
     list. Written atomically (temp file + os.replace). Unlike the character routes this
-    takes no lock: the whole file is replaced in one rename, last writer wins.
+    takes no lock: the whole file is replaced in one rename, last writer wins. DM only.
     """
+    auth.require_dm()
     body = request.get_json(force=True) or {}
     if not isinstance(body.get("order"), list):
         return jsonify(error="order must be a list"), 400
@@ -595,8 +681,9 @@ def download_collection():
     Serves the first file matching FightClub5eXML*.zip in the project folder (sorted, so
     the choice is deterministic) as "FightClub5eXML.zip"; 404 if none is present. The
     for-loop returns on its first iteration, so it is really "first match or fall through
-    to abort".
+    to abort". DM only.
     """
+    auth.require_dm()
     for p in sorted(BASE.glob("FightClub5eXML*.zip")):
         return send_file(p, mimetype="application/zip", as_attachment=True, download_name="FightClub5eXML.zip")
     abort(404)

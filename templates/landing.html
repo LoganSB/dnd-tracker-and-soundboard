@@ -1,0 +1,27 @@
+<!doctype html>
+<!--
+  landing.html - the banner page a visitor who is NOT signed in sees at "/".
+
+  Same header as the app (the brand at the top left) with a Login button at the top right. Signed-in
+  users never get this page: "/" gives them the app shell with the Home tab instead (see shell() in app.py).
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DND Tracker</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="authpage">
+<header class="appnav">
+  <a class="brand" href="/">🎲 DND Tracker</a>
+  <span class="grow"></span>
+  <a class="btn primary" href="/login">Log in</a>
+</header>
+<main class="hero">
+  <h1>🎲 DND Tracker</h1>
+  <p>Soundboard, campaign tracker and character sheets for the table.</p>
+  <p class="muted">Players: open the invite link your DM sent you to make your account, then log in to upload your character.</p>
+</main>
+</body>
+</html>

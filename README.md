@@ -2,12 +2,23 @@
 
     python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
     .venv/bin/python app.py            # http://127.0.0.1:5000
-    .venv/bin/python app.py --live     # ignore launch preset, load live changes
-    .venv/bin/python app.py --preset NAME
+    .venv/bin/python app.py --live     # ignore the launch campaign, load live changes
+    .venv/bin/python app.py --campaign NAME
 
 Sounds are downloaded once into `media/` (yt-dlp for YouTube, scraped mp3 for MyInstants), then
 decoded in the browser so playback is instant. State lives in `data/` (live.json autosave,
-versions/ snapshot per server start, presets/, config.json launch choice).
+versions/ snapshot per server start, presets/ = your saved campaigns, config.json launch choice, users.json accounts).
+
+## Accounts: DM and players
+`/` is a banner page with the app's header and a **Login** button. There are two permission levels, enforced by the server on every request (`auth.py`):
+- **DM** sees everything: Home, Soundboard, Campaign, Characters, the party tracker, accounts and invites.
+- **Player** sees only Home and **My character**: they can upload a Fight Club file (the same import as before) and view or edit what they uploaded. Everyone else's characters, and every other page, answer "forbidden".
+
+The DM's **Home** tab lists the saved campaigns, the party, every uploaded character with the player who owns it (changeable), the accounts, and invite links. Players cannot register on their own: the DM creates a single-use invite link (valid 7 days); the player opens it and chooses a user name and a password, or links their Google account.
+Sign-in is by user name and password (stored only as salted hashes in `data/users.json`) and optionally Google. **First run:** a local copy with no accounts stays open (everyone is the DM) until you create an account on `/login`; a deployed copy (which has `DND_PASSWORD` set) is locked, and `/login` offers "Create the DM account", which asks for `DND_PASSWORD` as the setup key. Google sign-in needs `DND_GOOGLE_CLIENT_ID`, `DND_GOOGLE_CLIENT_SECRET` and (optionally) `DND_DM_EMAIL`; see the top of `auth.py`.
+
+## Campaigns
+**Campaign** is the new name for what used to be called a preset: a named snapshot of the soundboard and the campaign tracker (stored in `data/presets/`). It now also carries the list of **party members**, saved as references only (character id, name, owner), never the character sheets. Each sheet stays with the player who uploaded it (`data/party/<id>.xml`), so loading a campaign brings back who is in the party, and each member appears as soon as their file is on the server (until then Home says "waiting for <player>"). Tick characters in the Home tab's roster to set the party; the party tracker panel then shows just those characters.
 
 ## Party
 - `/party` import (.backup/.xml/.zip from Fight Club 5), export (zip with FightClub5.backup), per-character full pages at `/party/<id>`.
@@ -17,9 +28,11 @@ versions/ snapshot per server start, presets/, config.json launch choice).
 ## Where to start reading the code
 | File | Role |
 |---|---|
-| `app.py` | Flask server: saves/loads the soundboard, downloads audio, presets, versions, launch options |
+| `app.py` | Flask server: saves/loads the soundboard, downloads audio, campaigns, versions, launch options |
+| `auth.py` | Flask blueprint: accounts, sign-in (password and Google), invites, and which requests each level may make |
 | `party.py` | Flask blueprint: Fight Club character import/export, tracker edits, initiative storage |
 | `templates/*.html` | Page outlines (JavaScript fills in the rest) |
+| `static/home.js` | The Home tab: campaigns, party, roster and accounts for the DM; the player's own character and upload |
 | `static/app.js` | The soundboard: audio engine, chains, cable routing, drag and drop (long header explains the data model) |
 | `static/tracker.js`, `static/party.js` | Party/initiative tracker widget and the /party pages |
 | `static/style.css` | Styling, built in layers (later rules override earlier ones) |
@@ -35,8 +48,8 @@ Same layout as the soundboard (sections > tiles > subsections, drag and drop), b
 ## The canvas (pan and zoom, like ComfyUI)
 The soundboard and the campaign tracker are infinite canvases. Drag empty space to pan (or hold Space and drag, or middle-mouse drag), use the mouse wheel to zoom (Shift + wheel pans sideways), and use the buttons in the bottom-right corner to zoom or **Fit** everything into view. Drag a tile by its title bar to move it and drag its bottom-right corner to resize it. Each section is drawn as a coloured frame around its tiles (drag the frame's title bar to move the whole section; drop a tile inside another frame to move it to that section). The first tile goes in the middle of the canvas and new tiles are placed in the nearest free spot around their section. See `static/canvas.js`.
 
-## One app, three pages at once
-Every address (`/`, `/campaign`, `/party`, `/m`) serves the same shell page (`templates/shell.html`): one shared header ("DND Tracker", always linking to the soundboard, with the current page highlighted) and the Soundboard, Campaign and Characters pages loaded together as frames. Switching tabs only shows/hides a frame, so the soundboard keeps playing (and its timers keep running) while you look at the other pages. The real pages are served under `/_/...`; `/tracker` stays a stand-alone pop-out window.
+## One app, several pages at once
+Once signed in, every address (`/`, `/sound`, `/campaign`, `/party`) serves the same shell page (`templates/shell.html`): one shared header ("DND Tracker", always linking to Home, with the current page highlighted) and the Home, Soundboard, Campaign and Characters pages loaded together as frames (a player gets only Home and Characters). The soundboard now lives at `/sound`; `/` is Home. Switching tabs only shows/hides a frame, so the soundboard keeps playing (and its timers keep running) while you look at the other pages. The real pages are served under `/_/...`; `/tracker` stays a stand-alone pop-out window.
 
 ## Campaign links
 In the campaign tracker, drag from the circle on the right edge of ANY item (section, tile, flag, checklist entry, a flag's loot table) onto any other item to link them. A cable is solid green once the item it comes from is done (flag triggered, entry ticked, loot rolled, tile/section finished) and dashed otherwise; items still waiting on something are shown dimmed ("locked") with a tooltip. Click a cable to remove it. Flags have a 🗑 button.
@@ -70,5 +83,5 @@ Every change to chain links can be undone and redone on both pages: making a lin
 
 
 ## Running it on Google Cloud
-`Dockerfile`, `gunicorn.conf.py` and `.dockerignore` package the app as a container, and **DEPLOY-GOOGLE-CLOUD.md** has the step-by-step instructions to upload it to Cloud Run with a Cloud Storage bucket for your data and a password for the site. Settings read from the environment: `DND_DATA_ROOT` (where data/, media/ and mp3s/ live), `DND_PASSWORD` (site password; unset = no password) and `PORT`.
+`Dockerfile`, `gunicorn.conf.py` and `.dockerignore` package the app as a container, and **DEPLOY-GOOGLE-CLOUD.md** has the step-by-step instructions to upload it to Cloud Run with a Cloud Storage bucket for your data and a password for the site. Settings read from the environment: `DND_DATA_ROOT` (where data/, media/ and mp3s/ live), `DND_PASSWORD` (the setup key for the first DM account; setting it locks the site until that account exists) and `PORT`, plus the optional Google sign-in settings above.
 # dnd-tracker-and-soundboard

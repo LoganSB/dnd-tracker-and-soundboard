@@ -1,6 +1,7 @@
 <!doctype html>
 <!--
-  shell.html - the app shell: the ONE page every address (/, /campaign, /party ...) returns.
+  shell.html - the app shell: the ONE page every signed-in address (/, /sound, /campaign, /party ...) returns.
+  (A visitor who is not signed in gets landing.html instead; see the shell() route in app.py.)
 
   WHY A SHELL: the soundboard must keep playing while you look at the campaign tracker or the
   characters. Browsers throw away a page's JavaScript (and its audio) when you navigate away from it.
@@ -8,16 +9,22 @@
   (an iframe is a complete web page embedded inside another page, with its own JavaScript and memory),
   and the tabs just hide and show them. Hidden iframes keep running.
 
+  TWO LEVELS: a DM gets every tab (Home, Soundboard, Campaign, Characters) and the party tracker panel. A
+  player gets only Home and "My character", and none of the DM's pages are even loaded. (The server refuses
+  a player's request for the DM pages anyway; see auth.py. This only keeps the screen tidy.)
+
   PIECES
     - the header: brand + page links (from _nav.html, shared with the pop-out tracker). The brand
       is always "DND Tracker" and always goes to the soundboard. The current page's link is highlighted.
-    - #frames: the three iframes stacked on top of each other; only the active one is visible.
+    - #frames: the iframes stacked on top of each other; only the active one is visible.
     - the script at the bottom: switches tabs without reloading anything, keeps the address bar and the
       browser's Back button in step (history.pushState), and listens for messages from the pages.
 
   MESSAGES (window.postMessage is how pages in different frames talk to each other):
     from a page to the shell:  { type: "goto", page: "party", path: "/_/party/<id>" }  show that tab and
                                load that address in its frame (used by the tracker's character links)
+                               { type: "reloadPages" }  reload the Soundboard and Campaign pages (Home sends
+                               it after loading a different campaign)
     from the shell to a page:  { type: "shown" }  sent when a tab becomes visible, so a page can redraw
                                anything it could not measure while hidden (the soundboard's cables)
                                { type: "focusSound", id }  sent to the soundboard to centre on a sound
@@ -25,7 +32,8 @@
     sends it "focusSound" (used by the campaign page's jump-to-sound buttons).
     The party tracker panel also lives in this page, so it works on every tab.
 
-  Jinja2 variables: active (tab to show first), party_path (character frame address).
+  Jinja2 variables: active (tab to show first), party_path (character frame address), role ("dm" or
+  "player"), user (the signed-in user: name and role).
 -->
 <html lang="en">
 <head>
@@ -37,34 +45,50 @@
 <body class="shell">
 <header class="appnav">
   {% include "_nav.html" %}
+  <span class="grow"></span>
+  {% if role == 'dm' %}
   <!-- partyBtn shows or hides the party tracker panel (below). It lives in the shell, not in a page, so it is
        available on every tab. -->
   <button id="partyBtn" title="Party tracker: player stats and initiative">🛡 Party</button>
+  {% endif %}
+  <!-- Who is signed in, and the way out. On a local copy with no accounts yet ("local") the link goes to the
+       page where the first DM account is created instead. -->
+  {% if user.name == 'local' %}
+  <a class="btn" href="/login" target="_top">Set up accounts</a>
+  {% else %}
+  <span class="who" title="Signed in">{{ user.name }} · {{ 'DM' if role == 'dm' else 'Player' }}</span>
+  <button id="logoutBtn">Log out</button>
+  {% endif %}
 </header>
 
 <!-- The party tracker panel: a floating box under the header, hidden until the Party button adds the class
      "open" (see #trackerPanel in style.css). tracker.js renders the Party / Initiative UI into div#tracker.
      "pop out" opens the same tracker in its own small window (/tracker). -->
+{% if role == 'dm' %}
 <aside id="trackerPanel">
   <header><h2>🛡 Party tracker</h2>
     <span><a href="/tracker" id="popOut" title="Open in its own window">⧉ pop out</a> <button id="closeTracker" class="tiny">✕</button></span></header>
   <div id="tracker" class="trackerlist"></div>
 </aside>
+{% endif %}
 
-<!-- All three pages are loaded immediately. allow="autoplay" lets the soundboard frame start audio. -->
+<!-- Every page this user may use is loaded immediately. allow="autoplay" lets the soundboard frame start audio. -->
 <div id="frames">
+  <iframe id="f-home" data-page="home" title="Home" src="/_/home"></iframe>
+  {% if role == 'dm' %}
   <iframe id="f-sound" data-page="sound" title="Soundboard" allow="autoplay" src="/_/sound"></iframe>
   <iframe id="f-campaign" data-page="campaign" title="Campaign tracker" allow="autoplay" src="/_/campaign"></iframe>
+  {% endif %}
   <iframe id="f-party" data-page="party" title="Characters" allow="autoplay" src="{{ party_path }}"></iframe>
 </div>
 
-<script src="/static/tracker.js"></script>
+{% if role == 'dm' %}<script src="/static/tracker.js"></script>{% endif %}
 <script>
 (function () {
   // frames: page name -> its <iframe>. urls: the address shown in the browser's address bar for each tab.
   const frames = {};
   document.querySelectorAll("#frames iframe").forEach(f => (frames[f.dataset.page] = f));
-  const urls = { sound: "/", campaign: "/campaign", party: "/party" };
+  const urls = { home: "/", sound: "/sound", campaign: "/campaign", party: "/party" };
   let current = {{ active|tojson }};   // tojson writes the Python value as a JavaScript string literal
 
   // show(page, push): make `page` the visible tab. Highlights its link, shows its frame and hides the
@@ -93,7 +117,7 @@
   // Back / Forward buttons: show the tab recorded in that history entry (or work it out from the address).
   addEventListener("popstate", ev => {
     const p = location.pathname;
-    show(ev.state?.page || (p.startsWith("/campaign") ? "campaign" : p.startsWith("/party") ? "party" : "sound"), false);
+    show(ev.state?.page || (p.startsWith("/campaign") ? "campaign" : p.startsWith("/party") ? "party" : p === "/sound" ? "sound" : "home"), false);
   });
   // goto(page, path, sound): switch to a tab, optionally loading `path` in its frame first and, for the
   // soundboard, asking it to centre on the sound with id `sound` (see revealSound in app.js).
@@ -105,34 +129,48 @@
     if (sound) f.contentWindow.postMessage({ type: "focusSound", id: sound }, "*");
   }
   window.shellGoto = goto;   // so the tracker panel (which runs in this page) can use it too
-  // Messages from the pages (see the header comment).
+  // Messages from the pages (see the header comment). "reloadPages" (from Home, after a campaign is loaded)
+  // reloads the Soundboard and Campaign pages, which keep their own copy of the board in memory.
   addEventListener("message", ev => {
-    if (ev.origin !== location.origin || ev.data?.type !== "goto") return;
-    goto(ev.data.page, ev.data.path, ev.data.sound);
+    if (ev.origin !== location.origin) return;
+    if (ev.data?.type === "reloadPages") {
+      for (const name of ["sound", "campaign"]) frames[name]?.contentWindow.location.reload();
+    } else if (ev.data?.type === "goto") {
+      goto(ev.data.page, ev.data.path, ev.data.sound);
+    }
   });
 
   // The party tracker panel. mountTracker() (from tracker.js) builds its contents; it is called the first
   // time the panel is opened and then reused.
+  // (Only the DM's page has the panel and its button; a player's page has neither.)
   const panel = document.getElementById("trackerPanel"),
     partyBtn = document.getElementById("partyBtn");
-  let trackerMounted = false;
-  partyBtn.onclick = () => {
-    const open = panel.classList.toggle("open");
-    partyBtn.classList.toggle("on-state", open);
-    if (open && !trackerMounted) {
-      mountTracker(document.getElementById("tracker"));
-      trackerMounted = true;
-    }
-  };
-  document.getElementById("closeTracker").onclick = () => {
-    panel.classList.remove("open");
-    partyBtn.classList.remove("on-state");
-  };
-  document.getElementById("popOut").onclick = ev => {
-    ev.preventDefault();
-    window.open("/tracker", "dmtracker", "width=460,height=720");
-    panel.classList.remove("open");
-    partyBtn.classList.remove("on-state");
+  if (panel && partyBtn) {
+    let trackerMounted = false;
+    partyBtn.onclick = () => {
+      const open = panel.classList.toggle("open");
+      partyBtn.classList.toggle("on-state", open);
+      if (open && !trackerMounted) {
+        mountTracker(document.getElementById("tracker"));
+        trackerMounted = true;
+      }
+    };
+    document.getElementById("closeTracker").onclick = () => {
+      panel.classList.remove("open");
+      partyBtn.classList.remove("on-state");
+    };
+    document.getElementById("popOut").onclick = ev => {
+      ev.preventDefault();
+      window.open("/tracker", "dmtracker", "width=460,height=720");
+      panel.classList.remove("open");
+      partyBtn.classList.remove("on-state");
+    };
+  }
+  // Log out: end the session on the server, then go to the banner page (which shows the Login button).
+  const logoutBtn = document.getElementById("logoutBtn");
+  if (logoutBtn) logoutBtn.onclick = async () => {
+    await fetch("/api/auth/logout", { method: "POST" });
+    location.href = "/";
   };
   history.replaceState({ page: current }, "");
   show(current, false);

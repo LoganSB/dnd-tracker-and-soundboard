@@ -64,7 +64,7 @@
     <!-- addSectionBtn creates a new section (a group of tiles) -->
     <button id="addSectionBtn" class="desk">+ Section</button>
     <!-- presetsBtn opens the presets dialog (presetDlg below) -->
-    <button id="presetsBtn" class="desk">Presets &amp; versions</button>
+    <button id="presetsBtn" class="desk">Campaigns &amp; versions</button>
     <!-- saveState: app.js writes "saving..."/"saved" here as edits autosave -->
     <span id="saveState" class="muted desk">saved</span>
   </div>
@@ -186,26 +186,26 @@
   </form>
 </dialog>
 
-<!-- presets / versions / launch -->
-<!-- presetDlg: save/load whole-board snapshots, choose what loads at server start, browse version history. Its lists are filled by app.js. -->
+<!-- campaigns / versions / launch (the ids still say "preset"; the feature was renamed Campaigns) -->
+<!-- presetDlg: save/load campaigns (whole-board snapshots), choose what loads at server start, browse version history. Its lists are filled by app.js. -->
 <dialog id="presetDlg">
-  <h2>Presets &amp; versions</h2>
+  <h2>Campaigns &amp; versions</h2>
   <p class="muted">Live changes autosave on every edit. A version snapshot of the previous live state is kept once per server start.</p>
   <section>
-    <h3>Presets</h3>
+    <h3>Campaigns</h3>
     <!-- presetName + savePreset: store the current board under a name; presetList shows saved ones -->
-    <div class="row"><input id="presetName" placeholder="New preset name"><button id="savePreset" class="primary">Save live as preset</button></div>
+    <div class="row"><input id="presetName" placeholder="New campaign name"><button id="savePreset" class="primary">Save live as campaign</button></div>
     <ul id="presetList" class="list"></ul>
   </section>
   <section>
     <h3>Launch behaviour</h3>
-    <!-- Choose whether the server starts with the live state or a named preset -->
+    <!-- Choose whether the server starts with the live state or a named campaign -->
     <div class="row">
-      <select id="launchMode"><option value="live">Load live changes</option><option value="preset">Load a preset</option></select>
+      <select id="launchMode"><option value="live">Load live changes</option><option value="preset">Load a campaign</option></select>
       <select id="launchPreset"></select>
       <button id="saveLaunch">Save</button>
     </div>
-    <p class="muted">Override at start: <code>python app.py --live</code> or <code>--preset NAME</code> (or press L at the 5s prompt).</p>
+    <p class="muted">Override at start: <code>python app.py --live</code> or <code>--campaign NAME</code> (or press L at the 5s prompt).</p>
   </section>
   <section>
     <h3>Version history</h3>

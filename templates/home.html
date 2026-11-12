@@ -1,0 +1,23 @@
+<!doctype html>
+<!--
+  home.html - the Home (banner) tab, shown inside the app shell's first iframe (/_/home).
+
+  What it shows depends on the signed-in user's level; static/home.js builds it into #home:
+    DM      the loaded campaign and the list of saved campaigns, the party, every uploaded character with its
+            owner, the player accounts and invite links.
+    player  their own character(s), an upload box for a Fight Club file, and a way to change their password.
+  Jinja2 variable: role ("dm" or "player"); it is only a hint for the script, the server decides what each
+  request may do.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Home</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="homepage" data-role="{{ role }}">
+<div id="home"></div>
+<script src="/static/home.js"></script>
+</body>
+</html>

@@ -2119,31 +2119,32 @@ tform.addEventListener("submit", ev => {
   render(true);
 });
 
-// --------------------------------------------------- presets & versions
-// Presets = named snapshots of the whole soundboard the user saved on purpose. Versions =
+// --------------------------------------------------- campaigns & versions
+// (The element ids and function names still say "preset": the feature was renamed Campaigns, only the wording and URLs changed.)
+// Campaigns = named snapshots of the whole soundboard the user saved on purpose. Versions =
 // automatic backups kept by the server. Both live on the server; this code lists them and asks the server to load/restore.
 const pdlg = $("#presetDlg");
 
-// refreshPresetUI(): fetch presets, versions and launch config from the server (three requests at once) and
-// rebuild the three lists in the presets dialog. Promise.all([...]) waits for all of the
+// refreshPresetUI(): fetch campaigns, versions and launch config from the server (three requests at once) and
+// rebuild the three lists in the campaigns dialog. Promise.all([...]) waits for all of the
 // futures to finish and returns their results as an array, which `const [a, b, c] = ...` unpacks.
 async function refreshPresetUI() {
-  const [presets, versions, cfg] = await Promise.all([api("/api/presets"), api("/api/versions"), api("/api/config")]);
+  const [presets, versions, cfg] = await Promise.all([api("/api/campaigns"), api("/api/versions"), api("/api/config")]);
   const pl = $("#presetList");
   pl.textContent = "";
   presets.forEach(n => pl.append(el("li", {}, el("span", { textContent: n }), el("span", {},
     // encodeURIComponent makes the name safe to put in a URL path (escapes "/", spaces, etc.).
-    el("button", { textContent: "Load", onclick: () => applyState(api(`/api/presets/${encodeURIComponent(n)}/load`, "POST")) }),
+    el("button", { textContent: "Load", onclick: () => applyState(api(`/api/campaigns/${encodeURIComponent(n)}/load`, "POST")) }),
     el("button", {
       textContent: "Delete",
       onclick: async () => {
-        if (confirm(`Delete preset ${n}?`)) {
-          await api("/api/presets/" + encodeURIComponent(n), "DELETE");
+        if (confirm(`Delete campaign ${n}?`)) {
+          await api("/api/campaigns/" + encodeURIComponent(n), "DELETE");
           refreshPresetUI();
         }
       }
     })))));
-  // The "launch behaviour" drop-downs: which preset (if any) to load when the app starts.
+  // The "launch behaviour" drop-downs: which campaign (if any) to load when the app starts.
   const lp = $("#launchPreset");
   lp.textContent = "";
   presets.forEach(n => lp.append(el("option", { value: n, textContent: n })));
@@ -2172,14 +2173,14 @@ $("#presetsBtn").onclick = async () => {
   await refreshPresetUI();
   pdlg.showModal();
 };
-// "Save preset": first upload the current state (so the preset captures what is on screen right
+// "Save campaign": first upload the current state (so the campaign captures what is on screen right
 // now rather than the last debounced save), then ask the server to store it under the typed name.
 $("#savePreset").onclick = async () => {
   const name = $("#presetName").value.trim();
   if (!name) return;
   try {
     await api("/api/state", "PUT", S);
-    await api("/api/presets", "POST", { name });
+    await api("/api/campaigns", "POST", { name });
     $("#presetName").value = "";
     refreshPresetUI();
   }

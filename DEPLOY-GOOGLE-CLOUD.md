@@ -111,10 +111,12 @@ gcloud storage buckets add-iam-policy-binding gs://$BUCKET \
   --member=serviceAccount:$SA --role=roles/storage.objectUser
 ```
 
-## Step 6: Store the site password
+## Step 6: Store the setup key
 
-The app has no user accounts: one shared password protects everything. It is kept in **Secret Manager**, Google's
-built-in secret store, and only the service account above can read it.
+The app has its own accounts: a DM account (sees everything) and player accounts (see only their own character).
+This secret, `dnd-password`, is the **setup key**: the one thing needed to create the first DM account (step 8).
+Until that account exists the whole site is locked, and afterwards the key is not used again. It is kept in
+**Secret Manager**, Google's built-in secret store, and only the service account above can read it.
 
 Pick **one** of these:
 
@@ -178,7 +180,7 @@ What the less obvious options do:
 | `--max-instances 1` | The app keeps your soundboard in memory. A second copy would overwrite the first one's saves. Do not raise this. |
 | `--no-cpu-throttling` | Downloads and the MP3-folder watcher run in the background. Without this Cloud Run freezes them between requests. |
 | `--add-volume` / `--add-volume-mount` | Mount the bucket at `/data`, where the app saves everything. Without it, data is lost when the container stops. |
-| `--allow-unauthenticated` | Lets your browser reach the page. The password from step 6 is what keeps others out. |
+| `--allow-unauthenticated` | Lets your browser reach the page. The app's own sign-in (DM and player accounts) is what keeps others out. |
 | `--min-instances 0` | Costs nothing while nobody uses it; the first visit after a quiet spell takes a few seconds to start. |
 
 When it finishes it prints the service URL. To print it again:
@@ -189,8 +191,16 @@ gcloud run services describe $SERVICE --region $REGION --format='value(status.ur
 
 ## Step 8: Open it
 
-Open the URL. The browser asks for a login: type any user name and the password from step 6. Click once on the
-page before using sounds (browsers require that click before they allow audio).
+Open the URL. You see the banner page with a **Log in** button at the top right. Press it. The first time, the page
+also shows **Create the DM account**: enter the setup key from step 6, choose your DM user name and a password
+(8 or more characters), and submit. You are then signed in as the DM. (The setup form disappears once a DM account
+exists. If you ever forget the DM password, delete `users.json` from the bucket's `data/` folder and create the
+account again; players' accounts are lost too.) Click once on the page before using sounds (browsers require that
+click before they allow audio).
+
+**Adding players.** On the Home tab, under "Players and invite links", press **Create invite link** and send the
+link to the player. They open it, choose a user name and a password, and then see only their own character (they
+can upload their Fight Club file there). A link works once and expires after 7 days.
 
 Check that it saves: change something, then run
 
@@ -211,8 +221,9 @@ gcloud run services logs read $SERVICE --region $REGION --limit 50
 | **Update the app** after changing the code | Zip and upload the code again (step 1, option 1, a to c), then run the step 7 deploy command again. Your data is not touched. |
 | **Back up** my data | `gcloud storage rsync --recursive gs://$BUCKET ./dnd-backup` |
 | **Restore** a backup | `gcloud storage rsync --recursive ./dnd-backup gs://$BUCKET`, then run the step 7 deploy command again so the app reloads it. |
-| **Change the password** | Repeat the step 6 command with `versions add dnd-password` instead of `create dnd-password`, then run the step 7 deploy command again. |
-| **Undo a bad save** | The bucket keeps old versions: `gcloud storage ls --all-versions gs://$BUCKET/data/live.json`. The app's own "Presets & versions" dialog also still works. |
+| **Change my password** | Sign in, and on the Home tab use the Password box. A DM can reset a player's password from "Players and invite links". |
+| **Change the setup key** | Repeat the step 6 command with `versions add dnd-password` instead of `create dnd-password`, then run the step 7 deploy command again. It only matters while no DM account exists. |
+| **Undo a bad save** | The bucket keeps old versions: `gcloud storage ls --all-versions gs://$BUCKET/data/live.json`. The app's own "Campaigns & versions" dialog also still works. |
 | **Keep it always running** | Add `--min-instances 1` to the step 7 deploy command (a small constant cost, no start-up wait). |
 
 To remove everything:
@@ -227,14 +238,50 @@ gcloud iam service-accounts delete $SA
 (This does not remove the container image Cloud Build stored; delete the `cloud-run-source-deploy` repository on
 the Artifact Registry page of the console if you want that gone too.)
 
+## Optional: "Sign in with Google"
+
+Players and the DM can use their Google accounts instead of (or as well as) a password. This needs a Google
+"OAuth client" in your project. **Not tested against real Google**: the app's side was tested with a stand-in for
+Google's replies, so expect to adjust a screen or two.
+
+1. In the console open **APIs & Services > OAuth consent screen**, choose **External**, give the app a name
+   (DND Tracker) and your email, and save. While the app's status is "Testing", add every player's Google address
+   under **Test users** (or press **Publish app**; sign-in only asks for the email address, which needs no review).
+2. Open **APIs & Services > Credentials > Create credentials > OAuth client ID**, type **Web application**, and add
+   this under **Authorized redirect URIs** (use your own domain): `https://dnd.gloan.me/auth/google/callback`.
+   Copy the client ID and client secret it shows.
+3. Store both in Secret Manager and let the app read them (paste your own values where shown):
+
+   ```bash
+   printf '%s' 'PASTE_CLIENT_ID'     | gcloud secrets create dnd-google-id     --data-file=-
+   printf '%s' 'PASTE_CLIENT_SECRET' | gcloud secrets create dnd-google-secret --data-file=-
+   gcloud secrets add-iam-policy-binding dnd-google-id     --member=serviceAccount:$SA --role=roles/secretmanager.secretAccessor
+   gcloud secrets add-iam-policy-binding dnd-google-secret --member=serviceAccount:$SA --role=roles/secretmanager.secretAccessor
+   ```
+4. Add three things to the step 7 deploy command, then deploy again. `DND_PUBLIC_URL` is your site's address and
+   `DND_DM_EMAIL` is the Google address that may always sign in as the DM:
+
+   ```bash
+     --set-secrets DND_PASSWORD=dnd-password:latest,DND_GOOGLE_CLIENT_ID=dnd-google-id:latest,DND_GOOGLE_CLIENT_SECRET=dnd-google-secret:latest \
+     --set-env-vars DND_PUBLIC_URL=https://dnd.gloan.me,DND_DM_EMAIL=you@example.com
+   ```
+   (These two lines replace the existing `--set-secrets` line.)
+
+A **Continue with Google** button then appears on the login page. A player links their Google account when they
+use their invite link (the invite page has a "Use my Google account instead" button). An address that is not
+linked to an account, and is not `DND_DM_EMAIL`, is refused.
+
 ## Limits to know about
 
 - **YouTube may refuse downloads from Google Cloud.** If adding a YouTube link in the cloud copy fails with a
   "sign in" or "bot" message, download the audio by running the app on your own computer and copy the `media`
   folder up (step 4), or upload an MP3 with **Browse** in the sound dialog. MyInstants and direct audio links work.
-- **One shared password.** Anyone who has it has full access, and anyone can try to guess it, so make it long
-  and random (option B). For stricter access, leave out `--allow-unauthenticated` and open the site with
+- **The site is public, protected by its own sign-in.** Use long passwords. The app slows down repeated wrong
+  passwords (about 6 tries per 5 minutes per address and user name) but is not a hardened login service. For
+  stricter access, leave out `--allow-unauthenticated` and open the site with
   `gcloud run services proxy $SERVICE --region $REGION` (a private link on your computer, using your Google login).
+- **Accounts live in one file** (`data/users.json` in the bucket), the same way everything else does, so the
+  one-instance limit above also protects the accounts. Back the bucket up as described in "Everyday tasks".
 - **The bucket is a network disk,** so file access is a little slower than a local disk. A long soundtrack may
   hesitate the first time it plays.
 - **The Fight Club expansion download** (`/download/collection.zip`) is deliberately not in the image (it is
@@ -252,7 +299,8 @@ the Artifact Registry page of the console if you want that gone too.)
 | Build log says "Python - Runtime Using Runner" or "provide a main.py or app.py" | The deploy ran in the wrong folder, so your code (and `Dockerfile`) was not uploaded. Redo step 1, `cd ~/dnd`, then deploy again. |
 | "Container failed to start" | Read the log (step 8). A Python error at start-up is shown there. |
 | `PermissionDenied` writing to `/data` in the log | The service account cannot use the bucket: repeat step 5 and check the deploy used `--service-account $SA`. |
-| The browser keeps rejecting the password | The secret must hold exactly the password with no extra newline. Re-create it with `printf '%s'` as in step 6 option A (not `echo`), then repeat the deploy. |
+| "Wrong setup key" when creating the DM account | The secret must hold exactly the key with no extra newline. Re-create it with `printf '%s'` as in step 6 option A (not `echo`), then repeat the deploy. |
+| "Too many attempts" at sign-in | Wait five minutes. The limit is per address and user name. |
 | Your data is missing or resets | The bucket is not mounted: check both `--add-volume` options were in the step 7 deploy command, and that you copied data into the right bucket (step 4). |
 | A YouTube link fails | See "Limits to know about". |
 
@@ -263,11 +311,14 @@ docker build -t dnd-tracker .
 docker run --rm -p 8080:8080 -e DND_PASSWORD=test -v "$PWD/cloud-data:/data" dnd-tracker
 ```
 
-Open http://localhost:8080 and use the password `test`. Your data appears in `./cloud-data/`.
+Open http://localhost:8080, press Log in, and create the DM account with the setup key `test`. Your data appears
+in `./cloud-data/`.
 
 ## What was tested
 
-On a laptop, without Docker or Google Cloud: the production server (gunicorn) started the app; with a password set the
-pages and API refused a missing or wrong password and accepted the right one, while `/healthz` needed none; with
+On a laptop, without Docker or Google Cloud: the production server (gunicorn) started the app; with a setup key set,
+the pages and API refused a visitor who was not signed in while `/healthz` needed no sign-in; the DM and player
+levels were checked request by request (a player gets "forbidden" or "not found" for everything but their own
+character); with
 `DND_DATA_ROOT` pointing at another folder everything saved there and the project's own `data/` was untouched;
 and a restart reloaded the saved state.

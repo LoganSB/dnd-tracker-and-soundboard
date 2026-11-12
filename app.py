@@ -26,14 +26,15 @@ Where data lives on disk (all paths are relative to the folder holding this file
   data/live.json       - live state, autosaved on every change
   data/versions/*.json - snapshot of the previous live state, once per server start
                          (also taken just before a preset load or version restore)
-  data/presets/*.json  - named presets you save/load
-  data/config.json     - launch behaviour (which preset, if any, loads at start)
+  data/presets/*.json  - your saved CAMPAIGNS (named whole-board snapshots; the folder keeps its old name)
+  data/config.json     - launch behaviour (which campaign, if any, loads at start)
+  data/users.json      - accounts and invites (see auth.py)
   media/               - downloaded audio files (<key>.<ext>) plus a <key>.json with the title
   mp3s/                - YOUR OWN audio files. Drop files in (or use Browse in the sound dialog, which
                          uploads into it); a background thread notices additions and removals and the
                          page offers them in a drop-down. Sounds refer to them as "library:<file name>".
 Files owned by party.py (see that file): data/party/*.xml, data/party_extra.json,
-data/initiative.json.
+data/initiative.json. Accounts, sign-in and the DM / player permission levels are in auth.py.
 
 How the files connect: party.py defines a Flask "Blueprint" (a bundle of routes written in
 another file). This file imports it and calls app.register_blueprint(), which merges those
@@ -44,20 +45,21 @@ on its own thread, and media downloads run on extra background threads. Shared d
 `state` dict, `jobs` dict) is protected by `lock`, which is a mutex (an RLock: the same
 thread may take it twice without deadlocking, like a recursive mutex).
 
-Run:  python app.py [--live | --preset NAME] [--port 5000] [--host 127.0.0.1]
+Run:  python app.py [--live | --campaign NAME] [--port 5000] [--host 127.0.0.1]
 
 Running in a container / on a server (see DEPLOY-GOOGLE-CLOUD.md): a production web server (gunicorn)
 imports this file instead of running it, and these environment variables (settings given to the
 process from outside) configure it:
   DND_DATA_ROOT  folder that holds data/, media/ and mp3s/ (default: the folder next to this file).
                  In the container it is a mounted volume, so your data survives restarts.
-  DND_PASSWORD   if set, every page and API needs this password (HTTP Basic authentication: any user
-                 name, this password). Leave it unset on your own computer.
+  DND_PASSWORD   the setup key for creating the first DM account on a deployed copy; setting it also locks
+                 the site until that account exists. Leave it unset on your own computer, where the site
+                 stays open (everyone is the DM) until you create an account. More settings, such as
+                 Google sign-in, are listed at the top of auth.py.
   PORT           the port gunicorn listens on (Cloud Run sets it; see gunicorn.conf.py).
 """
 import argparse
 import hashlib
-import hmac
 import json
 import logging
 import mimetypes
@@ -74,7 +76,10 @@ from urllib.parse import urlparse, parse_qs, urljoin, quote
 
 import requests
 from flask import Flask, Response, abort, jsonify, render_template, request, send_from_directory
+from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import safe_join
+
+import auth
 
 # ---- paths and constants. Path objects overload "/" to join path components.
 # __file__ is this script; resolve() makes it absolute; .parent is its folder.
@@ -112,28 +117,15 @@ app.config["MAX_CONTENT_LENGTH"] = MAX_BYTES + 1024 * 1024
 # One process-wide mutex guarding `state`, `jobs` and the files written from them.
 lock = threading.RLock()
 
-# PASSWORD: the optional shared password (see the module docstring). Empty = no password required.
-PASSWORD = os.environ.get("DND_PASSWORD", "")
+# Behind Cloud Run (or any proxy) the browser's real address and HTTPS-ness arrive in X-Forwarded-* headers.
+# ProxyFix believes ONE proxy's worth of them, so request.is_secure, request.remote_addr and url_root are
+# the real values (the session cookie's Secure flag and the sign-in attempt limiter depend on them).
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
-
-@app.before_request
-def require_password():
-    """Run before EVERY request: if a password is configured, insist on it (HTTP Basic authentication).
-
-    The browser shows its own login box the first time and then sends the credentials with every later
-    request to this site, including the page frames and the API calls, so nothing else in the app needs
-    to know. The user name is ignored; only the password is checked. hmac.compare_digest compares in
-    constant time (it takes the same time whether the first or the last character is wrong), which stops
-    guessing the password by timing the replies. /healthz is exempt so a load balancer can check the
-    container is alive. Returning None means "carry on to the normal route"; returning a response
-    answers the request right here.
-    """
-    if not PASSWORD or request.path == "/healthz":
-        return None
-    auth = request.authorization  # parsed "Authorization: Basic ..." header, or None
-    if auth and hmac.compare_digest((auth.password or "").encode(), PASSWORD.encode()):
-        return None
-    return Response("Password required", 401, {"WWW-Authenticate": 'Basic realm="DND Tracker"'})
+# Run before EVERY request: auth.check_request decides whether this visitor (signed out, player or DM)
+# may reach this address. See auth.py for the rules.
+app.before_request(auth.check_request)
+app.register_blueprint(auth.bp)
 
 
 @app.get("/healthz")
@@ -217,6 +209,8 @@ def keep_campaign(new):
     """
     if "campaign" not in new and "campaign" in state:
         new["campaign"] = state["campaign"]
+    if "party" not in new and "party" in state:  # likewise a campaign saved before party lists existed
+        new["party"] = state["party"]
     return new
 
 
@@ -307,10 +301,10 @@ def startup(args):
 
     if args.live:
         mode = "live"
-    elif args.preset:
+    elif args.preset:  # --campaign is the same option under its newer name
         mode, preset = "preset", args.preset
     elif mode == "preset" and preset and sys.stdin.isatty():
-        print(f"\nLaunch preset: '{preset}'. Press L + Enter within 5s to load live changes instead...",
+        print(f"\nLaunch campaign: '{preset}'. Press L + Enter within 5s to load live changes instead...",
               flush=True)
         # select() ~ the C select(2) call: wait up to 5 s for stdin to become readable
         # (i.e. the user pressed Enter). Returns three lists; we only need the "readable" one.
@@ -330,7 +324,8 @@ def startup(args):
             old_live = read_json(LIVE, {})
             if isinstance(old_live, dict) and "campaign" in old_live:
                 state["campaign"] = old_live["campaign"]
-        loaded = f"preset '{preset}'"
+        state["campaignName"] = safe_name(preset)
+        loaded = f"campaign '{preset}'"
     elif LIVE.exists():
         state = validate_state(read_json(LIVE, default_state()))
         loaded = "live changes"
@@ -660,6 +655,7 @@ def library_status(name):
 # ------------------------------------------------------------------ routes
 # Imported here, not at the top, because party.py is a separate module that must be loaded
 # after this module's own setup. `# noqa: E402` just silences a linter warning about it.
+import party  # noqa: E402
 from party import bp as party_bp  # noqa: E402  (needs `app` paths set up first)
 
 # Merge all of party.py's routes (/api/party..., /api/initiative, ...) into this app.
@@ -680,18 +676,32 @@ app.register_blueprint(party_bp)
 # Several decorators stack: all of these URLs reach this one function. "<cid>" is a URL variable:
 # whatever text is in that position is passed as the argument `cid` (a character id).
 @app.get("/")
+@app.get("/sound")
 @app.get("/campaign")
 @app.get("/party")
 @app.get("/party/<cid>")
 def shell(cid=None):
-    """GET / , /campaign , /party , /party/<cid> : the app shell (shared header + three pages).
+    """GET / , /sound , /campaign , /party , /party/<cid> : the app shell (shared header + the pages).
 
-    `active` = which tab starts visible; `party_path` = which character page the Characters iframe
-    starts on."""
+    `active` = which tab starts visible (the home banner at "/"); `party_path` = which character page the
+    Characters iframe starts on; `role` = "dm" (all tabs) or "player" (Home and Characters only).
+    A visitor who is not signed in gets the plain banner page with a Login button instead of the shell.
+    """
+    user = auth.current_user()
+    if not user:
+        return render_template("landing.html")
     path = request.path
-    active = "campaign" if path == "/campaign" else "party" if path.startswith("/party") else "sound"
-    return render_template("shell.html", active=active,
+    active = "campaign" if path == "/campaign" else "party" if path.startswith("/party") else \
+        "sound" if path == "/sound" else "home"
+    return render_template("shell.html", active=active, user=user, role=user["role"],
                            party_path="/_/party" + (f"/{cid}" if cid else ""))
+
+
+@app.get("/_/home")
+def inner_home():
+    """GET /_/home : the banner/home page itself (the shell's first iframe). What it shows depends on the
+    signed-in user's level; the page's own JavaScript fetches the data for it."""
+    return render_template("home.html", role=auth.current_user()["role"])
 
 
 @app.get("/_/sound")
@@ -712,7 +722,7 @@ def inner_campaign():
 def inner_party(cid=None):
     """GET /_/party and /_/party/<cid> : the characters pages (third iframe). The id is not used
     here; the page's own JavaScript reads it from the address bar and fetches what it needs."""
-    return render_template("party.html")
+    return render_template("party.html", role=auth.current_user()["role"])
 
 
 @app.get("/tracker")
@@ -750,8 +760,9 @@ def put_state():
         # The soundboard page never edits the campaign tracker, but its copy of the state may carry an
         # OLD copy of the campaign data (loaded before the campaign page saved something). Keep the
         # server's campaign so a soundboard save can never overwrite campaign progress.
-        if "campaign" in state:
-            new["campaign"] = state["campaign"]
+        for k in ("campaign", "party", "campaignName"):  # party = the campaign's list of party characters (see below)
+            if k in state:
+                new[k] = state[k]
         new["revision"] = state.get("revision", 0) + 1
         state = new
         save_live()  # automatic export of live changes
@@ -779,6 +790,66 @@ def put_campaign():
         save_live()
         rev = state["revision"]
     return jsonify(revision=rev)
+
+
+# The campaign's party: which characters are in the active party. The campaign file (state["party"]) keeps
+# only REFERENCES, {"id", "name", "owner"}, never the character sheets: those stay with the players who
+# uploaded them (data/party/<id>.xml). Loading a campaign therefore brings back the list, and each
+# character appears as soon as its player has uploaded (or already uploaded) their file.
+def active_party():
+    """The campaign's party as the browser sees it: each reference plus `present` (is the sheet uploaded
+    on this server?), with the owner and name refreshed from the uploaded sheet when there is one."""
+    out = []
+    for ref in state.get("party", []):
+        f = party._path(ref["id"])
+        if f.exists():
+            ex = party._extra().get(ref["id"], {})
+            out.append({"id": ref["id"], "name": party._t(party._load(ref["id"]), "name") or ref.get("name", ""),
+                        "owner": ex.get("owner", ref.get("owner", "")), "present": True})
+        else:
+            out.append({**ref, "present": False})
+    return out
+
+
+# party.py asks this (through party.active_ids) when the tracker wants only the active party.
+party.active_ids = lambda: [r["id"] for r in state.get("party", [])] or None
+
+
+@app.get("/api/active-party")
+def get_active_party():
+    """GET /api/active-party (DM) -> {"campaign": name of the loaded campaign or "", "party": [{"id","name",
+    "owner","present"}, ...]} for the loaded campaign's party."""
+    with lock:
+        return jsonify(campaign=state.get("campaignName", ""), party=active_party())
+
+
+@app.put("/api/active-party")
+def put_active_party():
+    """PUT /api/active-party {"ids": [character id, ...]} (DM) : set which characters are in the party.
+
+    Only characters that exist, or that were already in the list (so a missing player's slot is not lost
+    when somebody else is toggled), are accepted. The name and owner are copied into the reference so the
+    saved campaign still says who it was for. Saved with the rest of the state, hence in every campaign
+    saved afterwards. Response: same as GET.
+    """
+    ids = (request.get_json(force=True, silent=True) or {}).get("ids")
+    if not isinstance(ids, list):
+        return jsonify(error="ids must be a list"), 400
+    with lock:
+        old = {r["id"]: r for r in state.get("party", [])}
+        refs = []
+        for cid in dict.fromkeys(ids):  # dict.fromkeys drops duplicates but keeps the order
+            if not isinstance(cid, str) or not re.fullmatch(r"[\w-]+", cid):
+                continue
+            if party._path(cid).exists():
+                ex = party._extra().get(cid, {})
+                refs.append({"id": cid, "name": party._t(party._load(cid), "name"), "owner": ex.get("owner", "")})
+            elif cid in old:
+                refs.append(old[cid])
+        state["party"] = refs
+        state["revision"] = state.get("revision", 0) + 1
+        save_live()
+        return jsonify(campaign=state.get("campaignName", ""), party=active_party())
 
 
 @app.post("/api/media")
@@ -971,17 +1042,17 @@ def too_large(_err):
     return jsonify(error=f"File is too big (limit {MAX_BYTES // (1024 * 1024)} MB)"), 413
 
 
-# presets
-@app.get("/api/presets")
-def list_presets():
-    """GET /api/presets -> JSON list of saved preset names, alphabetical
+# campaigns (saved whole-board snapshots; stored in data/presets/, the folder keeps its old name)
+@app.get("/api/campaigns")
+def list_campaigns():
+    """GET /api/campaigns -> JSON list of saved campaign names, alphabetical
     (file names in data/presets without the .json)."""
     return jsonify(sorted(p.stem for p in PRESETS.glob("*.json")))
 
 
-@app.post("/api/presets")
-def save_preset():
-    """POST /api/presets : save the CURRENT live state under a name (overwrites a same-named preset).
+@app.post("/api/campaigns")
+def save_campaign():
+    """POST /api/campaigns : save the CURRENT live state under a name (overwrites a same-named campaign).
 
     Request body: {"name": "My Preset"}; the name is sanitised by safe_name.
     Response: {"name": "<sanitised name>"} or {"error": ...} (400 if the name is empty).
@@ -989,17 +1060,19 @@ def save_preset():
     """
     name = safe_name((request.get_json(force=True) or {}).get("name"))
     if not name:
-        return jsonify(error="Preset name required"), 400
+        return jsonify(error="Campaign name required"), 400
     with lock:
+        state["campaignName"] = name  # remembered so the Home page can say which campaign is loaded
         atomic_write(PRESETS / f"{name}.json", state)
+        save_live()
     return jsonify(name=name)
 
 
-@app.post("/api/presets/<name>/load")
-def load_preset(name):
-    """POST /api/presets/<name>/load : make a preset the live state.
+@app.post("/api/campaigns/<name>/load")
+def load_campaign(name):
+    """POST /api/campaigns/<name>/load : make a campaign the live state.
 
-    Response: the new full state JSON; 404 if no such preset.
+    Response: the new full state JSON; 404 if no such campaign.
     Side effects: first copies the current live.json into data/versions/ ("before-load-<name>")
     so the load can be undone, then replaces `state`, bumps revision, autosaves, and starts
     downloads for any sounds the preset needs that are not cached yet.
@@ -1011,16 +1084,17 @@ def load_preset(name):
     with lock:
         shutil.copy2(LIVE, VERSIONS / f"live-{stamp()}-before-load-{safe_name(name)}.json")
         state = keep_campaign(validate_state(read_json(p)))
+        state["campaignName"] = safe_name(name)
         state["revision"] = state.get("revision", 0) + 1
         save_live()
     resume_media_for_state()
     return jsonify(state)
 
 
-@app.delete("/api/presets/<name>")
-def delete_preset(name):
-    """DELETE /api/presets/<name> : remove a preset file. Response {"ok": true}; deleting a
-    preset that does not exist is not an error (the end result is the same)."""
+@app.delete("/api/campaigns/<name>")
+def delete_campaign(name):
+    """DELETE /api/campaigns/<name> : remove a campaign file. Response {"ok": true}; deleting a
+    campaign that does not exist is not an error (the end result is the same)."""
     p = PRESETS / f"{safe_name(name)}.json"
     if p.exists():
         p.unlink()  # unlink = delete the file
@@ -1104,7 +1178,8 @@ if __name__ == "__main__":
     # Mutually exclusive: giving both --live and --preset is a usage error.
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--live", action="store_true", help="load live changes, ignoring the launch preset")
-    g.add_argument("--preset", help="load this preset on launch (overrides saved config)")
+    g.add_argument("--preset", "--campaign", dest="preset", metavar="NAME",
+                   help="load this campaign on launch (overrides saved config)")
     args = ap.parse_args()
     startup(args)  # load state and kick off media downloads BEFORE serving requests
     print(f"\nDM Soundboard running at http://{args.host}:{args.port}\n")

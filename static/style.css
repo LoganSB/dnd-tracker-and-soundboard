@@ -2537,3 +2537,32 @@ body.shell #partyBtn {
   opacity: 1;
   transform: translateX(-50%) translateY(0);
 }
+
+/* ==================== ACCOUNTS: banner page, sign-in, Home tab ==================== */
+/* The header's spacer (pushes the account area to the right) and the signed-in name. */
+.appnav .grow { flex: 1; }
+.appnav .who { color: var(--muted); font-size: .9rem; }
+.bad { color: var(--bad); }
+.warn { color: var(--warn); }
+
+/* The standalone pages (banner, sign-in, invite) are not inside the app shell, so the body scrolls normally. */
+body.authpage { min-height: 100vh; }
+.hero { max-width: 40rem; margin: 12vh auto 0; padding: 0 1.2rem; text-align: center; }
+.hero h1 { font-size: 2.6rem; margin-bottom: .4rem; }
+.authbox { max-width: 24rem; margin: 8vh auto 0; padding: 0 1.2rem; }
+.authbox label { display: block; margin: .6rem 0; }
+.authbox input { display: block; width: 100%; margin-top: .25rem; }
+.authbox form + form, .authbox form + p { margin-top: 1.4rem; }
+
+/* The Home tab: stacked panels, centred. */
+body.homepage { padding: 1rem; overflow: auto; }
+#home { max-width: 60rem; margin: 0 auto; }
+.homebox { background: var(--panel); border: 1px solid var(--panel2); border-radius: 10px; padding: .8rem 1rem; margin: 1rem 0; }
+.homebox h2 { margin: 0 0 .5rem; font-size: 1.1rem; }
+.homebox h3 { margin: 1rem 0 .4rem; font-size: 1rem; }
+.homebox .row { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; margin: .5rem 0; }
+.homebox table { width: 100%; }
+.homebox table td, .homebox table th { padding: .3rem .5rem; text-align: left; }
+.homecard { display: flex; gap: .8rem; align-items: center; padding: .4rem 0; }
+.homecard img { width: 56px; height: 56px; object-fit: cover; border-radius: 8px; }
+.homecard div { flex: 1; }

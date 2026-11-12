@@ -133,13 +133,16 @@ const section = (title, ...kids) => h("section", { className: "card" }, h("h2", 
 // for GET /api/party. Side effects: fills `bar` and `view`; the import and
 // remove buttons talk to the server and then reload the page.
 async function renderList() {
+  // A player (document.body.dataset.role) sees only their own characters, so the DM-only extras are left out.
+  const isDM = document.body.dataset.role === "dm";
   // Three toolbar links. The first two are ordinary downloads. The third opens
   // the tracker in a small pop-up window: its onclick cancels the normal link
   // navigation (preventDefault) and calls window.open with a window name and a
   // size, so repeated clicks reuse the same pop-up. The plain href remains as a
   // fallback (e.g. if pop-ups are blocked or the link is middle-clicked).
-  bar.append(
-    h("a", { href: "/api/party/export.zip", className: "btn", textContent: "⬇ Export party (Fight Club zip)" }),
+  bar.append(h("a", { href: "/api/party/export.zip", className: "btn",
+    textContent: isDM ? "⬇ Export party (Fight Club zip)" : "⬇ Export my character (Fight Club zip)" }));
+  if (isDM) bar.append(
     h("a", { href: "/download/collection.zip", className: "btn", textContent: "⬇ Fight Club 5e collection zip" }),
     h("a", { href: "/tracker", target: "dmtracker", className: "btn", textContent: "Open tracker window",
       onclick: e => { e.preventDefault(); window.open("/tracker", "dmtracker", "width=460,height=720"); } }));
@@ -200,9 +203,11 @@ async function renderList() {
   // The live tracker (the same widget as the popup: HP, spell slots, death saves, mana, conditions and
   // the Initiative tab), built right into this page. mountTracker comes from tracker.js, which
   // party.html loads first. It polls the server itself, so it stays in sync with other windows.
+  const none = h("p", { className: "muted", textContent: "No characters yet." });
+  if (!isDM) { view.append(box, list.length ? grid : none); return; }   // players: no whole-party tracker
   const live = h("div", { className: "trackerlist" });
   mountTracker(live);
-  view.append(section("Live tracker", live), box, list.length ? grid : h("p", { className: "muted", textContent: "No characters yet." }));
+  view.append(section("Live tracker", live), box, list.length ? grid : none);
 }
 
 // ---------------------------------------------------------- detail page
