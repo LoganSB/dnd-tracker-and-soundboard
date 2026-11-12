@@ -143,8 +143,10 @@ const config = {
   },
 };
 
-root.replaceChildren(h("h1", { textContent: "⚔ Encounters" }), h("div", { id: "encMount" }));
-const mounted = Builder.mount(document.getElementById("encMount"), { ...config, initialId: new URLSearchParams(location.search).get("id") });
+root.replaceChildren(h("h1", { textContent: "⚔ Encounters" }), h("div", { id: "encMount" }), h("div", { id: "encBrowse" }));
+// The browse list sits below everything else; Open selects that encounter in the editor above and scrolls up to it.
+const browse = Browse.mount(document.getElementById("encBrowse"), "encounter", r => { mounted.select(r.id); scrollTo({ top: 0 }); });
+const mounted = Builder.mount(document.getElementById("encMount"), { ...config, initialId: new URLSearchParams(location.search).get("id"), onChange: () => browse.refresh() });
 
 // The party and the campaign's tiles are only needed for the rating and the tile menu.
 async function loadContext() {
@@ -154,5 +156,5 @@ loadContext().then(() => mounted.reload());
 
 // Other tabs change encounters (a tile created on the campaign tracker): reload when this tab is shown again.
 addEventListener("message", ev => {
-  if (ev.data?.type === "shown" && !document.querySelector("input:focus,textarea:focus")) loadContext().then(() => mounted.reload());
+  if (ev.data?.type === "shown" && !document.querySelector("input:focus,textarea:focus")) loadContext().then(() => { mounted.reload(); browse.refresh(); });
 });

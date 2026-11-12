@@ -9,6 +9,7 @@
 //   * find(rows, filters, cfg): matching that is generous on purpose. Typing narrows the list live: partial words, single-
 //     letter typos (a swap of two letters counts as one), regular expressions, the book/type, and a number (the CR of
 //     a monster: "cr 5", "cr 1/2", "3-5", "5+") all work. Best matches first, then shorter names, then A to Z.
+//   * the same matching also drives every searchable TABLE in the app (UI.dataTable in ui.js uses find with keepOrder).
 //   * panel(cfg): the search box with live suggestions (each shows its CR or rarity), filter menus, and the result
 //     table with a "+" button per row. With nothing typed it lists everything A to Z, 100 at a time.
 // Nothing here calls Open5e: all searching happens in the browser on the downloaded list.
@@ -92,19 +93,27 @@ const Finder = (() => {
     return null;
   }
 
+  // isBadRegex(text): true when a typed word looks like a regular expression but is not a valid one (the search box then
+  // matches it as plain text and shows a red outline).
+  function isBadRegex(text) {
+    return (text || "").split(/[\s,]+/).some(w => /[\\^$.*+?()[\]{}|]/.test(w) && (() => { try { new RegExp(w, "i"); return false; } catch (_) { return true; } })());
+  }
+
   // find(rows, f, cfg): f = { q, filters: {key: value}, numMin, numMax }; cfg = { num: row -> number (or null for lists
-  // with no number), filters: [{ key, get }] }. Returns the matching rows, best first.
+  // with no number), filters: [{ key, get }], keepOrder: true to leave rows in their given order when matches tie (tables) }.
+  // Returns the matching rows, best first.
   function find(rows, f, cfg) {
     const q = parseQuery(f.q || "", !!cfg.num);
     const lo = f.numMin === "" || f.numMin == null ? -1 : +f.numMin, hi = f.numMax === "" || f.numMax == null ? 99 : +f.numMax;
     const out = [];
-    for (const m of rows) {
+    for (const [idx, m] of rows.entries()) {
       if (cfg.filters?.some(x => f.filters?.[x.key] && x.get(m) !== f.filters[x.key])) continue;
       if (cfg.num) { const v = cfg.num(m); if (v < lo || v > hi || (q.num && !q.num(v))) continue; }
       let s = 0;
       for (const w of q.words) { const x = score(m, w); if (x == null) { s = null; break; } s += x; }
-      if (s != null) out.push([s, m]);
+      if (s != null) out.push([s, m, idx]);
     }
+    if (cfg.keepOrder) return out.sort((a, b) => a[0] - b[0] || a[2] - b[2]).map(x => x[1]);
     return out.sort((a, b) => a[0] - b[0] || (q.words.length ? a[1].name.length - b[1].name.length : 0) || a[1].name.localeCompare(b[1].name)).map(x => x[1]);
   }
 
@@ -174,5 +183,5 @@ const Finder = (() => {
       setOptions(key, options) { const sel = byKey[key]; if (sel) sel.append(...options.map(([v, t]) => el("option", { value: v, textContent: t }))); } };
   }
 
-  return { el, prep, loadIndex, dist, find, parseQuery, panel };
+  return { el, prep, loadIndex, dist, find, isBadRegex, parseQuery, panel };
 })();

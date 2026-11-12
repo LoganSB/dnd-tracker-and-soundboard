@@ -2084,7 +2084,6 @@ body.partypage > header {
 .smallports > .lp-in { left: -11px; }
 .smallports > .lp-out { right: -11px; }
 .checks li { position: relative; }
-.lootbtn { position: relative; }
 /* The item under the pointer while dragging a new cable. */
 .linktarget {
   outline: 3px solid var(--ok);
@@ -2601,12 +2600,13 @@ button.gsi:focus-visible, a.gsi:focus-visible { outline: 3px solid #a8c7fa; outl
 
 /* Encounter builder */
 .encpage h1 { margin-top: 0; }
-.verdict { margin: 8px 0; padding: 8px 12px; border-radius: 8px; background: var(--panel2); }
-/* The rating's background is a muted tint of its danger colour (easy green, medium amber, hard orange, deadly red). */
-.verdict.easy { background: rgba(62, 207, 142, .16); }
-.verdict.medium { background: rgba(240, 180, 41, .16); }
-.verdict.hard { background: rgba(255, 146, 72, .18); }
-.verdict.deadly { background: rgba(255, 93, 108, .2); }
+.verdict { --tone: transparent; --side: var(--muted); margin: 8px 0; padding: 8px 12px; border-radius: 8px; border-left: 5px solid var(--side);
+  /* the usual panel colour with a translucent wash of the danger colour over it: a tone shift of the theme, not a new colour */
+  background: linear-gradient(var(--tone), var(--tone)), var(--panel2); }
+.verdict.easy { --side: #3ecf8e; --tone: rgba(62, 207, 142, .14); }
+.verdict.medium { --side: #f0b429; --tone: rgba(240, 180, 41, .14); }
+.verdict.hard { --side: #ff9248; --tone: rgba(255, 146, 72, .16); }
+.verdict.deadly { --side: #ff5d6c; --tone: rgba(255, 93, 108, .18); }
 .encpage textarea { width: 100%; box-sizing: border-box; margin: 8px 0; }
 
 /* Encounter card on the campaign canvas */

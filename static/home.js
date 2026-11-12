@@ -23,7 +23,7 @@
 // After a campaign is loaded the shell is told to reload the Soundboard and Campaign pages
 // (postMessage {type: "reloadPages"}), because they keep their own copy of the board in memory.
 
-const { h, api, status, box, dataTable } = UI;
+const { h, api, status, box, dataTable } = UI;   // (finder.js and browse.js are loaded first by home.html)
 const role = document.body.dataset.role;
 const root = document.getElementById("home");
 
@@ -172,7 +172,16 @@ async function dmView(me) {
     playersBox(users),
     invitesBox(invites),
     box("upload", "Upload a character", uploadBox(users)),
+    // Search and browse the campaign's encounters and loot tables (Open jumps to that tab with the record selected).
+    browseHost("encounter", "encounters"), browseHost("loot", "loot"),
   ];
+}
+
+// browseHost(kind, page): a Browse list whose Open button shows the Encounters or Loot tab on that record.
+function browseHost(kind, page) {
+  const host = h("div");
+  Browse.mount(host, kind, r => parent.postMessage({ type: "goto", page, path: `/_/${page}?id=${r.id}` }, location.origin));
+  return host;
 }
 
 // requestsBox: players asking to join a campaign. Shown first, and only when there is something to answer.

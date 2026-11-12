@@ -30,15 +30,17 @@
 //           sound,                                // optional id of a SOUNDBOARD sound played when triggered
 //           notes,                                // free text, shown when you hover the tile
 //           checklist: [ { id, text, done } ],    // optional checklist; the tile grows to fit it
-//           loot: { entries: [ { id, name, weight, note } ],   // the reward table (weighted)
+//           loot: { entries: [ { id, name, weight, note } ],   // the flag's own reward list (weighted)
+//                   source,                                    // optional: "table:<id>" (a loot table) or "rarity:<r>" (random item)
 //                   log: [ { text, at } ] }                    // history of rolls, newest first
+//           encounter,                            // set instead of the above on an ENCOUNTER card: the encounter's id
 //        } ]
 //     } ]
 //   }
 //
 //   S.campaign.links = [ { id, from, to } ]    // cables between ANY two items (see "campaign links" below).
 //     `from` and `to` are item keys: "sec:<id>" (a section), "tile:<id>", "sub:<tileId>:<id>" (a
-//     subsection), "flag:<id>", "chk:<id>" (one checklist entry) or "loot:<flagId>" (a flag's loot table).
+//     subsection), "flag:<id>", or "chk:<id>" (one checklist entry).
 //     An item can have any number of links in and out.
 //
 //   S as a whole is the same state object the soundboard uses ({ tiles: [...sounds...], campaign }).
@@ -263,10 +265,10 @@ function flagEl(item, tile) {
     el("span", { className: "ftools" },
       // 🎯: jump to the linked sound on the soundboard (switches to that tab and centres the canvas on it).
       item.sound ? el("button", { className: "tiny", textContent: "🎯", title: "Jump to the linked sound on the soundboard", onclick: ev => { ev.stopPropagation(); jumpToSound(item.sound); } }) : "",
-      el("button", { className: "tiny lootbtn", textContent: "🎁" + (lootCount ? " " + lootCount : ""), title: "Rewards / loot table",
+      el("button", { className: "tiny", textContent: "🎁" + (lootCount ? " " + lootCount : ""), title: "Rewards / loot table",
         onclick: ev => { ev.stopPropagation(); openLoot(item); } }),
       el("button", { className: "tiny gear", textContent: "⚙", title: "Edit flag", onclick: ev => { ev.stopPropagation(); openFlagDlg(item, tile.id); } }),
-      // Delete this flag (asks first). Links to it, to its checklist entries and to its loot table are removed by pruneLinks().
+      // Delete this flag (asks first). Links to it and to its checklist entries are removed by pruneLinks().
       el("button", { className: "tiny fdel", textContent: "🗑", title: "Delete this flag", onclick: ev => {
         ev.stopPropagation();
         if (!confirm(`Delete flag "${item.name}"?`)) return;
@@ -277,8 +279,6 @@ function flagEl(item, tile) {
       } })));
   card.append(title);
   addPorts(card, "flag:" + item.id);
-  // The loot button is itself linkable (the flag's reward table).
-  addPorts(title.querySelector(".lootbtn"), "loot:" + item.id, true);
 
   // Checklist: one row per entry, a real checkbox plus its text. The label wraps long text.
   if (total) {
@@ -1123,7 +1123,7 @@ nldlg.addEventListener("close", async () => {
 // S.campaign.links as { id, from, to } where from/to are item KEYS, a kind and an id joined by a colon:
 //     sec:<id>            a section (its frame)        tile:<id>        a tile
 //     sub:<tileId>:<id>   a subsection                 flag:<id>        a flag
-//     chk:<id>            one checklist entry          loot:<flagId>    a flag's loot table (the 🎁 button)
+//     chk:<id>            one checklist entry
 // Every item has a column of INPUT squares on its left edge and OUTPUT circles on its right edge. There is
 // one input per incoming link and one output per outgoing link, plus one extra EMPTY (dashed) input and
 // output at the end of each column: "N + 1". So an item can have any number of links in AND out. (The
@@ -1179,7 +1179,7 @@ function lookup(key) {
       o = t?.subs.find(x => x.id === subId);
     return o && { kind, obj: o, tile: t, name: o.name };
   }
-  if (kind === "flag" || kind === "loot") { const loc = locate(id); return loc && { kind, obj: loc.item, name: kind === "loot" ? `${loc.item.name} (loot)` : loc.item.name }; }
+  if (kind === "flag") { const loc = locate(id); return loc && { kind, obj: loc.item, name: loc.item.name }; }
   if (kind === "chk") {
     for (const t of C().tiles) for (const i of t.items) {
       const c = i.checklist.find(x => x.id === id);
@@ -1188,15 +1188,13 @@ function lookup(key) {
   }
   return null;
 }
-// isDone(key): has the party finished this item? flag = triggered; checklist entry = ticked; loot table =
-// rolled at least once; subsection = it has flags and all are triggered; tile = it has flags and all are
+// isDone(key): has the party finished this item? flag = triggered; checklist entry = ticked; subsection = it has flags and all are triggered; tile = it has flags and all are
 // triggered; section = it has tiles and all are done.
 function isDone(key) {
   const it = lookup(key);
   if (!it) return false;
   if (it.kind === "flag") return !!it.obj.triggered;
   if (it.kind === "chk") return !!it.obj.done;
-  if (it.kind === "loot") return it.obj.loot.log.length > 0;
   if (it.kind === "sub") { const f = it.tile.items.filter(i => i.group === it.obj.id); return f.length > 0 && f.every(i => i.triggered); }
   if (it.kind === "tile") return it.obj.items.length > 0 && it.obj.items.every(i => i.triggered);
   const tiles = C().tiles.filter(t => t.section === it.obj.id);   // a section

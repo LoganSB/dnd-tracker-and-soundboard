@@ -9,10 +9,10 @@
 //   api(url, method, body)     JSON request; resolves to the answer or throws Error(the server's message).
 //   status()                   a small line of text that can show progress or an error (red when `bad`).
 //   box(key, title, ...body)   a titled panel that can be collapsed; the choice is remembered per `key`.
-//   dataTable(opts)            a table with a regex search box and a filter menu per filtered column.
+//   dataTable(opts)            a table with a search box and a filter menu per filtered column (needs finder.js).
 //
-// A filter or search never changes the data, it only hides rows. The search box takes a regular expression
-// (ignoring upper/lower case); if what you typed is not a valid expression it is matched as plain text instead.
+// A filter or search never changes the data, it only hides rows. Searching uses a regular expression plus finder.js (partial
+// words, small typos); load that file before any page that builds a dataTable.
 
 const UI = (() => {
 function h(tag, props = {}, ...kids) {
@@ -59,25 +59,22 @@ function box(key, title, ...body) {
   return sec;
 }
 
-// matcher(text, input): a function (string) -> bool for the search box. Marks the box when the text is not a
-// valid regular expression and falls back to a plain-text match.
-function matcher(text, input) {
-  if (!text) { input.classList.remove("badre"); return () => true; }
-  try { const re = new RegExp(text, "i"); input.classList.remove("badre"); return s => re.test(s); }
-  catch (_) { input.classList.add("badre"); const t = text.toLowerCase(); return s => s.toLowerCase().includes(t); }
-}
-
 // dataTable({ key, columns, rows, actions, empty }) -> element
 //   columns  [{ label, text(row) -> string used for searching and filtering, show(row) -> node or text (optional;
 //            defaults to the text), filter: true to give the column a menu of its distinct values }]
 //   actions  (row) -> array of buttons for the last column (omit for none)
 //   empty    text shown when there are no rows at all
-// The search covers every column's text. The count under the box reads "3 of 10".
+// The search takes the whole typed text as ONE regular expression over the row's text (as it always did; invalid ones are
+// matched as plain text) and, after those rows, adds what Finder.find (finder.js, the matching the monster and item searches
+// use) finds: every word somewhere in the row, partial words, single-letter typos. Rows keep their order when nothing is
+// typed. The count under the box reads "3 of 10". A search or filter only hides rows; it never changes the data.
 function dataTable({ key, columns, rows, actions, empty = "Nothing here yet." }) {
   const wrap = h("div", { className: "dtable" });
   if (!rows.length) { wrap.append(h("p", { className: "muted", textContent: empty })); return wrap; }
-  const search = h("input", { type: "search", placeholder: "Search (regular expression)", className: "dsearch", title: "Regular expression, case does not matter" });
+  const search = h("input", { type: "search", placeholder: "Search (typos and regular expressions are fine)", className: "dsearch", title: "Partial words, small typos and regular expressions all work" });
   search.value = stored(`q.${key}`, "");
+  // Each row is prepared once for matching: its columns' text joined into one searchable name.
+  const prepared = rows.map(r => Finder.prep({ name: columns.map(c => c.text(r)).join("  "), ref: r }));
   const filters = columns.map((c, i) => {
     if (!c.filter) return null;
     const sel = h("select", { title: "Filter by " + c.label }, h("option", { value: "", textContent: `${c.label}: all` }),
@@ -89,19 +86,23 @@ function dataTable({ key, columns, rows, actions, empty = "Nothing here yet." })
   const count = h("span", { className: "muted dcount" });
   const body = h("tbody");
   const draw = () => {
-    const ok = matcher(search.value, search);
     store(`q.${key}`, search.value);
-    let shown = 0;
-    body.replaceChildren(...rows.filter(r => {
-      if (filters.some((f, i) => f && f.value && columns[i].text(r) !== f.value)) return false;
-      return ok(columns.map(c => c.text(r)).join("  "));
-    }).map(r => {
-      shown++;
-      return h("tr", {}, columns.map(c => h("td", {}, c.show ? c.show(r) : c.text(r))),
-        actions ? h("td", { className: "acts" }, actions(r)) : null);
-    }));
-    if (!shown) body.append(h("tr", {}, h("td", { colSpan: columns.length + 1, className: "muted", textContent: "No rows match." })));
-    count.textContent = `${shown} of ${rows.length}`;
+    search.classList.toggle("badre", Finder.isBadRegex(search.value));
+    // Two kinds of match, regular-expression matches first. (1) The old behaviour: the WHOLE typed text as one regular
+    // expression over the row's text (case does not matter), so patterns with spaces such as "^Aria  Fighter" work; an
+    // invalid expression is matched as plain text. (2) Finder's generous matching (every word somewhere, typos allowed),
+    // which adds the rows the first kind missed.
+    const q = search.value;
+    let re = null;
+    if (q) { try { re = new RegExp(q, "i"); } catch (_) { /* matched as plain text below */ } }
+    const exact = !q ? [] : prepared.filter(p => (re ? re.test(p.name) : p.lname.includes(q.toLowerCase())));
+    const generous = Finder.find(prepared, { q }, { keepOrder: true });
+    const list = (q ? [...new Set([...exact, ...generous])] : generous)
+      .map(p => p.ref).filter(r => !filters.some((f, i) => f && f.value && columns[i].text(r) !== f.value));
+    body.replaceChildren(...list.map(r => h("tr", {}, columns.map(c => h("td", {}, c.show ? c.show(r) : c.text(r))),
+      actions ? h("td", { className: "acts" }, actions(r)) : null)));
+    if (!list.length) body.append(h("tr", {}, h("td", { colSpan: columns.length + 1, className: "muted", textContent: "No rows match." })));
+    count.textContent = `${list.length} of ${rows.length}`;
   };
   search.oninput = draw;
   filters.forEach((f, i) => f && (f.onchange = () => { store(`f.${key}.${i}`, f.value); draw(); }));
@@ -111,5 +112,5 @@ function dataTable({ key, columns, rows, actions, empty = "Nothing here yet." })
   return wrap;
 }
 
-return { h, api, status, stored, store, box, matcher, dataTable };
+return { h, api, status, stored, store, box, dataTable };
 })();

@@ -20,7 +20,7 @@
 //   cfg.custom      optional { placeholder, make(name) -> entry } for adding an entry by hand
 //   cfg.summary(record, ctx) -> node (redrawn after every edit)           cfg.actions(record, ctx) -> array of buttons
 //   cfg.compact     smaller layout for pop-ups                  cfg.lockId   edit only this record, no picker
-//   cfg.initialId   which record to open first                  cfg.onChange(record)  called after each saved edit
+//   cfg.initialId   which record to open first                  cfg.onChange(record)  called after each saved edit, create, rename or delete
 // ctx = { num(entry, key, title), save, flush, msg, reload, select, refresh, record }
 const Builder = (() => {
   const { h, api, box, status } = UI;
@@ -47,7 +47,7 @@ const Builder = (() => {
         const name = prompt(`Name for the new ${cfg.noun}`, `New ${cfg.noun}`);
         if (!name) return;
         const n = await api(cfg.api, "POST", { name });
-        items.push(n); current = n.id; draw();
+        items.push(n); current = n.id; draw(); cfg.onChange?.(n);
       } });
       const picker = h("select", {}, items.map(x => h("option", { value: x.id, textContent: x.name })));
       picker.value = current || "";
@@ -56,12 +56,12 @@ const Builder = (() => {
         rec ? h("button", { textContent: "Rename", onclick: async () => {
           const name = prompt("New name", rec.name);
           if (!name) return;
-          rec.name = name; await put(); draw();
+          rec.name = name; await put(); draw(); cfg.onChange?.(rec);
         } }) : null,
         rec ? h("button", { className: "danger", textContent: `Delete ${cfg.noun}`, onclick: async () => {
           if (!confirm(`Delete ${cfg.noun} "${rec.name}"?`)) return;
           await api(`${cfg.api}/${rec.id}`, "DELETE");
-          items = items.filter(x => x !== rec); current = items[0]?.id || null; draw();
+          items = items.filter(x => x !== rec); current = items[0]?.id || null; draw(); cfg.onChange?.();
         } }) : null);
       if (!rec) { editor.replaceChildren(...[top, h("p", { className: "muted", textContent: `No ${cfg.noun}s in this campaign yet.` })].filter(Boolean)); return; }
 

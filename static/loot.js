@@ -11,13 +11,14 @@
 // A page can be opened on one table with  /_/loot?id=<id>.
 const { h, api } = UI;
 let tiles = [];
-const mounted = (() => {
-  document.getElementById("loot").replaceChildren(h("h1", { textContent: "🎁 Loot tables" }), h("div", { id: "lootMount" }));
-  return Builder.mount(document.getElementById("lootMount"), LootTables.config({ tiles: () => tiles, initialId: new URLSearchParams(location.search).get("id") }));
-})();
+document.getElementById("loot").replaceChildren(h("h1", { textContent: "🎁 Loot tables" }), h("div", { id: "lootMount" }), h("div", { id: "lootBrowse" }));
+// The browse list sits below everything else; Open selects that table in the editor above and scrolls up to it.
+const browse = Browse.mount(document.getElementById("lootBrowse"), "loot", r => { mounted.select(r.id); scrollTo({ top: 0 }); });
+const mounted = Builder.mount(document.getElementById("lootMount"), LootTables.config({
+  tiles: () => tiles, initialId: new URLSearchParams(location.search).get("id"), onChange: () => browse.refresh() }));
 const loadTiles = () => api("/api/state").then(s => { tiles = s.campaign?.tiles || []; });
 loadTiles().then(() => mounted.reload());
 // Tables are changed from other tabs too (the campaign tracker's loot pop-up): reload when this tab is shown again.
 addEventListener("message", ev => {
-  if (ev.data?.type === "shown" && !document.querySelector("input:focus,textarea:focus")) loadTiles().then(() => mounted.reload());
+  if (ev.data?.type === "shown" && !document.querySelector("input:focus,textarea:focus")) loadTiles().then(() => { mounted.reload(); browse.refresh(); });
 });
