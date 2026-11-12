@@ -695,6 +695,7 @@ app.register_blueprint(encounters.bp)
 @app.get("/sound")
 @app.get("/campaign")
 @app.get("/encounters")
+@app.get("/loot")
 @app.get("/party")
 @app.get("/party/<cid>")
 def shell(cid=None):
@@ -708,7 +709,7 @@ def shell(cid=None):
     if not user:
         return render_template("landing.html")
     path = request.path
-    active = "campaign" if path == "/campaign" else "encounters" if path == "/encounters" else "party" if path.startswith("/party") else \
+    active = "campaign" if path == "/campaign" else "encounters" if path == "/encounters" else "loot" if path == "/loot" else "party" if path.startswith("/party") else \
         "sound" if path == "/sound" else "home"
     return render_template("shell.html", active=active, user=user, role=user["role"],
                            party_path="/_/party" + (f"/{cid}" if cid else ""))
@@ -738,6 +739,12 @@ def inner_campaign():
 def inner_encounters():
     """GET /_/encounters : the encounter builder page (the shell's Encounters tab)."""
     return render_template("encounters.html")
+
+
+@app.get("/_/loot")
+def inner_loot():
+    """GET /_/loot : the loot table builder page (the shell's Loot tab)."""
+    return render_template("loot.html")
 
 
 @app.get("/_/party")
@@ -783,7 +790,7 @@ def put_state():
         # The soundboard page never edits the campaign tracker, but its copy of the state may carry an
         # OLD copy of the campaign data (loaded before the campaign page saved something). Keep the
         # server's campaign so a soundboard save can never overwrite campaign progress.
-        for k in ("campaign", "party", "campaignName", "encounters", "initiative"):  # party = the campaign's party characters (see below)
+        for k in ("campaign", "party", "campaignName", "encounters", "loots", "initiative"):  # party = the campaign's party characters (see below)
             if k in state:
                 new[k] = state[k]
         new["revision"] = state.get("revision", 0) + 1

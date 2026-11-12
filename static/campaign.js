@@ -256,7 +256,7 @@ function flagEl(item, tile) {
     .filter(Boolean).join("\n");
 
   // Title row: a status mark, the name, and the small buttons.
-  const lootCount = item.loot.entries.length;
+  const lootCount = lootEntries(item).length;
   const title = el("div", { className: "ftitle" },
     el("span", { className: "fmark", textContent: item.triggered ? "✔" : "○" }),
     el("span", { className: "fname", textContent: item.name }),
@@ -331,20 +331,29 @@ function flagEl(item, tile) {
 // initiative tracker (monsters rolled, party added if missing). Buttons: 🆕 start a new combat with it instead,
 // 📤 add it and pop out the tracker window, ⚙ open it in the Encounters tab, 🗑 take the card off the board.
 const encounterOf = item => (S.encounters || []).find(e => e.id === item.encounter);
+// loadingNow: cards whose load request is in flight. tempNote: a short message to show on a card until the next click (not saved).
+const loadingNow = new Set(), tempNote = new Map();
 const POPOUT = ["/tracker", "dmtracker", "width=460,height=720"];
 
 // loadEncounter(item, mode, popout): ask the server to put the encounter into the initiative order. The pop-out
 // window is opened first (a pop-up must start from the click), then refreshed once the order is saved.
 async function loadEncounter(item, mode, popout) {
   const w = popout ? window.open(...POPOUT) : null;
+  if (loadingNow.has(item.id)) return;   // a second click while the first is still being sent does nothing
+  loadingNow.add(item.id);
   try {
-    await api(`/api/encounters/${item.encounter}/load`, "POST", { mode });
+    // The server skips an "append" of an encounter that is already in the combat (added = 0), so clicking a card twice cannot
+    // double its monsters. 🆕 (replace) starts a fresh combat, so it always loads.
+    const r = await api(`/api/encounters/${item.encounter}/load`, "POST", { mode });
     item.triggered = true;
     item.triggeredAt = Date.now();
+    if (r.added || mode === "replace") tempNote.delete(item.id); else tempNote.set(item.id, "Already in the tracker");
     save();
     render();
     try { w?.location.reload(); } catch (_) { /* the window was closed */ }
-  } catch (e) { alert(e.message); }
+  } catch (e) {
+    alert(e.message);
+  } finally { loadingNow.delete(item.id); }
 }
 
 function encounterEl(item, tile) {
@@ -383,7 +392,7 @@ function encounterEl(item, tile) {
   card.append(title);
   addPorts(card, "flag:" + item.id);
   card.append(el("ul", { className: "emons" }, ...(lines.length ? lines.map(t => el("li", { textContent: t })) : [el("li", { className: "muted", textContent: enc ? "No monsters yet" : "" })])),
-    el("div", { className: "ffoot" }, el("span", { className: "muted", textContent: [enc ? `${xp.toLocaleString()} XP` : "", item.triggered ? "Loaded " + timeText(item.triggeredAt || Date.now()) : ""].filter(Boolean).join(" · ") })));
+    el("div", { className: "ffoot" }, el("span", { className: "muted", textContent: [enc ? `${xp.toLocaleString()} XP` : "", tempNote.get(item.id) || (item.triggered ? "Loaded " + timeText(item.triggeredAt || Date.now()) : "")].filter(Boolean).join(" · ") })));
   const bar = el("div", { className: "dragbar", textContent: "⠿⠿⠿", title: "Drag to move this card" });
   bar.addEventListener("pointerdown", ev => {
     if (ev.button !== 0) return;
@@ -909,14 +918,28 @@ tform.addEventListener("submit", ev => {
 });
 
 // ------------------------------------------------------------ loot dialog
-// The reward popup for one flag. A loot table is a list of entries, each with a WEIGHT. Think of a die
-// with as many faces as the total weight: an entry of weight 5 owns 5 faces. Rolling picks a face at
-// random, and the entry that owns it is the reward (so heavier entries come up more often). Each
-// entry's "range" column shows which faces it owns.
+// The reward popup for one flag. Where its rewards come from is the flag's loot.source:
+//   (none)         the flag's OWN list of entries, edited right here;
+//   "table:<id>"   a loot table made on the Loot tab (or with "New loot table…" here), rolled by weight; the table is shared,
+//                  so editing it changes every flag that uses it;
+//   "rarity:<r>"   a random magic item of that rarity from the Open5e item list (each item equally likely).
+// A table (or own list) is a list of entries, each with a WEIGHT. Think of a die with as many faces as the total weight:
+// an entry of weight 5 owns 5 faces. Rolling picks a face at random, and the entry that owns it is the reward (so
+// heavier entries come up more often). Each entry's "range" column shows which faces it owns.
 const ldlg = $("#lootDlg");
 // lootItem: the flag whose table is open. lastRolls: the result lines of the latest Roll, shown above the history.
 let lootItem = null,
   lastRolls = [];
+
+const sourceOf = item => item.loot.source || "";
+const tableOf = item => (S.loots || []).find(t => "table:" + t.id === sourceOf(item));
+// lootEntries(item): the entries this flag rolls on (its own, or the chosen table's), in the shape the dialog draws.
+function lootEntries(item) {
+  const src = sourceOf(item);
+  if (src.startsWith("table:")) return (tableOf(item)?.entries || []).map(e => ({ ...e, name: LootTables.label(e), readonly: true }));
+  if (src.startsWith("rarity:")) return [];
+  return item.loot.entries;
+}
 
 // lootRanges(entries): add the die range to each entry: { entry, lo, hi, w } where the entry owns
 // faces lo..hi (inclusive) and w is its weight (a whole number, at least 1). Also returns the total.
@@ -931,17 +954,39 @@ function lootRanges(entries) {
   return { rows, total: at };
 }
 
+// refreshLoots(): fetch the campaign's loot tables again (they can be changed on the Loot tab or in the pop-up below).
+async function refreshLoots() { S.loots = await api("/api/loots"); }
+
+// fillSources(): the "Rewards from" menu: own list, each loot table, and a random item of each rarity.
+function fillSources() {
+  const sel = $("#lootSource");
+  sel.textContent = "";
+  sel.append(el("option", { value: "", textContent: "This flag's own list" }),
+    ...(S.loots || []).map(t => el("option", { value: "table:" + t.id, textContent: "Loot table: " + t.name })),
+    ...["common", "uncommon", "rare", "very rare", "legendary", "artifact"].map(r => el("option", { value: "rarity:" + r, textContent: "Random " + r + " magic item" })));
+  const src = sourceOf(lootItem);
+  if (src.startsWith("table:") && !tableOf(lootItem)) sel.append(el("option", { value: src, textContent: "(deleted loot table)" }));
+  sel.value = src;
+}
+
 // drawLoot(): redraw the whole popup: the table (range, name, weight, chance, note, delete), the latest
 // roll results and the saved history.
 function drawLoot() {
-  const { rows, total } = lootRanges(lootItem.loot.entries);
+  const src = sourceOf(lootItem), own = !src, byRarity = src.startsWith("rarity:");
+  const { rows, total } = lootRanges(lootEntries(lootItem));
   $("#lootTitle").textContent = `Rewards: ${lootItem.name}`;
+  $("#lootAddRow").hidden = !own;
+  $("#lootTable").hidden = byRarity;
+  $("#editLootBtn").hidden = !src.startsWith("table:") || !tableOf(lootItem);
+  $("#lootHelp").textContent = byRarity ? `Rolling picks one ${src.slice(7)} magic item at random from the Open5e list (every item equally likely).`
+    : own ? "Each entry's weight is how many faces of the die it owns. The table is rolled as a d{total}."
+      : "This flag rolls on a shared loot table. Use Edit table… to change it; the weights are how many faces of the die each entry owns.";
   const table = $("#lootTable");
   table.textContent = "";
   table.append(el("tr", {}, ...["Range", "Reward", "Weight", "Chance", "Note", ""].map(t => el("th", { textContent: t }))));
   rows.forEach(({ entry, lo, hi, w }) => {
     // The weight box edits the entry in place, then everything is redrawn (the ranges shift).
-    const wbox = el("input", { type: "number", min: 1, step: 1, value: w, className: "inum" });
+    const wbox = el("input", { type: "number", min: 1, step: 1, value: w, className: "inum", disabled: !!entry.readonly });
     wbox.onchange = () => { entry.weight = Math.max(1, Math.floor(+wbox.value || 1)); save(); drawLoot(); };
     table.append(el("tr", {},
       el("td", { textContent: lo === hi ? String(lo) : `${lo}–${hi}` }),
@@ -949,13 +994,13 @@ function drawLoot() {
       el("td", {}, wbox),
       el("td", { textContent: ((w / total) * 100).toFixed(w / total < 0.1 ? 1 : 0) + "%" }),
       el("td", { className: "muted", textContent: entry.note || "" }),
-      el("td", {}, el("button", { className: "danger tiny", textContent: "✕", title: "Remove this reward", onclick: () => {
+      el("td", {}, entry.readonly ? "" : el("button", { className: "danger tiny", textContent: "✕", title: "Remove this reward", onclick: () => {
         lootItem.loot.entries = lootItem.loot.entries.filter(x => x !== entry);
         save();
         drawLoot();
       } }))));
   });
-  if (!rows.length) table.append(el("tr", {}, el("td", { colSpan: 6, className: "muted", textContent: "No rewards yet. Add some below." })));
+  if (!rows.length) table.append(el("tr", {}, el("td", { colSpan: 6, className: "muted", textContent: own ? "No rewards yet. Add some below." : "This table has no entries yet." })));
   $("#lootResult").textContent = "";
   lastRolls.forEach(t => $("#lootResult").append(el("div", { textContent: t })));
   const log = $("#lootLog");
@@ -964,14 +1009,25 @@ function drawLoot() {
 }
 
 // openLoot(item): open the popup for this flag.
-function openLoot(item) {
+async function openLoot(item) {
   lootItem = item;
   lastRolls = [];
+  try { await refreshLoots(); } catch (_) { /* keep the copy we have */ }
+  fillSources();
   drawLoot();
   ldlg.showModal();
 }
 
-// "Add" button / Enter: append an entry from the three boxes.
+// Choosing where the rewards come from.
+$("#lootSource").onchange = () => {
+  const v = $("#lootSource").value;
+  if (v) lootItem.loot.source = v; else delete lootItem.loot.source;
+  lastRolls = [];
+  save();
+  drawLoot();
+};
+
+// "Add" button / Enter: append an entry from the three boxes (the flag's own list).
 function addLootEntry() {
   const name = $("#lootName").value.trim();
   if (!name) return;
@@ -985,20 +1041,29 @@ function addLootEntry() {
 $("#addLootBtn").onclick = addLootEntry;
 $("#lootName").addEventListener("keydown", ev => { if (ev.key === "Enter") { ev.preventDefault(); addLootEntry(); } });
 
-// "Roll" button: roll the table `Rolls` times. Each roll picks a random whole number from 1 to the total weight
-// (Math.random() is a float in [0,1); times total, floored, plus 1 gives 1..total) and finds the entry whose
-// range contains it. The result lines are shown and also stored in the flag's history (newest first, last 30 kept).
-$("#rollLootBtn").onclick = () => {
-  const { rows, total } = lootRanges(lootItem.loot.entries);
-  if (!rows.length) { lastRolls = ["Add at least one reward first."]; drawLoot(); return; }
+// "Roll" button: roll `Rolls` times. For an own list or a table, each roll picks a random whole number from 1 to the total
+// weight and finds the entry whose range contains it. For a rarity, each roll picks a random item of that rarity from the
+// Open5e list. The result lines are shown and also stored in the flag's history (newest first, last 30 kept).
+$("#rollLootBtn").onclick = async () => {
+  const src = sourceOf(lootItem);
   const count = Math.max(1, Math.min(20, Math.floor(+$("#lootCount").value || 1)));
   lastRolls = [];
-  for (let k = 0; k < count; k++) {
-    const r = 1 + Math.floor(Math.random() * total);
-    const hit = rows.find(row => r >= row.lo && r <= row.hi);
-    const text = `🎲 d${total} → ${r}: ${hit.entry.name}${hit.entry.note ? " (" + hit.entry.note + ")" : ""}`;
-    lastRolls.push(text);
-    lootItem.loot.log.unshift({ text, at: Date.now() });   // unshift = insert at the front
+  const note = text => { lastRolls.push(text); lootItem.loot.log.unshift({ text, at: Date.now() }); };   // unshift = insert at the front
+  if (src.startsWith("rarity:")) {
+    const rarity = src.slice(7), { rows } = await LootTables.items();
+    for (let k = 0; k < count; k++) {
+      const m = LootTables.pickRarity(rows, rarity);
+      if (!m) { lastRolls = [`No ${rarity} items in the list.`]; break; }
+      note(`🎲 ${rarity}: ${m.name} (${m.type})`);
+    }
+  } else {
+    const { rows, total } = lootRanges(lootEntries(lootItem));
+    if (!rows.length) { lastRolls = ["Add at least one reward first."]; drawLoot(); return; }
+    for (let k = 0; k < count; k++) {
+      const r = 1 + Math.floor(Math.random() * total);
+      const hit = rows.find(row => r >= row.lo && r <= row.hi);
+      note(`🎲 d${total} → ${r}: ${hit.entry.name}${hit.entry.note ? " (" + hit.entry.note + ")" : ""}`);
+    }
   }
   lootItem.loot.log.length = Math.min(lootItem.loot.log.length, 30);   // keep only the newest 30
   save();
@@ -1013,6 +1078,44 @@ $("#clearLootLog").onclick = () => {
 };
 // When the popup closes, redraw the board so the 🎁 count on the tile is up to date.
 ldlg.addEventListener("close", () => render(true));
+
+// ---- a loot table made or edited right here: the Loot tab's editor in its small form (builder.js + loottable.js).
+const nldlg = $("#lootNewDlg");
+// editLootTable(id): show the small editor on table `id`; "Use this table" points the open flag at it.
+function editLootTable(id, title) {
+  $("#lootNewTitle").textContent = title;
+  $("#lootNewName").hidden = true;
+  $("#useLootBtn").hidden = false;
+  $("#useLootBtn").onclick = () => { nldlg.close(); };
+  const host = $("#lootNewHost");
+  host.textContent = "";
+  Builder.mount(host, LootTables.config({ compact: true, lockId: id }));
+  nldlg.dataset.id = id;
+  nldlg.showModal();
+}
+$("#newLootBtn").onclick = () => {
+  $("#lootNewTitle").textContent = "New loot table";
+  $("#lootNewName").hidden = false;
+  $("#useLootBtn").hidden = true;
+  $("#lootNewHost").textContent = "";
+  $("#newLootName").value = "";
+  nldlg.dataset.id = "";
+  nldlg.showModal();
+};
+$("#createLootBtn").onclick = async () => {
+  const t = await api("/api/loots", "POST", { name: $("#newLootName").value.trim() || "New loot table" });
+  editLootTable(t.id, `Loot table: ${t.name}`);
+  nldlg.dataset.id = t.id;
+};
+$("#editLootBtn").onclick = () => { const t = tableOf(lootItem); if (t) editLootTable(t.id, `Loot table: ${t.name}`); };
+// Closing the small editor (Close or Use this table): remember the new/edited table and, for a new one or "Use", point the flag at it.
+nldlg.addEventListener("close", async () => {
+  const id = nldlg.dataset.id;
+  await refreshLoots();
+  if (id && lootItem && (!$("#useLootBtn").hidden)) { lootItem.loot.source = "table:" + id; save(); }
+  fillSources();
+  drawLoot();
+});
 
 // ------------------------------------------------------------ campaign links
 // Links are cables between ANY two items on the board, to show how things depend on each other: "this

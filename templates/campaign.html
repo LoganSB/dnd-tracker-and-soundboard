@@ -101,6 +101,17 @@
   </form>
 </dialog>
 
+<!-- lootNewDlg: make (or edit) a loot table without leaving the campaign tracker: the Loot tab's editor in its small form. -->
+<dialog id="lootNewDlg">
+  <h2 id="lootNewTitle">New loot table</h2>
+  <div class="row" id="lootNewName">
+    <input id="newLootName" placeholder="Table name (e.g. Goblin hoard)">
+    <button type="button" id="createLootBtn" class="primary">Create</button>
+  </div>
+  <div id="lootNewHost"></div>
+  <menu><span class="grow"></span><button type="button" data-close>Close</button><button type="button" id="useLootBtn" class="primary" hidden>Use this table</button></menu>
+</dialog>
+
 <!-- tileDlg: rename a tile, move it to another section, and manage its subsections. -->
 <dialog id="tileDlg">
   <form method="dialog" id="tileForm">
@@ -120,9 +131,16 @@
      Roll picks one at random (like rolling a die whose size is the total of the weights). -->
 <dialog id="lootDlg">
   <h2 id="lootTitle">Rewards</h2>
-  <p class="muted">Each entry's weight is how many faces of the die it owns. The table is rolled as a d{total}.</p>
-  <table id="lootTable" class="loot"></table>
+  <!-- Where the rewards come from: this flag's own list, a loot table made on the Loot tab (or here), or a random item of
+       one rarity from the Open5e magic item list. -->
   <div class="row">
+    <label>Rewards from <select id="lootSource"></select></label>
+    <button type="button" id="newLootBtn">New loot table…</button>
+    <button type="button" id="editLootBtn" hidden>Edit table…</button>
+  </div>
+  <p class="muted" id="lootHelp">Each entry's weight is how many faces of the die it owns. The table is rolled as a d{total}.</p>
+  <table id="lootTable" class="loot"></table>
+  <div class="row" id="lootAddRow">
     <input id="lootName" placeholder="Reward (e.g. Potion of healing)">
     <input id="lootWeight" type="number" min="1" step="1" value="1" title="Weight" class="inum">
     <input id="lootNote" placeholder="note (optional)">
@@ -139,6 +157,11 @@
   <menu><span class="grow"></span><button type="button" data-close>Close</button></menu>
 </dialog>
 
+<script src="/static/errors.js"></script>
+<script src="/static/ui.js"></script>
+<script src="/static/finder.js"></script>
+<script src="/static/builder.js"></script>
+<script src="/static/loottable.js"></script>
 <script src="/static/canvas.js"></script>
 <script src="/static/cables.js"></script>
 <script src="/static/undo.js"></script>

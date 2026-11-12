@@ -2601,11 +2601,12 @@ button.gsi:focus-visible, a.gsi:focus-visible { outline: 3px solid #a8c7fa; outl
 
 /* Encounter builder */
 .encpage h1 { margin-top: 0; }
-.verdict { margin: 8px 0; padding: 8px 12px; border-radius: 8px; border-left: 4px solid var(--muted); background: var(--panel2); }
-.verdict.easy { border-color: #3ecf8e; }
-.verdict.medium { border-color: #f0b429; }
-.verdict.hard { border-color: #ff9248; }
-.verdict.deadly { border-color: #ff5d6c; }
+.verdict { margin: 8px 0; padding: 8px 12px; border-radius: 8px; background: var(--panel2); }
+/* The rating's background is a muted tint of its danger colour (easy green, medium amber, hard orange, deadly red). */
+.verdict.easy { background: rgba(62, 207, 142, .16); }
+.verdict.medium { background: rgba(240, 180, 41, .16); }
+.verdict.hard { background: rgba(255, 146, 72, .18); }
+.verdict.deadly { background: rgba(255, 93, 108, .2); }
 .encpage textarea { width: 100%; box-sizing: border-box; margin: 8px 0; }
 
 /* Encounter card on the campaign canvas */
@@ -2638,3 +2639,10 @@ button.gsi:focus-visible, a.gsi:focus-visible { outline: 3px solid #a8c7fa; outl
 .homefoot { margin: 24px 0 8px; text-align: center; font-size: 11px; }
 .homefoot .linkish { border: 0; background: none; color: var(--muted); text-decoration: underline; padding: 2px; font-size: inherit; cursor: pointer; }
 .homefoot .linkish:hover { color: var(--accent); }
+
+/* A failed button action prints its message right after the button (errors.js). */
+.inlineerr { color: var(--bad); font-size: 12px; margin-left: 8px; }
+.inlineerr.floating { position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%); background: var(--panel); border: 1px solid var(--bad); border-radius: 8px; padding: 6px 12px; z-index: 100; }
+
+/* A hidden control stays hidden even when a rule such as .row gives it a display of its own. */
+[hidden] { display: none !important; }

@@ -1,0 +1,108 @@
+"use strict";
+// builder.js - the editor shared by the Encounters tab and the Loot tab (and the small loot editor inside the campaign
+// tracker's loot pop-up). The two differ only in a configuration object; everything else is here:
+//
+//   [ picker: choose one ] [+ New] [Rename] [Delete]        <- hidden when `lockId` is given (the pop-up edits one table)
+//   notes
+//   table of entries (one row per monster / item, each with its own number boxes and a remove button)
+//   summary (difficulty / chances)       action buttons       status line
+//   the search panel (Finder) that adds entries
+//
+// Needs ui.js (UI) and finder.js (Finder) to be loaded first. Saves a moment after the last edit; the buttons that use
+// the saved record call flush() first so they never act on stale data.
+//
+// Builder.mount(host, cfg) -> { reload, select, flush }
+//   cfg.api         "/api/encounters"  (GET list, POST {name}, PUT/DELETE /<id>)       cfg.noun   "encounter"
+//   cfg.list        key of the entries array in a record ("monsters" / "entries")      cfg.box    storage key prefix
+//   cfg.head        column titles                                  cfg.row(entry, ctx) -> array of cells (nodes or text)
+//   cfg.preview(entry)  optional: opens details for an entry (adds a 📖 button)
+//   cfg.finder(add) -> a Finder.panel whose "+" calls add(rowFromTheList)               cfg.addEntry(record, row)
+//   cfg.custom      optional { placeholder, make(name) -> entry } for adding an entry by hand
+//   cfg.summary(record, ctx) -> node (redrawn after every edit)           cfg.actions(record, ctx) -> array of buttons
+//   cfg.compact     smaller layout for pop-ups                  cfg.lockId   edit only this record, no picker
+//   cfg.initialId   which record to open first                  cfg.onChange(record)  called after each saved edit
+// ctx = { num(entry, key, title), save, flush, msg, reload, select, refresh, record }
+const Builder = (() => {
+  const { h, api, box, status } = UI;
+
+  function mount(host, cfg) {
+    let items = [], current = cfg.lockId || cfg.initialId || null, timer = null;
+    const msg = status();
+    const editor = h("div");
+    const cur = () => items.find(i => i.id === current);
+    const put = () => { const r = cur(); return r ? api(`${cfg.api}/${r.id}`, "PUT", { name: r.name, notes: r.notes, [cfg.list]: r[cfg.list] }) : Promise.resolve(); };
+    const save = () => { clearTimeout(timer); timer = setTimeout(async () => { timer = null; await put(); cfg.onChange?.(cur()); }, 400); };
+    const flush = async () => { if (timer) { clearTimeout(timer); timer = null; await put(); cfg.onChange?.(cur()); } };
+
+    async function reload() {
+      items = await api(cfg.api);
+      if (!items.some(i => i.id === current)) current = cfg.lockId ? null : items[0]?.id || null;
+      draw();
+    }
+    const select = id => { current = id; draw(); };
+
+    function draw() {
+      const rec = cur();
+      const make = h("button", { textContent: `+ New ${cfg.noun}`, onclick: async () => {
+        const name = prompt(`Name for the new ${cfg.noun}`, `New ${cfg.noun}`);
+        if (!name) return;
+        const n = await api(cfg.api, "POST", { name });
+        items.push(n); current = n.id; draw();
+      } });
+      const picker = h("select", {}, items.map(x => h("option", { value: x.id, textContent: x.name })));
+      picker.value = current || "";
+      picker.onchange = () => select(picker.value);
+      const top = cfg.lockId ? null : h("div", { className: "row" }, picker, make,
+        rec ? h("button", { textContent: "Rename", onclick: async () => {
+          const name = prompt("New name", rec.name);
+          if (!name) return;
+          rec.name = name; await put(); draw();
+        } }) : null,
+        rec ? h("button", { className: "danger", textContent: `Delete ${cfg.noun}`, onclick: async () => {
+          if (!confirm(`Delete ${cfg.noun} "${rec.name}"?`)) return;
+          await api(`${cfg.api}/${rec.id}`, "DELETE");
+          items = items.filter(x => x !== rec); current = items[0]?.id || null; draw();
+        } }) : null);
+      if (!rec) { editor.replaceChildren(...[top, h("p", { className: "muted", textContent: `No ${cfg.noun}s in this campaign yet.` })].filter(Boolean)); return; }
+
+      const summary = h("div");
+      const ctx = { save, flush, msg, reload, select, record: rec, refresh: () => summary.replaceChildren(cfg.summary(rec, ctx)),
+        num: (entry, key, title) => {
+          const i = h("input", { type: "number", value: entry[key] ?? "", className: "inum", title: title || key });
+          i.onchange = () => { entry[key] = i.value === "" ? null : +i.value; save(); ctx.refresh(); };
+          return i;
+        } };
+      const notes = h("textarea", { rows: 2, placeholder: "Notes", value: rec.notes || "", oninput: () => { rec.notes = notes.value; save(); } });
+      const rows = rec[cfg.list].map(entry => h("tr", {},
+        cfg.row(entry, ctx).map(c => h("td", { textContent: typeof c === "string" ? c : undefined }, typeof c === "string" ? null : c)),
+        h("td", { className: "acts" }, cfg.preview ? h("button", { textContent: "📖", title: "Details", onclick: () => cfg.preview(entry) }) : null,
+          h("button", { className: "tiny danger", textContent: "✕", onclick: () => { rec[cfg.list] = rec[cfg.list].filter(x => x !== entry); save(); draw(); } }))));
+      const custom = cfg.custom && (() => {
+        const name = h("input", { placeholder: cfg.custom.placeholder });
+        const add = () => { if (!name.value.trim()) return; rec[cfg.list].push(cfg.custom.make(name.value.trim())); save(); draw(); };
+        name.onkeydown = ev => { if (ev.key === "Enter") { ev.preventDefault(); add(); } };
+        return h("div", { className: "row" }, name, h("button", { textContent: "Add by name", onclick: add }));
+      })();
+      // (replaceChildren would print a null or undefined as the word, so empty slots are filtered out)
+      editor.replaceChildren(...[top, cfg.compact ? null : notes,
+        h("table", { className: "loot" }, h("thead", {}, h("tr", {}, [...cfg.head, ""].map(t => h("th", { textContent: t })))),
+          h("tbody", {}, rows.length ? rows : h("tr", {}, h("td", { colSpan: cfg.head.length + 1, className: "muted", textContent: "Nothing yet: search below and press +." })))),
+        custom, summary, h("div", { className: "row" }, ...(cfg.actions?.(rec, ctx) || [])), msg].filter(Boolean));
+      ctx.refresh();
+    }
+
+    // The search panel is built once (it keeps what was typed) and added to by pressing + on a row.
+    const panel = cfg.finder(async row => {
+      const rec = cur();
+      if (!rec) { msg.say(`Create ${cfg.noun === "encounter" ? "an" : "a"} ${cfg.noun} first`, true); return; }
+      cfg.addEntry(rec, row);
+      save(); draw();
+    });
+    const wrap = cfg.compact ? [editor, panel.el] : [box(cfg.box + "-edit", cfg.title, editor), box(cfg.box + "-search", cfg.finderTitle, panel.el)];
+    host.replaceChildren(...wrap);
+    reload();
+    return { reload, select, flush, panel };
+  }
+
+  return { mount };
+})();

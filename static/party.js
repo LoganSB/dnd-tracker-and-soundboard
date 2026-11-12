@@ -141,9 +141,11 @@ async function renderList() {
   // navigation (preventDefault) and calls window.open with a window name and a
   // size, so repeated clicks reuse the same pop-up. The plain href remains as a
   // fallback (e.g. if pop-ups are blocked or the link is middle-clicked).
-  bar.append(h("a", { href: "/api/party/export.zip", className: "btn",
+  // Downloads are buttons, not links: safeDownload (errors.js) checks the answer first, so a "not found" is printed next to
+  // the button instead of replacing this page.
+  bar.append(h("button", { className: "btn", onclick: () => safeDownload("/api/party/export.zip"),
     textContent: isDM ? "⬇ Export party (Fight Club zip)" : "⬇ Export my character (Fight Club zip)" }));
-  bar.append(h("a", { href: "/download/collection.zip", className: "btn", textContent: "⬇ Fight Club 5e collection zip" }));
+  bar.append(h("button", { className: "btn", onclick: () => safeDownload("/download/collection.zip"), textContent: "⬇ Fight Club 5e collection zip" }));
   if (isDM) bar.append(
     h("a", { href: "/tracker", target: "dmtracker", className: "btn", textContent: "Open tracker window",
       onclick: e => { e.preventDefault(); window.open("/tracker", "dmtracker", "width=460,height=720"); } }));
@@ -200,8 +202,8 @@ async function renderList() {
         // false for "" / undefined), join glues the rest with " · ".
         h("div", { className: "muted", textContent: [m.race, m.class].filter(Boolean).join(" · ") }),
         h("div", { textContent: `HP ${m.hp}/${m.hpMax}` }),
-        // The download sits inside the card's <a> link, so the click is redirected by hand (no nested links).
-        h("button", { className: "tiny", textContent: "⬇ Download", title: "Download this character (Fight Club zip)", onclick: e => { e.preventDefault(); location.href = `/api/party/${m.id}/export.zip`; } }), del)));
+        // The download sits inside the card's <a> link, so the click is handled by hand (no nested links).
+        h("button", { className: "tiny", textContent: "⬇ Download", title: "Download this character (Fight Club zip)", onclick: e => { e.preventDefault(); safeDownload(`/api/party/${m.id}/export.zip`); } }), del)));
   });
   // The live tracker (the same widget as the popup: HP, spell slots, death saves, mana, conditions and
   // the Initiative tab), built right into this page. mountTracker comes from tracker.js, which
@@ -256,7 +258,7 @@ async function renderDetail(id) {
   // The toolbar of the detail page: a way back to the list (this page lives inside a frame, so the link
   // loads the list into the same frame).
   bar.append(h("a", { href: "/_/party", className: "btn", textContent: "← All characters" }),
-    h("a", { href: `/api/party/${id}/export.zip`, className: "btn", textContent: "⬇ Download this character" }));
+    h("button", { className: "btn", onclick: () => safeDownload(`/api/party/${id}/export.zip`), textContent: "⬇ Download this character" }));
   const m = await get("/api/party/" + id);
   document.title = m.name;
   const r = m.raceInfo;

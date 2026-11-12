@@ -1,0 +1,21 @@
+<!doctype html>
+<!--
+  item.html - one magic item from Open5e as a small page (opened by the 📖 buttons in the loot table builder). Jinja2
+  variable: m (the Open5e record). The description is plain text with **bold** marks; it is shown as text, never as HTML.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ m.name }}</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="monsterpage">
+<article class="statblock">
+  <h1>{{ m.name }}</h1>
+  <p class="muted"><i>{{ m.type }}, {{ m.rarity }}{{ ' (requires attunement' ~ (m.requires_attunement | replace('requires attunement', '') | trim) ~ ')' if m.requires_attunement }}</i></p>
+  {% for para in (m.desc or '').replace('**', '').split('\n') if para.strip() %}<p>{{ para }}</p>{% endfor %}
+  <p class="muted">Source: {{ m.document__title }} · via Open5e</p>
+</article>
+</body>
+</html>

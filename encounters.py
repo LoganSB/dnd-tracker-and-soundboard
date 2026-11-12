@@ -53,19 +53,15 @@ def _state():
 
 
 # ------------------------------------------------------------------ Open5e, with as few calls as possible
-# Two things come from Open5e and both are kept on disk (data/, so they survive restarts and, on Cloud Run, live in
-# the bucket):
-#   * the MONSTER LIST (name, type, CR, AC, HP, Dex, book for every monster: about 3,200 of them) is fetched in two
-#     calls and saved as data/monsters_index.json. The browser downloads that one file and does all the searching
-#     itself, so typing in the search box makes no API calls at all. It is rebuilt only when older than 30 days or
-#     when the DM presses "Refresh monster list" (at most once a day).
-#   * a STAT BLOCK is fetched the first time a monster is opened and saved as data/monsters/<slug>.json, so each
-#     monster costs at most one call, ever.
-INDEX = ROOT / "data" / "monsters_index.json"
-STATS = ROOT / "data" / "monsters"
+# Open5e supplies two catalogues here, MONSTERS and MAGIC ITEMS, and both work the same way (class Catalog):
+#   * the LIST (a short record per entry: about 3,200 monsters, 1,600 items) is fetched in one or two calls and saved
+#     as data/<name>_index.json (in the bucket on Cloud Run). The browser downloads that one file and does all the
+#     searching itself, so typing in a search box makes no API calls at all. It is rebuilt only when older than 30 days
+#     or when the DM presses "Refresh" (at most once a day).
+#   * the FULL RECORD (a stat block, an item's description) is fetched the first time it is opened and saved as
+#     data/<name>/<slug>.json, so each entry costs at most one call, ever.
 INDEX_DAYS, REFRESH_MIN_SECONDS = 30, 86400
-_index = {"data": None, "building": False}
-_index_lock = threading.Lock()
+RARITIES = ["common", "uncommon", "rare", "very rare", "legendary", "artifact"]
 
 
 def _fail(message, code=400):
@@ -73,112 +69,120 @@ def _fail(message, code=400):
     abort(make_response(jsonify(error=message), code))
 
 
-def _fetch(path, params=None):
-    """One call to Open5e; returns the JSON, or stops the request with a readable 502."""
-    try:
-        r = requests.get(API + path, params=params, timeout=30, headers={"User-Agent": "dnd-tracker"})
-        r.raise_for_status()
-        return r.json()
-    except Exception:
-        _fail("Open5e could not be reached. Try again in a moment.", 502)
-
-
 def _mod(score):
     return (int(score or 10) - 10) // 2
 
 
-def _build_index():
-    """Download every monster's short record (2 calls of up to 2000) and save data/monsters_index.json."""
-    try:
-        rows, docs, url, params = [], {}, "/monsters/", {"limit": 2000, "fields": LIST_FIELDS}
-        while True:
-            data = requests.get(API + url if url.startswith("/") else url, params=params, timeout=60,
-                                headers={"User-Agent": "dnd-tracker"})
-            data.raise_for_status()
-            data = data.json()
-            for m in data["results"]:
-                docs[m.get("document__slug", "")] = m.get("document__title", "")
-                rows.append([m["slug"], m["name"], m.get("type", ""), float(m.get("cr") or 0), m.get("armor_class"),
-                             m.get("hit_points"), _mod(m.get("dexterity")), m.get("document__slug", "")])
-            if not data.get("next"):
-                break
-            url, params = data["next"], None          # the "next" address already carries the parameters
-        out = {"built": int(time.time()), "docs": docs, "xp": XP, "m": rows}
-        tmp = INDEX.with_suffix(".tmp")
-        tmp.write_text(json.dumps(out, separators=(",", ":")))
-        tmp.replace(INDEX)
-        _index["data"] = out
-    except Exception:
-        pass                                               # keep whatever list we had; the next request tries again
-    finally:
-        _index["building"] = False
+def _rarity(text):
+    """Open5e writes rarity many ways ("Very Rare", "uncommon (+1), rare (+2)" ...): one of RARITIES, else "varies"."""
+    t = (text or "").strip().lower()
+    return t if t in RARITIES else "varies"
 
 
-def _start_build():
-    with _index_lock:
-        if not _index["building"]:
-            _index["building"] = True
-            threading.Thread(target=_build_index, daemon=True).start()
+class Catalog:
+    """One Open5e catalogue kept on disk. `row(record)` turns an API record into the short list the browser searches."""
 
+    def __init__(self, name, endpoint, fields, row, extra=None):
+        self.name, self.endpoint, self.fields, self.row, self.extra = name, endpoint, fields, row, extra or {}
+        self.file = ROOT / "data" / f"{name}_index.json"
+        self.stats = ROOT / "data" / name
+        self.data, self.building, self.guard = None, False, threading.Lock()
 
-@bp.get("/api/monsters/index")
-def monster_index():
-    """GET /api/monsters/index -> {"built", "docs": {slug: title}, "xp": {cr: xp}, "m": [[slug, name, type, cr, ac, hp,
-    dexMod, bookSlug], ...]} for the browser to search. While the very first copy is still downloading it answers
-    202 {"building": true} (the page asks again in a few seconds). A copy older than 30 days is served as it is
-    while a fresh one is fetched in the background."""
-    if _index["data"] is None and INDEX.exists():
+    def build(self):
+        """Download every short record (up to 2000 a call) and save the list. Runs in a thread; keeps the old list on failure."""
         try:
-            _index["data"] = json.loads(INDEX.read_text())
+            rows, docs, url, params = [], {}, self.endpoint, {"limit": 2000, "fields": self.fields}
+            while True:
+                r = requests.get(API + url if url.startswith("/") else url, params=params, timeout=60,
+                                 headers={"User-Agent": "dnd-tracker"})
+                r.raise_for_status()
+                page = r.json()
+                for m in page["results"]:
+                    docs[m.get("document__slug", "")] = m.get("document__title", "")
+                    rows.append(self.row(m))
+                if not page.get("next"):
+                    break
+                url, params = page["next"], None          # the "next" address already carries the parameters
+            out = {"built": int(time.time()), "docs": docs, "m": rows, **self.extra}
+            tmp = self.file.with_suffix(".tmp")
+            tmp.write_text(json.dumps(out, separators=(",", ":")))
+            tmp.replace(self.file)
+            self.data = out
         except Exception:
             pass
-    d = _index["data"]
-    if d is None or time.time() - d.get("built", 0) > INDEX_DAYS * 86400:
-        _start_build()
-    if d is None:
-        return jsonify(building=True), 202
-    resp = jsonify(d)
-    resp.headers["Cache-Control"] = "private, max-age=3600"
-    return resp
+        finally:
+            self.building = False
 
+    def start(self):
+        with self.guard:
+            if not self.building:
+                self.building = True
+                threading.Thread(target=self.build, daemon=True).start()
 
-@bp.post("/api/monsters/index/refresh")
-def refresh_index():
-    """POST /api/monsters/index/refresh -> fetch the monster list again (2 Open5e calls). Refused if the list is under a
-    day old, so a stray click cannot hammer the service."""
-    d = _index["data"]
-    if d and time.time() - d.get("built", 0) < REFRESH_MIN_SECONDS:
-        return jsonify(error="The list was refreshed less than a day ago"), 429
-    _start_build()
-    return jsonify(ok=True)
+    def index(self):
+        """The list for the browser. 202 {"building": true} while the very first copy downloads (the page asks again in a
+        few seconds); a copy older than 30 days is served as it is while a fresh one is fetched."""
+        if self.data is None and self.file.exists():
+            try:
+                self.data = json.loads(self.file.read_text())
+            except Exception:
+                pass
+        if self.data is None or time.time() - self.data.get("built", 0) > INDEX_DAYS * 86400:
+            self.start()
+        if self.data is None:
+            return jsonify(building=True), 202
+        resp = jsonify(self.data)
+        resp.headers["Cache-Control"] = "private, max-age=3600"
+        return resp
 
+    def refresh(self):
+        """Fetch the list again, unless it is under a day old (so a stray click cannot hammer the service)."""
+        if self.data and time.time() - self.data.get("built", 0) < REFRESH_MIN_SECONDS:
+            return jsonify(error="The list was refreshed less than a day ago"), 429
+        self.start()
+        return jsonify(ok=True)
 
-def _full(slug):
-    """The whole Open5e record for one monster: from data/monsters/<slug>.json if we have it, else one API call (saved)."""
-    if not re.fullmatch(r"[\w-]+", slug):
-        _fail("Bad monster id")
-    f = STATS / f"{slug}.json"
-    if f.exists():
+    def full(self, slug):
+        """The whole Open5e record: from data/<name>/<slug>.json if we have it, else one API call (then saved)."""
+        if not re.fullmatch(r"[\w-]+", slug):
+            _fail("Bad id")
+        f = self.stats / f"{slug}.json"
+        if f.exists():
+            try:
+                return json.loads(f.read_text())
+            except Exception:
+                pass
         try:
-            return json.loads(f.read_text())
+            r = requests.get(f"{API}{self.endpoint}{slug}/", timeout=30, headers={"User-Agent": "dnd-tracker"})
+            r.raise_for_status()
+            data = r.json()
         except Exception:
-            pass
-    data = _fetch(f"/monsters/{slug}/")
-    STATS.mkdir(parents=True, exist_ok=True)
-    f.write_text(json.dumps(data))
-    return data
+            _fail("Open5e could not be reached. Try again in a moment.", 502)
+        self.stats.mkdir(parents=True, exist_ok=True)
+        f.write_text(json.dumps(data))
+        return data
 
 
-@bp.get("/api/monsters/<slug>")
-def monster(slug):
-    """GET /api/monsters/<slug> -> the whole Open5e record (stat block text included)."""
-    return jsonify(_full(slug))
+MONSTERS = Catalog("monsters", "/monsters/", "slug,name,type,cr,armor_class,hit_points,dexterity,document__slug,document__title",
+                   lambda m: [m["slug"], m["name"], m.get("type", ""), float(m.get("cr") or 0), m.get("armor_class"),
+                              m.get("hit_points"), _mod(m.get("dexterity")), m.get("document__slug", "")], {"xp": XP})
+ITEMS = Catalog("magicitems", "/magicitems/", "slug,name,type,rarity,requires_attunement,document__slug,document__title",
+                lambda m: [m["slug"], m["name"], m.get("type", ""), _rarity(m.get("rarity")),
+                           1 if (m.get("requires_attunement") or "").strip() else 0, m.get("document__slug", "")],
+                {"rarities": RARITIES + ["varies"]})
 
 
-@bp.get("/monster/<slug>")
-def monster_page(slug):
-    """GET /monster/<slug> : one stat block as a small page (used by the builder's preview and the tracker's book button)."""
-    return render_template("monster.html", m=_full(slug), mod=_mod, xp=XP)
+def _routes(cat, kind, page, template, **extra):
+    """Register the four routes every catalogue has: /api/<kind>/index, /api/<kind>/index/refresh,
+    /api/<kind>/<slug> (the full record) and /<page>/<slug> (a small readable page for it)."""
+    bp.add_url_rule(f"/api/{kind}/index", f"{kind}_index", lambda: cat.index())
+    bp.add_url_rule(f"/api/{kind}/index/refresh", f"{kind}_refresh", lambda: cat.refresh(), methods=["POST"])
+    bp.add_url_rule(f"/api/{kind}/<slug>", f"{kind}_full", lambda slug: jsonify(cat.full(slug)))
+    bp.add_url_rule(f"/{page}/<slug>", f"{kind}_page", lambda slug: render_template(template, m=cat.full(slug), **extra))
+
+
+_routes(MONSTERS, "monsters", "monster", "monster.html", mod=_mod, xp=XP)
+_routes(ITEMS, "items", "item", "item.html")
 
 
 # ------------------------------------------------------------------ encounters (in the campaign state)
@@ -252,30 +256,123 @@ def delete_encounter(eid):
     return jsonify(ok=True)
 
 
+def _add_card(st, want, matches, make):
+    """Put a card on the campaign tracker (the one place encounters and loot tables share). `want` is a tile id ("" for
+    the first tile; a campaign with no tiles yet gets a section and a tile). `matches(item)` says whether a card already
+    exists (then nothing is added) and `make()` builds a new card without x, y: the campaign page finds it a free spot
+    the next time it loads the board. Returns (tile, card)."""
+    camp = st.setdefault("campaign", {})
+    camp.setdefault("links", [])
+    if not camp.get("sections"):
+        camp["sections"] = [{"id": secrets.token_hex(4), "name": "Main story"}]
+    if not camp.get("tiles"):
+        camp["tiles"] = [{"id": secrets.token_hex(4), "name": "Chapter 1", "section": camp["sections"][0]["id"], "subs": [], "items": []}]
+    tile = next((t for t in camp["tiles"] if t["id"] == want), camp["tiles"][0])
+    tile.setdefault("items", [])
+    card = next((i for i in tile["items"] if matches(i)), None)
+    if not card:
+        card = make()
+        tile["items"].append(card)
+    return tile, card
+
+
 @bp.post("/api/encounters/<eid>/tile")
 def add_encounter_tile(eid):
     """POST /api/encounters/<id>/tile {"tile": id of a campaign tracker tile, or "" for the first one} -> put this
     encounter on the campaign tracker as an encounter tile. Does nothing if that tile already has it.
-
-    The new card has no x, y: the campaign page finds it a free spot the next time it loads the board.
     Returns {"tile": its name, "item": the card's id} (the id lets the page highlight it on the campaign tracker)."""
     want = str((request.get_json(force=True, silent=True) or {}).get("tile", ""))
     with _ctx["lock"]:
         st = _state()
         _find(st, eid)
-        camp = st.setdefault("campaign", {})
-        camp.setdefault("links", [])
-        if not camp.get("sections"):
-            camp["sections"] = [{"id": secrets.token_hex(4), "name": "Main story"}]
-        if not camp.get("tiles"):
-            camp["tiles"] = [{"id": secrets.token_hex(4), "name": "Chapter 1", "section": camp["sections"][0]["id"], "subs": [], "items": []}]
-        tile = next((t for t in camp["tiles"] if t["id"] == want), camp["tiles"][0])
-        tile.setdefault("items", [])
-        card = next((i for i in tile["items"] if i.get("encounter") == eid), None)
-        if not card:
-            card = {"id": secrets.token_hex(4), "name": "", "encounter": eid, "checklist": [],
-                    "triggered": False, "loot": {"entries": [], "log": []}}
-            tile["items"].append(card)
+        tile, card = _add_card(st, want, lambda i: i.get("encounter") == eid,
+                               lambda: {"id": secrets.token_hex(4), "name": "", "encounter": eid, "checklist": [],
+                                        "triggered": False, "loot": {"entries": [], "log": []}})
+        _ctx["commit"](True)
+        return jsonify(tile=tile["name"], item=card["id"])
+
+
+# ------------------------------------------------------------------ loot tables (in the campaign state)
+# state["loots"] = [{"id","name","notes","entries":[{"slug","name","type","rarity","weight","note"}]}]. Like encounters, they
+# belong to the campaign. A flag on the campaign tracker can roll on one (flag["loot"]["source"] = "table:<id>").
+def _clean_entry(x):
+    try:
+        weight = max(1, min(1000, int(float(x.get("weight", 1)))))
+    except (TypeError, ValueError):
+        weight = 1
+    return {"slug": str(x.get("slug", ""))[:80], "name": str(x.get("name", "Item"))[:80] or "Item",
+            "type": str(x.get("type", ""))[:40], "rarity": _rarity(x.get("rarity")) if x.get("rarity") else "",
+            "weight": weight, "note": str(x.get("note", ""))[:200]}
+
+
+def _find_loot(st, lid):
+    for t in st.get("loots", []):
+        if t["id"] == lid:
+            return t
+    abort(404)
+
+
+@bp.get("/api/loots")
+def list_loots():
+    """GET /api/loots -> the loaded campaign's loot tables, each with "onTracker": names of campaign tiles whose flags roll on it."""
+    with _ctx["lock"]:
+        st = _state()
+        tiles = st.get("campaign", {}).get("tiles", [])
+        return jsonify([{**t, "onTracker": [x.get("name", "") for x in tiles
+                                            if any(i.get("loot", {}).get("source") == "table:" + t["id"] for i in x.get("items", []))]}
+                        for t in st.get("loots", [])])
+
+
+@bp.post("/api/loots")
+def create_loot():
+    """POST /api/loots {"name"} -> a new empty loot table (returned)."""
+    name = str((request.get_json(force=True, silent=True) or {}).get("name", "")).strip()[:80] or "New loot table"
+    with _ctx["lock"]:
+        t = {"id": secrets.token_hex(4), "name": name, "notes": "", "entries": []}
+        _state().setdefault("loots", []).append(t)
+        _ctx["commit"](True)
+    return jsonify(t)
+
+
+@bp.put("/api/loots/<lid>")
+def update_loot(lid):
+    """PUT /api/loots/<id> {"name","notes","entries":[entry]} -> the saved table."""
+    b = request.get_json(force=True, silent=True) or {}
+    if not isinstance(b.get("entries", []), list):
+        return jsonify(error="entries must be a list"), 400
+    with _ctx["lock"]:
+        t = _find_loot(_state(), lid)
+        if "name" in b:
+            t["name"] = str(b["name"]).strip()[:80] or t["name"]
+        if "notes" in b:
+            t["notes"] = str(b["notes"])[:2000]
+        if "entries" in b:
+            t["entries"] = [_clean_entry(x) for x in b["entries"][:200] if isinstance(x, dict)]
+        _ctx["commit"](True)
+        return jsonify(t)
+
+
+@bp.delete("/api/loots/<lid>")
+def delete_loot(lid):
+    """DELETE /api/loots/<id>. Flags that rolled on it keep their card and say "deleted loot table"."""
+    with _ctx["lock"]:
+        st = _state()
+        st["loots"] = [t for t in st.get("loots", []) if t["id"] != lid]
+        _ctx["commit"](True)
+    return jsonify(ok=True)
+
+
+@bp.post("/api/loots/<lid>/tile")
+def add_loot_tile(lid):
+    """POST /api/loots/<id>/tile {"tile"} -> put a flag on the campaign tracker that rolls on this table (like encounters).
+    Returns {"tile", "item"}."""
+    want = str((request.get_json(force=True, silent=True) or {}).get("tile", ""))
+    with _ctx["lock"]:
+        st = _state()
+        t = _find_loot(st, lid)
+        tile, card = _add_card(st, want, lambda i: i.get("loot", {}).get("source") == "table:" + lid,
+                               lambda: {"id": secrets.token_hex(4), "name": t["name"], "checklist": [], "triggered": False,
+                                        "loot": {"entries": [], "log": [], "source": "table:" + lid}})
         _ctx["commit"](True)
         return jsonify(tile=tile["name"], item=card["id"])
 
@@ -319,20 +416,28 @@ def forget_characters(keep_ids):
 
 @bp.post("/api/encounters/<eid>/load")
 def load_encounter(eid):
-    """POST /api/encounters/<id>/load {"mode": "replace"|"append"} -> the new initiative state.
+    """POST /api/encounters/<id>/load {"mode": "replace"|"append", "again": bool} -> {"initiative": ..., "added": n}.
 
     Adds one combatant per monster (several of the same kind are numbered, each rolling its own d20 + its
     Dexterity modifier, with its average hit points and armor class) and every party member who is not in the
     order yet. "replace" starts a fresh combat first; "append" (the default) adds to the one in progress.
-    Any open tracker, including the pop-out window, shows it within a few seconds because it polls."""
+
+    NO DOUBLE LOADING: an "append" is ignored (added = 0) when the order already holds monsters from this same
+    encounter, so a second click, a double click or two open windows cannot double the monsters. Pass "again": true
+    to add another set on purpose. Clearing the combat, or removing those monsters, makes it loadable again.
+    Any open tracker, including the pop-out window, shows the result within a few seconds because it polls."""
     import random
-    mode = (request.get_json(force=True, silent=True) or {}).get("mode", "append")
+    b = request.get_json(force=True, silent=True) or {}
+    mode, again = b.get("mode", "append"), bool(b.get("again"))
     d20 = lambda: random.randint(1, 20)  # noqa: E731
     with _ctx["lock"]:
         st = _state()
         enc = _find(st, eid)
         ini = _fresh() if mode == "replace" else (st.get("initiative") or _fresh())
         order = ini["order"]
+        if mode != "replace" and not again and any(c.get("enc") == eid for c in order):
+            return jsonify(initiative=ini, added=0)
+        before = len(order)
         for ref in st.get("party", []):                       # party members first (only those with a sheet here)
             if party._path(ref["id"]).exists() and not any(c.get("pc") == ref["id"] for c in order):
                 s = party.summary(ref["id"], party._load(ref["id"]))
@@ -352,4 +457,4 @@ def load_encounter(eid):
             ini["active"] = order[0]["id"] if order else None
         st["initiative"] = ini
         _ctx["commit"](False)
-        return jsonify(ini)
+        return jsonify(initiative=ini, added=len(order) - before)

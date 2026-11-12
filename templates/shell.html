@@ -9,7 +9,7 @@
   (an iframe is a complete web page embedded inside another page, with its own JavaScript and memory),
   and the tabs just hide and show them. Hidden iframes keep running.
 
-  TWO LEVELS: a DM gets every tab (Home, Soundboard, Campaign, Encounters, Characters) and the party tracker panel. A
+  TWO LEVELS: a DM gets every tab (Home, Soundboard, Campaign, Encounters, Loot, Characters) and the party tracker panel. A
   player gets only Home and "My character", and none of the DM's pages are even loaded. (The server refuses
   a player's request for the DM pages anyway; see auth.py. This only keeps the screen tidy.)
 
@@ -80,17 +80,19 @@
   <iframe id="f-sound" data-page="sound" title="Soundboard" allow="autoplay" src="/_/sound"></iframe>
   <iframe id="f-campaign" data-page="campaign" title="Campaign tracker" allow="autoplay" src="/_/campaign"></iframe>
   <iframe id="f-encounters" data-page="encounters" title="Encounters" src="/_/encounters"></iframe>
+  <iframe id="f-loot" data-page="loot" title="Loot" src="/_/loot"></iframe>
   {% endif %}
   <iframe id="f-party" data-page="party" title="Characters" allow="autoplay" src="{{ party_path }}"></iframe>
 </div>
 
+<script src="/static/errors.js"></script>
 {% if role == 'dm' %}<script src="/static/tracker.js"></script>{% endif %}
 <script>
 (function () {
   // frames: page name -> its <iframe>. urls: the address shown in the browser's address bar for each tab.
   const frames = {};
   document.querySelectorAll("#frames iframe").forEach(f => (frames[f.dataset.page] = f));
-  const urls = { home: "/", sound: "/sound", campaign: "/campaign", encounters: "/encounters", party: "/party" };
+  const urls = { home: "/", sound: "/sound", campaign: "/campaign", encounters: "/encounters", loot: "/loot", party: "/party" };
   let current = {{ active|tojson }};   // tojson writes the Python value as a JavaScript string literal
 
   // show(page, push): make `page` the visible tab. Highlights its link, shows its frame and hides the
@@ -119,7 +121,7 @@
   // Back / Forward buttons: show the tab recorded in that history entry (or work it out from the address).
   addEventListener("popstate", ev => {
     const p = location.pathname;
-    show(ev.state?.page || (p.startsWith("/campaign") ? "campaign" : p === "/encounters" ? "encounters" : p.startsWith("/party") ? "party" : p === "/sound" ? "sound" : "home"), false);
+    show(ev.state?.page || (p.startsWith("/campaign") ? "campaign" : p === "/encounters" ? "encounters" : p === "/loot" ? "loot" : p.startsWith("/party") ? "party" : p === "/sound" ? "sound" : "home"), false);
   });
   // goto(page, path, sound): switch to a tab, optionally loading `path` in its frame first and, for the
   // soundboard, asking it to centre on the sound with id `sound` (see revealSound in app.js).
@@ -137,7 +139,7 @@
   addEventListener("message", ev => {
     if (ev.origin !== location.origin) return;
     if (ev.data?.type === "reloadPages") {
-      for (const name of ["sound", "campaign", "encounters"]) frames[name]?.contentWindow.location.reload();
+      for (const name of ["sound", "campaign", "encounters", "loot"]) frames[name]?.contentWindow.location.reload();
     } else if (ev.data?.type === "goto") {
       goto(ev.data.page, ev.data.path, ev.data.sound, ev.data.node);
     }

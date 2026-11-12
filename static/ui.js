@@ -1,6 +1,9 @@
 "use strict";
 // ui.js - small helpers shared by the Home and Encounters pages (loaded before their own script).
 //
+// Everything is inside one object, UI, so pages that already have their own `api` or `h` (the campaign page) can load
+// this file too. Pages that want the short names write:  const { h, api, status, stored, store, box, dataTable } = UI;
+//
 //   h(tag, props, ...kids)     build a DOM element. Props such as textContent are plain text, never HTML, so a
 //                              name coming from a user or a monster book can never inject markup.
 //   api(url, method, body)     JSON request; resolves to the answer or throws Error(the server's message).
@@ -11,6 +14,7 @@
 // A filter or search never changes the data, it only hides rows. The search box takes a regular expression
 // (ignoring upper/lower case); if what you typed is not a valid expression it is matched as plain text instead.
 
+const UI = (() => {
 function h(tag, props = {}, ...kids) {
   const e = Object.assign(document.createElement(tag), props);
   for (const k of kids.flat()) if (k != null && k !== false) e.append(k);
@@ -106,3 +110,6 @@ function dataTable({ key, columns, rows, actions, empty = "Nothing here yet." })
     h("table", { className: "loot" }, h("thead", {}, h("tr", {}, columns.map(c => h("th", { textContent: c.label })), actions ? h("th") : null)), body));
   return wrap;
 }
+
+return { h, api, status, stored, store, box, matcher, dataTable };
+})();

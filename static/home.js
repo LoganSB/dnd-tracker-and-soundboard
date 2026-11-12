@@ -23,6 +23,7 @@
 // After a campaign is loaded the shell is told to reload the Soundboard and Campaign pages
 // (postMessage {type: "reloadPages"}), because they keep their own copy of the board in memory.
 
+const { h, api, status, box, dataTable } = UI;
 const role = document.body.dataset.role;
 const root = document.getElementById("home");
 
@@ -55,7 +56,7 @@ function characterTable(key, rows, { users, buttons, empty }) {
       { label: "HP", text: r => (r.present === false ? "waiting for upload" : `${r.hp}/${r.hpMax}`) },
     ],
     // Every row that has a sheet here also gets a download (a Fight Club zip of just that character).
-    actions: r => [...buttons(r), r.present === false ? null : h("a", { className: "btn", href: `/api/party/${r.id}/export.zip`, textContent: "⬇", title: "Download this character (Fight Club zip)" })],
+    actions: r => [...buttons(r), r.present === false ? null : h("button", { className: "btn", onclick: () => safeDownload(`/api/party/${r.id}/export.zip`), textContent: "⬇", title: "Download this character (Fight Club zip)" })],
   });
 }
 

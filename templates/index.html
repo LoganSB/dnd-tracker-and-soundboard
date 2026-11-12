@@ -213,7 +213,8 @@
   </section>
   <menu>
     <!-- Plain download link to a Flask endpoint that returns the live data as JSON -->
-    <a href="/api/export" download><button type="button">Export live JSON</button></a>
+    <!-- A button, not a link: safeDownload (errors.js) prints a failure next to it instead of replacing the page. -->
+    <button type="button" onclick="safeDownload('/api/export')">Export live JSON</button>
     <span class="grow"></span><button type="button" data-close>Close</button>
   </menu>
 </dialog>
@@ -223,6 +224,7 @@
 <div id="nowplaying" hidden></div>
 
 <!-- Script order matters: the shared canvas and cable code first, then app.js (uses them). -->
+<script src="/static/errors.js"></script>
 <script src="/static/canvas.js"></script>
 <script src="/static/cables.js"></script>
 <script src="/static/undo.js"></script>
