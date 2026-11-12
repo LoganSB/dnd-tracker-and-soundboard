@@ -59,7 +59,7 @@ function box(key, title, ...body) {
   return sec;
 }
 
-// dataTable({ key, columns, rows, actions, empty }) -> element   (lists 10 / 20 / 50 / 100 rows at a time, default 20, with "Show more")
+// dataTable({ key, columns, rows, actions, empty }) -> element   (lists 20 rows at a time; the button under it steps through 10 / 20 / 50 / 100)
 //   columns  [{ label, text(row) -> string used for searching and filtering, show(row) -> node or text (optional;
 //            defaults to the text), filter: true to give the column a menu of its distinct values,
 //            tags(row) -> array: with filter, a row belongs to every value in its list (a row in two campaigns shows up under both) }]
@@ -86,12 +86,10 @@ function dataTable({ key, columns, rows, actions, empty = "Nothing here yet." })
   });
   const count = h("span", { className: "muted dcount" });
   const body = h("tbody");
-  // How many rows to list at a time: the same 10 / 20 / 50 / 100 choice as the monster and item searches (Finder.pageSize). It is
-  // only offered when the list has more rows than the current choice (checked when the table is built, so picking a bigger size
-  // does not make the menu vanish under you); "Show more" adds another page.
+  // How many rows to list at a time: the same 10 / 20 / 50 / 100 choice as the monster and item searches (Finder.pageSize). The one
+  // button at the bottom left steps it up (and back down to 10 once everything shows); it only appears when the list is long enough.
   let shown = Finder.pageSize.get();
-  const sizeSel = rows.length > shown ? Finder.pageSize.select(n => { shown = n; draw(); }) : null;
-  const more = h("button", { className: "tiny", onclick: () => { shown += Finder.pageSize.get(); draw(); } });
+  const more = Finder.pageSize.more(n => { shown = n; draw(); });
   const draw = () => {
     store(`q.${key}`, search.value);
     search.classList.toggle("badre", Finder.isBadRegex(search.value));
@@ -110,14 +108,13 @@ function dataTable({ key, columns, rows, actions, empty = "Nothing here yet." })
       actions ? h("td", { className: "acts" }, actions(r)) : null)));
     if (!list.length) body.append(h("tr", {}, h("td", { colSpan: columns.length + 1, className: "muted", textContent: "No rows match." })));
     count.textContent = `${list.length} of ${rows.length}`;
-    more.hidden = list.length <= shown;
-    more.textContent = `Show more (${list.length - shown} left)`;
+    more.sync(list.length, Math.min(shown, list.length));
   };
   search.oninput = () => { shown = Finder.pageSize.get(); draw(); };
   filters.forEach((f, i) => f && (f.onchange = () => { store(`f.${key}.${i}`, f.value); draw(); }));
   draw();
-  wrap.append(h("div", { className: "dbar" }, search, filters.filter(Boolean), sizeSel, count),
-    h("table", { className: "loot" }, h("thead", {}, h("tr", {}, columns.map(c => h("th", { textContent: c.label })), actions ? h("th") : null)), body), more);
+  wrap.append(h("div", { className: "dbar" }, search, filters.filter(Boolean), count),
+    h("table", { className: "loot" }, h("thead", {}, h("tr", {}, columns.map(c => h("th", { textContent: c.label })), actions ? h("th") : null)), body), more.el);
   return wrap;
 }
 

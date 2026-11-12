@@ -129,6 +129,13 @@ app.before_request(auth.check_request)
 app.register_blueprint(auth.bp)
 
 
+@app.get("/favicon.ico")
+def favicon():
+    """GET /favicon.ico : the tab icon, for browsers that ask for this address instead of reading the <link rel="icon"> in the
+    page (the pages name static/icon.jpeg directly)."""
+    return send_from_directory(BASE / "static", "icon.jpeg", mimetype="image/jpeg", max_age=86400)
+
+
 @app.get("/healthz")
 def healthz():
     """GET /healthz : answers "ok" so a container platform can tell the process is alive. No password."""

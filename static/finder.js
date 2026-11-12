@@ -11,7 +11,7 @@
 //     a monster: "cr 5", "cr 1/2", "3-5", "5+") all work. Best matches first, then shorter names, then A to Z.
 //   * the same matching also drives every searchable TABLE in the app (UI.dataTable in ui.js uses find with keepOrder).
 //   * panel(cfg): the search box with live suggestions (each shows its CR or rarity), filter menus, and the result
-//     table with a "+" button per row. With nothing typed it lists everything A to Z, 20 rows at a time (10, 20, 50 or 100: your choice is remembered; the menu appears only when the list is longer than the choice).
+//     table with a "+" button per row. With nothing typed it lists everything A to Z, 20 rows at a time; the button under the list steps through 10, 20, 50 and 100 rows and remembers your choice.
 // Nothing here calls Open5e: all searching happens in the browser on the downloaded list.
 const Finder = (() => {
   const el = (tag, props = {}, ...kids) => {
@@ -21,16 +21,36 @@ const Finder = (() => {
   };
 
   // pageSize: the "how many rows at a time" choice (10, 20, 50 or 100; default 20), remembered in this browser and shared by every
-  // searchable list in the app: the monster and item searches (panel below) and every UI.dataTable.
+  // searchable list in the app: the monster and item searches (panel below) and every UI.dataTable. It is changed with the one
+  // button under each list (pageSize.more), not a menu.
   const pageSize = {
     options: [10, 20, 50, 100],
     get() { try { const n = +localStorage.getItem("finder.pageSize"); return this.options.includes(n) ? n : 20; } catch (_) { return 20; } },
     set(n) { try { localStorage.setItem("finder.pageSize", n); } catch (_) { /* storage blocked */ } },
-    // select(onChange): a drop-down for the choice; onChange(n) runs after the user picks one.
-    select(onChange) {
-      const sel = el("select", { title: "How many rows to list at a time" }, this.options.map(n => el("option", { value: n, textContent: `${n} rows`, selected: n === this.get() })));
-      sel.onchange = () => { this.set(+sel.value); onChange(+sel.value); };
-      return sel;
+    // more(onChange, fixed) -> { el, sync(total, shown) }: the ONE button under a list that replaces both "Show more" and a size menu.
+    // It sits at the bottom left. Each click steps the list size up the choices (10 -> 20 -> 50 -> 100; past 100 it adds another
+    // 100) and remembers it; once everything is showing it becomes "Show fewer" and goes back to 10. It only appears when the list
+    // is longer than the smallest size. `fixed` (the small pop-up lists) turns it into a plain "Show more" that adds `fixed` rows.
+    // onChange(n) is called with the new number of rows to show; call sync(total, shown) after every redraw to update its label.
+    more(onChange, fixed) {
+      const b = el("button", { className: "tiny moreBtn" });
+      let total = 0, shown = 0;
+      b.onclick = () => {
+        const small = this.options[0];
+        let next;
+        if (fixed) next = shown + fixed;
+        else if (total <= shown) next = small;                                   // everything is showing: shrink back
+        else { next = this.options.find(n => n > shown) ?? shown + 100; if (this.options.includes(next)) this.set(next); }
+        if (!fixed && next === small) this.set(small);
+        onChange(next);
+      };
+      return { el: b, sync(t, s) {
+        total = t; shown = s;
+        const small = pageSize.options[0];
+        b.hidden = fixed ? t <= s : t <= small;
+        if (t > s) { const n = fixed ? 0 : pageSize.options.find(x => x > s); b.textContent = fixed || !n ? `Show more (${t - s} left)` : `Show ${n} rows (${t - s} more)`; }
+        else b.textContent = `Show fewer (${small} rows)`;
+      } };
     },
   };
 
@@ -142,6 +162,8 @@ const Finder = (() => {
     // Page size: rows listed before "Show more". The pop-up version is fixed at 6; the tabs use the shared choice (pageSize above).
     const size = () => (cfg.compact ? 6 : pageSize.get());
     let rows = cfg.rows || [], shown = size();
+    // The one "show more / fewer" button under the table (see pageSize.more): it changes how many rows are shown.
+    const more = pageSize.more(n => { shown = n; redraw(); }, cfg.compact ? 6 : 0);
     const f = { q: "", filters: {}, numMin: "", numMax: "" };
     const q = el("input", { type: "search", placeholder: cfg.placeholder, autocomplete: "off", className: "grow" });
     const sug = el("div", { className: "suggest", hidden: true });
@@ -156,10 +178,6 @@ const Finder = (() => {
     const nmax = cfg.num && el("input", { type: "number", min: 0, max: 30, step: "any", placeholder: "to", className: "inum" });
     if (cfg.num) [nmin, nmax].forEach(x => (x.onchange = () => { f.numMin = nmin.value; f.numMax = nmax.value; redraw(); }));
     const results = el("div");
-    // The size menu only appears when the list is longer than the current choice, and then stays for this view (so picking a bigger
-    // size does not make it vanish under you).
-    const sizeSel = cfg.compact ? null : pageSize.select(() => { shown = size(); redraw(); });
-    if (sizeSel) sizeSel.hidden = true;
     const fcfg = { num: cfg.num?.get, filters: cfg.filters };
 
     let pick = -1, timer = null;
@@ -183,7 +201,6 @@ const Finder = (() => {
     };
 
     function redraw() {
-      if (sizeSel && rows.length > pageSize.get()) sizeSel.hidden = false;
       if (!rows.length) { results.replaceChildren(el("p", { className: (cfg.note?.() || "").startsWith("Could") ? "bad" : "muted", textContent: cfg.note?.() || "" })); return; }
       const list = find(rows, f, fcfg);
       const body = list.slice(0, shown).map(m => el("tr", {}, cfg.columns.map(c => el("td", { textContent: c.text(m) })),
@@ -193,10 +210,11 @@ const Finder = (() => {
         el("p", { className: "muted", textContent: `${list.length} of ${rows.length}` + (f.q ? "" : ", A to Z") }),
         el("table", { className: "loot" }, el("thead", {}, el("tr", {}, [...cfg.columns.map(c => c.label), ""].map(t => el("th", { textContent: t })))),
           el("tbody", {}, body.length ? body : el("tr", {}, el("td", { colSpan: cfg.columns.length + 1, className: "muted", textContent: "Nothing matches." })))),
-        list.length > shown ? el("button", { textContent: `Show more (${list.length - shown} left)`, onclick: () => { shown += size(); redraw(); } }) : null);
+        more.el);
+      more.sync(list.length, Math.min(shown, list.length));
     }
     const root = el("div", { className: "finder" + (cfg.compact ? " compact" : "") },
-      el("div", { className: "row" }, el("div", { className: "sugwrap grow" }, q, sug), menus, nmin, nmax, sizeSel),
+      el("div", { className: "row" }, el("div", { className: "sugwrap grow" }, q, sug), menus, nmin, nmax),
       cfg.compact ? null : el("p", { className: "muted", textContent: cfg.hint }), results);
     redraw();
     return { el: root, redraw, setRows(r) { rows = r; redraw(); },

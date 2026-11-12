@@ -280,7 +280,7 @@ async function boot() {
   try {
     const me = await api("/api/auth/me");
     const parts = await (role === "dm" ? dmView(me) : playerView(me));
-    root.replaceChildren(h("h1", { textContent: "🎲 DND Tracker" }), ...parts.filter(Boolean), linkFooter(me) || []);
+    root.replaceChildren(h("h1", {}, h("img", { className: "brandicon", src: "/static/icon.jpeg", alt: "" }), " DND Tracker"), ...parts.filter(Boolean), linkFooter(me) || []);
   } catch (e) {
     root.replaceChildren(h("p", { className: "bad", textContent: e.message }));
   } finally { booting = false; }

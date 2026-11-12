@@ -32,7 +32,7 @@ Sign-in is by user name and password (stored only as salted hashes in `data/user
 - **Encounter tiles** on the campaign canvas point at the same encounter: clicking one adds it to the initiative tracker; its buttons start a new combat, load and pop out, or open it in the Encounters tab. Making a tile with "New encounter" from the canvas creates the encounter too, and opens the Encounters tab on it.
 - **Initiative is per campaign** (`state["initiative"]`) and the tracker only lists the loaded campaign's party; characters who leave the party leave the combat. A monster's book button opens its stat block (`/monster/<slug>`).
 - **Cables.** Chains on the soundboard and links on the campaign tracker are drawn by the same code (`static/cables.js`): all cables are routed together around the cards, so cables that share a road run side by side as lanes instead of stacking, and the cable you are dragging follows the pointer even when it goes behind where it started.
-- **Lists.** Every list (the monster and item searches, and all tables such as Browse, Characters and Players) shows 20 rows at a time with a "Show more" button; choose 10, 20, 50 or 100 (one choice, remembered in the browser). Editing an encounter or loot table anywhere refreshes the Browse lists on Home and the other tabs at once.
+- **Lists.** Every list (the monster and item searches, and all tables such as Browse, Characters and Players) shows 20 rows at a time. One button at the bottom left of the list steps the size up (10, 20, 50, 100, then another 100 each click) and, once everything shows, goes back to 10; it only appears when the list is longer than 10 rows. The size is one choice shared by all lists, remembered in the browser. Editing an encounter or loot table anywhere refreshes the Browse lists on Home and the other tabs at once.
 - **Click menu.** Click empty canvas for a small menu, on the campaign tracker (new section, tile, flag, encounter or loot table) and on the soundboard (new section, tile or sound), created where you clicked and inside the section or tile you clicked in. Both pages share one implementation, `Canvas.clickMenu` in `static/canvas.js`.
 - **Home lists** are all collapsible (click the heading), searchable with a regular expression and filterable per column; the Party and Characters lists are one table with the same columns.
 
@@ -63,6 +63,9 @@ Sign-in is by user name and password (stored only as salted hashes in `data/user
 | `static/style.css` | Styling, built in layers (later rules override earlier ones) |
 
 Every file starts with a plain-language overview, and every function has a comment explaining what it does and why.
+
+## Icon
+`static/icon.jpeg` is the browser tab icon (every page names it in a `<link rel="icon">`, and `/favicon.ico` serves it too) and the round image in front of "DND Tracker" in the banner (`templates/_nav.html`, `login.html`, `invite.html`, `landing.html`; styled by `.brandicon`). To change it, replace that file.
 
 ## Sound amp (for quiet recordings)
 A sound's settings have an **Amp** slider from 1 (off) to 4 (about +12 dB), for recordings that are quiet even with the card's volume slider at full. The sound plays at its volume times its amp (`level()` in `static/app.js`), a boosted card shows a small `×2.0` badge, and changing the amp takes effect at once on a sound that is playing. Very loud sounds boosted a lot can distort.

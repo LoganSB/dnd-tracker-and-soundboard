@@ -2673,3 +2673,11 @@ body.canvaspage .flag {
 /* The amp badge on a sound card ("×2.0") beside its volume slider, and the readout in the sound's settings. */
 .snd .amp { font-size: .65rem; color: var(--warn); margin-left: .3rem; white-space: nowrap; }
 .ampout { margin-left: .4rem; color: var(--muted); font-size: .8rem; }
+
+/* The round rune seal (static/icon.jpeg) in front of the name in the banner. It is cropped to a circle because the picture sits
+   on a light square background. */
+.brandicon { width: 1.7rem; height: 1.7rem; border-radius: 50%; object-fit: cover; vertical-align: middle; margin-right: .3rem; }
+.brand { display: inline-flex; align-items: center; }
+
+h1 .brandicon { width: 1.15em; height: 1.15em; margin-right: .35rem; }
+.moreBtn { margin-top: .5rem; }
