@@ -2646,3 +2646,18 @@ button.gsi:focus-visible, a.gsi:focus-visible { outline: 3px solid #a8c7fa; outl
 
 /* A hidden control stays hidden even when a rule such as .row gives it a display of its own. */
 [hidden] { display: none !important; }
+
+/* Campaign cards (flags, encounter and loot cards): room for the drag bar along the top, and breathing room between the title
+   row, its buttons and the content below. (Without the extra top padding the title ran under the drag bar, and with only
+   140px of width the four small buttons squeezed the name against them.) */
+body.canvaspage .flag {
+  min-width: 200px;
+  padding: 1.55rem .8rem .6rem;
+}
+.flag .ftitle { gap: .55rem; margin-bottom: .3rem; align-items: center; }
+.flag .fname { min-width: 0; padding-right: .2rem; line-height: 1.25; }
+.flag .ftools { gap: .3rem; margin-left: .2rem; }
+.flag .checks { margin: .55rem 0 .4rem; }
+.flag .emons { margin: .45rem 0 .2rem; }
+.flag .fprog { margin-top: .15rem; }
+.flag .ffoot { margin-top: .5rem; }

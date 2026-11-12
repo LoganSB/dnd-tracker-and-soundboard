@@ -167,6 +167,7 @@ function save() {
       const r = await api("/api/campaign", "PUT", { campaign: C() });
       myRevision = r.revision;
       $("#saveState").textContent = "saved";
+      UI.libraryChanged();   // which campaigns hold which encounters and loot tables may have changed (Browse lists)
     } catch (e) {
       $("#saveState").textContent = "SAVE FAILED";
     }
@@ -841,6 +842,7 @@ eform.addEventListener("submit", async ev => {
       k.list().push(n);
       id = n.id;
       fresh = true;
+      UI.libraryChanged();   // the Browse lists on the other pages show it at once
     }
     const tile = C().tiles.find(t => t.id === eform.tile.value) || C().tiles[0];
     const card = k.card(k.list().find(r => r.id === id));
@@ -1281,10 +1283,7 @@ function startLink(ev, from, existing) {
     y0 = p0.y + out.offsetHeight / 2;   // start of the rubber band, in world coordinates
   drag = { kind: "link" };
   document.body.classList.add("linking");
-  const temp = document.createElementNS(Cables.SVGNS, "path");
-  temp.setAttribute("class", "link temp");
-  temp.setAttribute("marker-end", "url(#arr)");
-  $("#tempLayer").append(temp);
+  const temp = Cables.tempPath($("#tempLayer"));
   // under(e): the linkable item beneath the pointer. closest() walks up from the element under the pointer
   // to the nearest ancestor with a data-lid, so a checklist row wins over the flag that contains it.
   const under = e => document.elementFromPoint(e.clientX, e.clientY)?.closest("[data-lid]");
@@ -1293,7 +1292,7 @@ function startLink(ev, from, existing) {
   const move = e => {
     const w = Canvas.toWorld(e.clientX, e.clientY);   // pointer position in world coordinates (accounts for pan and zoom)
     if (Math.hypot(w.x - x0, w.y - y0) > 5) moved = true;
-    temp.setAttribute("d", Cables.bezier({ x: x0, y: y0 }, { x: Math.max(w.x, x0 + 12), y: w.y }));
+    temp.setAttribute("d", Cables.live({ x: x0, y: y0 }, w));   // follows the pointer even behind the start
     clear();
     const t = under(e);
     if (t && t.dataset.lid !== from) t.classList.add("linktarget");
@@ -1338,41 +1337,44 @@ function startLink(ev, from, existing) {
 function drawLinks() {
   const layer = $("#linkLayer");
   layer.textContent = "";
+  // `shell(port)`: the rectangle a cable must leave from / arrive at: the flag card (or frame) the port belongs to. A port on a
+  // checklist row belongs to the whole flag card, so the cable starts outside the card.
+  const rect = n => { const p = Canvas.posIn(n); return { l: p.x, r: p.x + n.offsetWidth, t: p.y, b: p.y + n.offsetHeight }; };
+  const shell = port => { const o = port.closest("[data-lid]"); return rect(o.closest(".flag") || o); };
+  const links = [];
   C().links.forEach(l => {
     // This link's own output circle and input square (each link has its own, found by data-link).
     const a = document.querySelector(`.lp-out[data-link="${l.id}"]`),
       b = document.querySelector(`.lp-in[data-link="${l.id}"]`);
-    if (!a?.offsetParent || !b?.offsetParent) return;
+    if (!a?.offsetParent || !b?.offsetParent) return;   // either end hidden (a collapsed section): draw nothing
     const pa = Canvas.posIn(a),
       pb = Canvas.posIn(b),
-      A = { x: pa.x + a.offsetWidth / 2, y: pa.y + a.offsetHeight / 2 },     // centre of the output circle
-      B = { x: pb.x - 1, y: pb.y + b.offsetHeight / 2 };                     // left edge of the input square
-    // For a target that is not to the right, use the U-turn fallback; it needs the vertical extent of both items.
-    const box = port => {
-      const owner = port.closest("[data-lid]"),
-        p = Canvas.posIn(owner);
-      return { top: p.y, bottom: p.y + owner.offsetHeight };
-    };
-    const d = B.x - A.x >= 20 ? Cables.bezier(A, B) : Cables.routed(A, B, box(a), box(b), Canvas.WORLD);
-    const done = isDone(l.from);
-    const vis = document.createElementNS(Cables.SVGNS, "path");
-    vis.setAttribute("d", d);
-    vis.setAttribute("class", "link " + (done ? "sat" : "wait"));
-    vis.setAttribute("marker-end", "url(#arr)");
-    const hit = document.createElementNS(Cables.SVGNS, "path");
-    hit.setAttribute("d", d);
-    hit.setAttribute("class", "linkhit");
-    hit.addEventListener("click", () => {
-      linkHistory.record("removed a link");
-      C().links = C().links.filter(x => x !== l);
-      save();
-      render(true);
+      cs = shell(a),
+      ct = shell(b);
+    links.push({
+      l,
+      a: { x: pa.x + a.offsetWidth / 2, y: pa.y + a.offsetHeight / 2 },   // centre of the output circle
+      b: { x: pb.x - 1, y: pb.y + b.offsetHeight / 2 },                   // left edge of the input square
+      sx: cs.r + 12, ex: ct.l - 12, cs, ct,
     });
-    // <title> inside an SVG shape is its tooltip.
-    const tip = document.createElementNS(Cables.SVGNS, "title");
-    tip.textContent = `${lookup(l.from)?.name} → ${lookup(l.to)?.name}  (click to remove)`;
-    hit.append(tip);
-    layer.append(vis, hit);
+  });
+  // Obstacles: the flag cards. All cables are routed together (Cables.paths, the same code as the soundboard's chains), so
+  // cables that share a road run side by side as lanes instead of stacking on top of each other.
+  const cards = [...document.querySelectorAll(".flag")].filter(n => n.offsetParent).map(rect);
+  const ds = Cables.paths(links, cards, Canvas.WORLD, Canvas.WORLD);
+  links.forEach(({ l }, n) => {
+    // Cables.pair adds the visible cable (solid green if its source is done, dashed otherwise) and a wider invisible one on top
+    // that is easy to click; clicking it removes the link.
+    Cables.pair(layer, ds[n], {
+      cls: "link " + (isDone(l.from) ? "sat" : "wait"),
+      title: `${lookup(l.from)?.name} → ${lookup(l.to)?.name}  (click to remove)`,
+      onRemove: () => {
+        linkHistory.record("removed a link");
+        C().links = C().links.filter(x => x !== l);
+        save();
+        render(true);
+      },
+    });
   });
 }
 // scheduleDraw(): redraw the cables at the next screen repaint (requestAnimationFrame also merges

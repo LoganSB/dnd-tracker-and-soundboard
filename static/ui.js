@@ -59,7 +59,7 @@ function box(key, title, ...body) {
   return sec;
 }
 
-// dataTable({ key, columns, rows, actions, empty }) -> element
+// dataTable({ key, columns, rows, actions, empty }) -> element   (lists 10 / 20 / 50 / 100 rows at a time, default 20, with "Show more")
 //   columns  [{ label, text(row) -> string used for searching and filtering, show(row) -> node or text (optional;
 //            defaults to the text), filter: true to give the column a menu of its distinct values,
 //            tags(row) -> array: with filter, a row belongs to every value in its list (a row in two campaigns shows up under both) }]
@@ -86,6 +86,12 @@ function dataTable({ key, columns, rows, actions, empty = "Nothing here yet." })
   });
   const count = h("span", { className: "muted dcount" });
   const body = h("tbody");
+  // How many rows to list at a time: the same 10 / 20 / 50 / 100 choice as the monster and item searches (Finder.pageSize). It is
+  // only offered when the list has more rows than the current choice (checked when the table is built, so picking a bigger size
+  // does not make the menu vanish under you); "Show more" adds another page.
+  let shown = Finder.pageSize.get();
+  const sizeSel = rows.length > shown ? Finder.pageSize.select(n => { shown = n; draw(); }) : null;
+  const more = h("button", { className: "tiny", onclick: () => { shown += Finder.pageSize.get(); draw(); } });
   const draw = () => {
     store(`q.${key}`, search.value);
     search.classList.toggle("badre", Finder.isBadRegex(search.value));
@@ -100,18 +106,29 @@ function dataTable({ key, columns, rows, actions, empty = "Nothing here yet." })
     const generous = Finder.find(prepared, { q }, { keepOrder: true });
     const list = (q ? [...new Set([...exact, ...generous])] : generous)
       .map(p => p.ref).filter(r => !filters.some((f, i) => f && f.value && !(columns[i].tags ? columns[i].tags(r).includes(f.value) : columns[i].text(r) === f.value)));
-    body.replaceChildren(...list.map(r => h("tr", {}, columns.map(c => h("td", {}, c.show ? c.show(r) : c.text(r))),
+    body.replaceChildren(...list.slice(0, shown).map(r => h("tr", {}, columns.map(c => h("td", {}, c.show ? c.show(r) : c.text(r))),
       actions ? h("td", { className: "acts" }, actions(r)) : null)));
     if (!list.length) body.append(h("tr", {}, h("td", { colSpan: columns.length + 1, className: "muted", textContent: "No rows match." })));
     count.textContent = `${list.length} of ${rows.length}`;
+    more.hidden = list.length <= shown;
+    more.textContent = `Show more (${list.length - shown} left)`;
   };
-  search.oninput = draw;
+  search.oninput = () => { shown = Finder.pageSize.get(); draw(); };
   filters.forEach((f, i) => f && (f.onchange = () => { store(`f.${key}.${i}`, f.value); draw(); }));
   draw();
-  wrap.append(h("div", { className: "dbar" }, search, filters.filter(Boolean), count),
-    h("table", { className: "loot" }, h("thead", {}, h("tr", {}, columns.map(c => h("th", { textContent: c.label })), actions ? h("th") : null)), body));
+  wrap.append(h("div", { className: "dbar" }, search, filters.filter(Boolean), sizeSel, count),
+    h("table", { className: "loot" }, h("thead", {}, h("tr", {}, columns.map(c => h("th", { textContent: c.label })), actions ? h("th") : null)), body), more);
   return wrap;
 }
 
-return { h, api, status, stored, store, box, dataTable };
+// Encounters and loot tables are shared by every page and every campaign. When one changes (created, edited, renamed, deleted, or put on
+// or taken off a campaign tracker), the page that changed it calls libraryChanged(); every OTHER page that registered with
+// onLibraryChanged(fn) hears it and refreshes (the Browse lists on Home, for example). A BroadcastChannel reaches all frames of the site.
+let channel = null;
+try { channel = new BroadcastChannel("dnd-library"); } catch (_) { /* very old browser: lists refresh when their tab is shown */ }
+const libraryChanged = () => channel?.postMessage("changed");
+const onLibraryChanged = fn => channel?.addEventListener("message", fn);
+const offLibraryChanged = fn => channel?.removeEventListener("message", fn);
+
+return { h, api, status, stored, store, box, dataTable, libraryChanged, onLibraryChanged, offLibraryChanged };
 })();

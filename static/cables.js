@@ -9,6 +9,10 @@
 //   pages share one copy. Nothing here touches the page: every function takes points / rectangles
 //   and returns an SVG path description (the text that goes in a path's "d" attribute).
 //
+//   live(a, b)                        the cable shown while one is being dragged to the pointer at b
+//   paths(links, cards, W, H)         the final paths for ALL cables: routed and bundled, with fallbacks
+//   pair(layer, d, opts)              add one cable to an SVG layer: the visible path plus a wide invisible click target
+//   tempPath(layer)                   add the rubber-band path used while dragging
 //   bezier(a, b)                      a smooth S-curve from a to b
 //   routed(a, b, sa, sb, W)           fallback path when b is not to the right of a
 //   roundPoly(points, radius)         a polyline with rounded corners
@@ -402,5 +406,59 @@ function routeCables(links, cards, W, H) {
   });
 }
 
-  return { SVGNS, bezier, routed, roundPoly, routeCables };
+
+// live(a, b): the cable drawn while dragging from a (the output circle) to the pointer b. Unlike bezier() it keeps following the
+// pointer when that is BEHIND the start (to its left): longer arms make a smooth S that loops back, instead of squashing into a
+// slightly slanted line. For a pointer well to the right it is exactly bezier().
+function live(a, b) {
+  const dx = b.x - a.x;
+  const k = dx >= 80 ? Math.min(60, dx / 2) : Math.min(160, 40 + (80 - dx) / 2);
+  return `M${a.x},${a.y} C${a.x + k},${a.y} ${b.x - k},${b.y} ${b.x},${b.y}`;
+}
+
+// tempPath(layer): the rubber-band path shown while a cable is dragged (class "link temp", with the arrowhead). The caller
+// sets its "d" on every pointer move and removes it at the end.
+function tempPath(layer) {
+  const p = document.createElementNS(SVGNS, "path");
+  p.setAttribute("class", "link temp");
+  p.setAttribute("marker-end", "url(#arr)");
+  layer.append(p);
+  return p;
+}
+
+// paths(links, cards, W, H): the SVG path for every cable, in the order of `links`. Each link is { a, b, sx, ex, cs, ct }:
+// a / b the port positions, sx / ex the x of the lanes just outside the source / target item, cs / ct their { t, b } extents.
+// `cards` are the obstacles. All cables are routed TOGETHER by routeCables, so cables that share a road run side by side as
+// lanes instead of stacking on top of each other (the soundboard and the campaign tracker both draw their cables this way).
+// A cable the router cannot place falls back to a plain curve (target to the right) or the routed() U-turn.
+function paths(links, cards, W, H) {
+  let routed2 = null;
+  try { routed2 = routeCables(links, cards, W, H); } catch (err) { console.error("cable routing failed", err); }
+  return links.map((l, n) => routed2?.[n] || (l.b.x - l.a.x >= 10 ? bezier(l.a, l.b)
+    : routed(l.a, l.b, { top: l.cs.t, bottom: l.cs.b }, { top: l.ct.t, bottom: l.ct.b }, W)));
+}
+
+// pair(layer, d, opts): add one cable to `layer`: the visible path and, on top of it, a wider invisible one that is easy to click.
+//   opts.cls      the visible path's class         opts.stroke   optional stroke colour
+//   opts.title    tooltip text                     opts.onRemove called when the cable is clicked (a click removes the link)
+// Returns the visible path so the caller can add more attributes.
+function pair(layer, d, { cls, stroke, title, onRemove }) {
+  const vis = document.createElementNS(SVGNS, "path");
+  vis.setAttribute("d", d);
+  vis.setAttribute("class", cls);
+  if (stroke) vis.style.stroke = stroke;
+  vis.setAttribute("marker-end", "url(#arr)");
+  layer.append(vis);
+  const hit = document.createElementNS(SVGNS, "path");   // pointer-events: stroke in the stylesheet makes only the stroke receive the mouse
+  hit.setAttribute("d", d);
+  hit.setAttribute("class", "linkhit");
+  hit.addEventListener("click", onRemove);
+  const tip = document.createElementNS(SVGNS, "title");   // an SVG <title> child is the shape's tooltip
+  tip.textContent = title;
+  hit.append(tip);
+  layer.append(hit);
+  return vis;
+}
+
+  return { SVGNS, bezier, routed, roundPoly, routeCables, live, tempPath, paths, pair };
 })();

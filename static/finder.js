@@ -11,13 +11,27 @@
 //     a monster: "cr 5", "cr 1/2", "3-5", "5+") all work. Best matches first, then shorter names, then A to Z.
 //   * the same matching also drives every searchable TABLE in the app (UI.dataTable in ui.js uses find with keepOrder).
 //   * panel(cfg): the search box with live suggestions (each shows its CR or rarity), filter menus, and the result
-//     table with a "+" button per row. With nothing typed it lists everything A to Z, 100 at a time.
+//     table with a "+" button per row. With nothing typed it lists everything A to Z, 20 rows at a time (10, 20, 50 or 100: your choice is remembered; the menu appears only when the list is longer than the choice).
 // Nothing here calls Open5e: all searching happens in the browser on the downloaded list.
 const Finder = (() => {
   const el = (tag, props = {}, ...kids) => {
     const e = Object.assign(document.createElement(tag), props);
     for (const k of kids.flat()) if (k != null && k !== false) e.append(k);
     return e;
+  };
+
+  // pageSize: the "how many rows at a time" choice (10, 20, 50 or 100; default 20), remembered in this browser and shared by every
+  // searchable list in the app: the monster and item searches (panel below) and every UI.dataTable.
+  const pageSize = {
+    options: [10, 20, 50, 100],
+    get() { try { const n = +localStorage.getItem("finder.pageSize"); return this.options.includes(n) ? n : 20; } catch (_) { return 20; } },
+    set(n) { try { localStorage.setItem("finder.pageSize", n); } catch (_) { /* storage blocked */ } },
+    // select(onChange): a drop-down for the choice; onChange(n) runs after the user picks one.
+    select(onChange) {
+      const sel = el("select", { title: "How many rows to list at a time" }, this.options.map(n => el("option", { value: n, textContent: `${n} rows`, selected: n === this.get() })));
+      sel.onchange = () => { this.set(+sel.value); onChange(+sel.value); };
+      return sel;
+    },
   };
 
   // prep(row): add the fields matching needs to a row object that has `name` (and optionally `extraText`, more words that
@@ -125,14 +139,16 @@ const Finder = (() => {
   //   onAdd(m)  the "+" button                            preview(m) the 📖 button (optional)
   //   note()    text to show while there are no rows yet  compact    a smaller version for pop-ups (fewer rows, no hint)
   function panel(cfg) {
-    let rows = cfg.rows || [], shown = cfg.compact ? 6 : 100;
+    // Page size: rows listed before "Show more". The pop-up version is fixed at 6; the tabs use the shared choice (pageSize above).
+    const size = () => (cfg.compact ? 6 : pageSize.get());
+    let rows = cfg.rows || [], shown = size();
     const f = { q: "", filters: {}, numMin: "", numMax: "" };
     const q = el("input", { type: "search", placeholder: cfg.placeholder, autocomplete: "off", className: "grow" });
     const sug = el("div", { className: "suggest", hidden: true });
     const byKey = {};
     const menus = (cfg.filters || []).map(x => {
       const sel = el("select", { title: x.label }, el("option", { value: "", textContent: x.all }), x.options.map(([v, t]) => el("option", { value: v, textContent: t })));
-      sel.onchange = () => { f.filters[x.key] = sel.value; shown = cfg.compact ? 6 : 100; redraw(); };
+      sel.onchange = () => { f.filters[x.key] = sel.value; shown = size(); redraw(); };
       byKey[x.key] = sel;
       return sel;
     });
@@ -140,6 +156,10 @@ const Finder = (() => {
     const nmax = cfg.num && el("input", { type: "number", min: 0, max: 30, step: "any", placeholder: "to", className: "inum" });
     if (cfg.num) [nmin, nmax].forEach(x => (x.onchange = () => { f.numMin = nmin.value; f.numMax = nmax.value; redraw(); }));
     const results = el("div");
+    // The size menu only appears when the list is longer than the current choice, and then stays for this view (so picking a bigger
+    // size does not make it vanish under you).
+    const sizeSel = cfg.compact ? null : pageSize.select(() => { shown = size(); redraw(); });
+    if (sizeSel) sizeSel.hidden = true;
     const fcfg = { num: cfg.num?.get, filters: cfg.filters };
 
     let pick = -1, timer = null;
@@ -148,12 +168,12 @@ const Finder = (() => {
       pick = -1;
       sug.replaceChildren(...best.map(m => {
         const b = el("button", { type: "button", textContent: cfg.label(m) }, el("span", { className: "muted", textContent: "  " + cfg.sub(m) }));
-        b.onmousedown = ev => { ev.preventDefault(); q.value = m.name; sug.hidden = true; f.q = m.name; shown = cfg.compact ? 6 : 100; redraw(); };
+        b.onmousedown = ev => { ev.preventDefault(); q.value = m.name; sug.hidden = true; f.q = m.name; shown = size(); redraw(); };
         return b;
       }));
       sug.hidden = !best.length;
     };
-    q.oninput = () => { clearTimeout(timer); timer = setTimeout(() => { f.q = q.value.trim(); shown = cfg.compact ? 6 : 100; redraw(); showSug(); }, 60); };
+    q.oninput = () => { clearTimeout(timer); timer = setTimeout(() => { f.q = q.value.trim(); shown = size(); redraw(); showSug(); }, 60); };
     q.onblur = () => { sug.hidden = true; };
     q.onkeydown = ev => {
       const items = [...sug.children];
@@ -163,6 +183,7 @@ const Finder = (() => {
     };
 
     function redraw() {
+      if (sizeSel && rows.length > pageSize.get()) sizeSel.hidden = false;
       if (!rows.length) { results.replaceChildren(el("p", { className: (cfg.note?.() || "").startsWith("Could") ? "bad" : "muted", textContent: cfg.note?.() || "" })); return; }
       const list = find(rows, f, fcfg);
       const body = list.slice(0, shown).map(m => el("tr", {}, cfg.columns.map(c => el("td", { textContent: c.text(m) })),
@@ -172,10 +193,10 @@ const Finder = (() => {
         el("p", { className: "muted", textContent: `${list.length} of ${rows.length}` + (f.q ? "" : ", A to Z") }),
         el("table", { className: "loot" }, el("thead", {}, el("tr", {}, [...cfg.columns.map(c => c.label), ""].map(t => el("th", { textContent: t })))),
           el("tbody", {}, body.length ? body : el("tr", {}, el("td", { colSpan: cfg.columns.length + 1, className: "muted", textContent: "Nothing matches." })))),
-        list.length > shown ? el("button", { textContent: `Show more (${list.length - shown} left)`, onclick: () => { shown += 200; redraw(); } }) : null);
+        list.length > shown ? el("button", { textContent: `Show more (${list.length - shown} left)`, onclick: () => { shown += size(); redraw(); } }) : null);
     }
     const root = el("div", { className: "finder" + (cfg.compact ? " compact" : "") },
-      el("div", { className: "row" }, el("div", { className: "sugwrap grow" }, q, sug), menus, nmin, nmax),
+      el("div", { className: "row" }, el("div", { className: "sugwrap grow" }, q, sug), menus, nmin, nmax, sizeSel),
       cfg.compact ? null : el("p", { className: "muted", textContent: cfg.hint }), results);
     redraw();
     return { el: root, redraw, setRows(r) { rows = r; redraw(); },
@@ -183,5 +204,5 @@ const Finder = (() => {
       setOptions(key, options) { const sel = byKey[key]; if (sel) sel.append(...options.map(([v, t]) => el("option", { value: v, textContent: t }))); } };
   }
 
-  return { el, prep, loadIndex, dist, find, isBadRegex, parseQuery, panel };
+  return { el, prep, loadIndex, dist, find, isBadRegex, parseQuery, panel, pageSize };
 })();

@@ -27,13 +27,13 @@
 <body class="campaignpage canvaspage">
 <header>
   <div class="bar">
-    <!-- addTileBtn adds a tile (a card) to the first section; each section header also has its own "+ Tile". -->
-    <button id="addTileBtn" class="primary">+ Tile</button>
     <!-- undoBtn / redoBtn: undo or redo the last link change (keyboard: Ctrl/Cmd+Z and Ctrl/Cmd+Y) -->
     <button id="undoBtn" title="Undo the last link change (Ctrl+Z)">↶</button>
     <button id="redoBtn" title="Redo (Ctrl+Y)">↷</button>
+    <!-- The "+" buttons: the same things the click menu on the canvas offers (see Canvas.clickMenu in campaign.js).
+         addTileBtn adds a tile to the first section; each section header also has its own "+ Tile". -->
+    <button id="addTileBtn" class="primary">+ Tile</button>
     <button id="addSectionBtn">+ Section</button>
-    <!-- The same things the click menu on the canvas offers (see Canvas.clickMenu in campaign.js): -->
     <button id="addFlagBtn">+ Flag</button>
     <button id="addEncounterBtn">+ Encounter</button>
     <button id="addLootTableBtn">+ Loot table</button>

@@ -98,8 +98,8 @@
 //      works out colours / position numbers for the chain badges.
 //   6. CABLES.  After every render, drawLinks() measures where the sound cards
 //      ended up on screen and draws SVG lines between linked cards.
-//      routeCables() is a small path-finding engine that keeps the cables
-//      from crossing over cards. startLink() handles dragging a new cable.
+//      cables.js (shared with the campaign tracker) routes them around cards
+//      in side-by-side lanes. startLink() handles dragging a new cable.
 //   7. DIALOGS.  Add/edit-sound, tile settings and presets use HTML <dialog>
 //      elements defined in the HTML page (which this file looks up by id).
 //
@@ -1162,14 +1162,11 @@ function cleanLinks() {
   });
 }
 
-// The cable geometry (SVGNS, bezier, routed, roundPoly, routeCables) lives in cables.js, shared with
-// the campaign tracker. These constants just give the shared functions their old local names.
-const { SVGNS, bezier, routed, roundPoly, routeCables } = Cables;
 
 // drawLinks(): (re)draw all cables on the SVG overlay. Called after every render (via
 // requestAnimationFrame) and on window resize. Desktop only (phones show no cables).
-// Steps: measure where each card/port is on the page, build a `links` list, ask routeCables()
-// for paths (falling back to simple curves on failure), then create one SVG <path> per link.
+// Steps: measure where each card/port is on the page, build a `links` list, ask Cables.paths()
+// for paths (routed together, with fallbacks), then Cables.pair() creates the SVG <path>s for each link.
 // Coordinates are WORLD coordinates (see canvas.js): every position is measured with Canvas.posIn,
 // which is independent of pan and zoom. The SVG overlay sits inside the same #world element as the
 // tiles, so when you pan or zoom the cables move with the tiles and need no redrawing; they are only
@@ -1211,41 +1208,29 @@ function drawLinks() {
       ct
     });
   });
-  let routed2 = null;
-  try { routed2 = routeCables(links, cards, W, H); } catch (err) { console.error("cable routing failed", err); }
-  const items = links.map((l, n) => {
+  const ds = Cables.paths(links, cards, W, H);   // routed together so shared roads become side-by-side lanes (cables.js)
+  links.map((l, n) => {
     // `on` = this cable is part of the highlighted path. (`?.` is safe when path is null.)
     const on = path?.edges.has(l.s.id + ">" + l.s.next);
-    // Use the routed path; if missing, a bezier for rightward links or the simple routed() fallback otherwise.
-    const d = routed2?.[n] || (l.b.x - l.a.x >= 10 ? bezier(l.a, l.b) : routed(l.a, l.b, { top: l.cs.t, bottom: l.cs.b }, { top: l.ct.t, bottom: l.ct.b }, W));
-    return { l, on, d };
-  }).sort((m, n) => m.on - n.on); // selected path on top
-  // (Sorting by a boolean difference puts "off" cables first so the highlighted ones are painted last = on top.)
-  items.forEach(({ l, on, d }) => {   // destructuring in the parameter list
-    const p = document.createElementNS(SVGNS, "path");
-    p.setAttribute("d", d);   // "d" is the SVG attribute that holds the path commands
-    p.setAttribute("class", "link" + (on ? " onpath" : path ? " off" : "") + (engines.get(l.s.id)?.playing ? " flow" : ""));
-    p.style.stroke = tint(info.get(l.s.id)?.hue, on ? 70 : 62);
-    p.setAttribute("marker-end", "url(#arr)");   // arrowhead defined in the HTML
-    layer.append(p);
-    // A wider invisible copy of the cable on top, so it is easy to click: clicking it removes the link,
-    // exactly like clicking the output circle or the input square (and the same as on the campaign page).
-    // (pointer-events: stroke in the stylesheet makes only the stroke receive the mouse.)
-    const hit = document.createElementNS(SVGNS, "path");
-    hit.setAttribute("d", d);
-    hit.setAttribute("class", "linkhit");
-    hit.addEventListener("click", () => {
-      linkHistory.record("removed a chain link");
-      delete l.s.next;
-      delete l.s.nextAt;
-      save();
-      render(true);
+    return { l, on, d: ds[n] };
+  }).sort((m, n) => m.on - n.on) // selected path on top
+    // (Sorting by a boolean difference puts "off" cables first so the highlighted ones are painted last = on top.)
+    .forEach(({ l, on, d }) => {   // destructuring in the parameter list
+      // Cables.pair adds the visible cable and, on top, a wider invisible copy that is easy to click: clicking it removes the
+      // link, exactly like clicking the output circle or the input square (and the same as on the campaign page).
+      Cables.pair(layer, d, {
+        cls: "link" + (on ? " onpath" : path ? " off" : "") + (engines.get(l.s.id)?.playing ? " flow" : ""),
+        stroke: tint(info.get(l.s.id)?.hue, on ? 70 : 62),
+        title: `${l.s.name} → ${byId(l.s.next)?.name ?? "?"}  (click to remove)`,
+        onRemove: () => {
+          linkHistory.record("removed a chain link");
+          delete l.s.next;
+          delete l.s.nextAt;
+          save();
+          render(true);
+        },
+      });
     });
-    const tip = document.createElementNS(SVGNS, "title");   // an SVG <title> child is the shape's tooltip
-    tip.textContent = `${l.s.name} → ${byId(l.s.next)?.name ?? "?"}  (click to remove)`;
-    hit.append(tip);
-    layer.append(hit);
-  });
   // Remember where the cards were when we drew, so verifyLayout() can notice if they move afterwards.
   drawnLayout = layoutSignature();
   verifyLayout();
@@ -1345,10 +1330,7 @@ function startLink(ev, snd) {
   linking = { moved: false, x0: p0.x + outEl.offsetWidth / 2, y0: p0.y + outEl.offsetHeight / 2 };
   document.body.classList.add("linking");
   // The rubber-band cable shown while dragging.
-  const temp = document.createElementNS(SVGNS, "path");
-  temp.setAttribute("class", "link temp");
-  temp.setAttribute("marker-end", "url(#arr)");
-  $("#tempLayer").append(temp);
+  const temp = Cables.tempPath($("#tempLayer"));
   // under(e): the sound card currently beneath the pointer (or undefined/null). elementFromPoint finds the topmost element at a screen position; closest() walks up the tree to a matching ancestor.
   const under = e => document.elementFromPoint(e.clientX, e.clientY)?.closest(".snd");
   // clear(): remove the highlight from every previously highlighted target card.
@@ -1360,7 +1342,7 @@ function startLink(ev, snd) {
       px = w.x,
       py = w.y;
     if (Math.hypot(px - linking.x0, py - linking.y0) > 5) linking.moved = true;
-    temp.setAttribute("d", bezier({ x: linking.x0, y: linking.y0 }, { x: Math.max(px, linking.x0 + 12), y: py }));
+    temp.setAttribute("d", Cables.live({ x: linking.x0, y: linking.y0 }, { x: px, y: py }));   // follows the pointer even behind the start
     clear();
     const t = under(e);
     if (t && t.dataset.id !== snd.id) t.classList.add("linktarget");

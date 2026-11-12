@@ -23,7 +23,7 @@
 //   cfg.initialId   which record to open first                  cfg.onChange(record)  called after each saved edit, create, rename or delete
 // ctx = { num(entry, key, title), save, flush, msg, reload, select, refresh, record }
 const Builder = (() => {
-  const { h, api, box, status } = UI;
+  const { h, api, box, status, libraryChanged } = UI;
 
   function mount(host, cfg) {
     let items = [], current = cfg.lockId || cfg.initialId || null, timer = null;
@@ -31,8 +31,10 @@ const Builder = (() => {
     const editor = h("div");
     const cur = () => items.find(i => i.id === current);
     const put = () => { const r = cur(); return r ? api(`${cfg.api}/${r.id}`, "PUT", { name: r.name, notes: r.notes, [cfg.list]: r[cfg.list] }) : Promise.resolve(); };
-    const save = () => { clearTimeout(timer); timer = setTimeout(async () => { timer = null; await put(); cfg.onChange?.(cur()); }, 400); };
-    const flush = async () => { if (timer) { clearTimeout(timer); timer = null; await put(); cfg.onChange?.(cur()); } };
+    // changed(rec): tell this page (cfg.onChange) and every other page (libraryChanged) that the library was edited.
+    const changed = rec => { cfg.onChange?.(rec); libraryChanged(); };
+    const save = () => { clearTimeout(timer); timer = setTimeout(async () => { timer = null; await put(); changed(cur()); }, 400); };
+    const flush = async () => { if (timer) { clearTimeout(timer); timer = null; await put(); changed(cur()); } };
 
     async function reload() {
       items = await api(cfg.api);
@@ -47,7 +49,7 @@ const Builder = (() => {
         const name = prompt(`Name for the new ${cfg.noun}`, `New ${cfg.noun}`);
         if (!name) return;
         const n = await api(cfg.api, "POST", { name });
-        items.push(n); current = n.id; draw(); cfg.onChange?.(n);
+        items.push(n); current = n.id; draw(); changed(n);
       } });
       const picker = h("select", {}, items.map(x => h("option", { value: x.id, textContent: x.name })));
       picker.value = current || "";
@@ -56,12 +58,12 @@ const Builder = (() => {
         rec ? h("button", { textContent: "Rename", onclick: async () => {
           const name = prompt("New name", rec.name);
           if (!name) return;
-          rec.name = name; await put(); draw(); cfg.onChange?.(rec);
+          rec.name = name; await put(); draw(); changed(rec);
         } }) : null,
         rec ? h("button", { className: "danger", textContent: `Delete ${cfg.noun}`, onclick: async () => {
           if (!confirm(`Delete ${cfg.noun} "${rec.name}"?`)) return;
           await api(`${cfg.api}/${rec.id}`, "DELETE");
-          items = items.filter(x => x !== rec); current = items[0]?.id || null; draw(); cfg.onChange?.();
+          items = items.filter(x => x !== rec); current = items[0]?.id || null; draw(); changed();
         } }) : null);
       if (!rec) { editor.replaceChildren(...[top, h("p", { className: "muted", textContent: `No ${cfg.noun}s in this campaign yet.` })].filter(Boolean)); return; }
 

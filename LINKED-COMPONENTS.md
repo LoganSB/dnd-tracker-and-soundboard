@@ -41,6 +41,9 @@ Each row: the thing that changes, the components linked to it, and what must be 
 | A new list or table on Home or another page | `UI.dataTable` in `static/ui.js` (regex + Finder search, filters, tags) | use `dataTable` so search and filters match every other list |
 | A new searchable catalogue (like monsters / items) | `Catalog` and `_routes` in `encounters.py`; `Finder.panel` config; `Builder` config | add a Catalog, reuse Finder and Builder |
 | A new key stored in the campaign state | `put_state` preserved keys and `keep_campaign` in `app.py`; `adopt()` migration if it moves out | decide whether it travels with the campaign or lives outside it |
+| Anything that edits encounters or loot tables (a new editor, import, bulk action) | `UI.libraryChanged()` / `UI.onLibraryChanged()` in `static/ui.js`; `Builder` (`changed()`); `Browse.mount` listener; `campaign.js` save | call `UI.libraryChanged()` after the change so Browse lists on other pages refresh |
+| Cables / links between items (soundboard chains, campaign links) | `Cables.paths`, `Cables.pair`, `Cables.live`, `Cables.tempPath` in `static/cables.js`; `drawLinks` and `startLink` in `static/app.js` and `static/campaign.js` | change the shared function once; keep both `drawLinks` link records `{a, b, sx, ex, cs, ct}` and both obstacle lists in step |
+| The result-list size (10 / 20 / 50 / 100) | `Finder.pageSize` in `static/finder.js` (saved in localStorage `finder.pageSize`), used by `Finder.panel` and `UI.dataTable`; the compact pop-up is fixed at 6 | change it once in `Finder.pageSize`; the menu only appears when a list is longer than the choice |
 | A new postMessage type between frames | header comment of `templates/shell.html`; receiving page's message handler | document it and handle it |
 
 ## Notes

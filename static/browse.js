@@ -7,7 +7,7 @@
 // Browse.mount(host, kind, onOpen) -> { refresh }
 //   host     an element to fill            kind    "encounter" or "loot"
 //   onOpen   function(record) called by the Open button
-//   refresh  fetch the list again and redraw (call it after an edit)
+//   refresh  fetch the list again and redraw. It also runs by itself whenever any other page changes the library (UI.onLibraryChanged)
 // Encounters and loot tables belong to no campaign: the "Campaigns" column (and its filter) shows which saved campaigns have them on
 // their tracker, and "In this campaign" whether the loaded one does.
 // Used at the bottom of the Home tab (both lists), the Encounters tab (encounters) and the Loot tab (loot tables).
@@ -53,6 +53,10 @@ const Browse = (() => {
       })));
     }
     refresh();
+    // Another page (the Encounters tab, the campaign tracker) changed the library: redraw. A list whose page was rebuilt (its host
+    // is no longer on the page) stops listening.
+    const onChange = () => (host.isConnected ? refresh() : UI.offLibraryChanged(onChange));
+    UI.onLibraryChanged(onChange);
     return { refresh };
   }
 
