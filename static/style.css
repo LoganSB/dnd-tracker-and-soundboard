@@ -2734,3 +2734,22 @@ h1 .brandicon { width: 1.15em; height: 1.15em; margin-right: .35rem; }
 @keyframes tabflash {
   50% { background: #ffd34d; color: #000; border-color: #ffd34d; }
 }
+
+/* The small "move up" button in a card's drag bar (nodes.js, Nodes.upButton). */
+.dragbar .up {
+  position: absolute;
+  right: 2px;
+  top: 0;
+  height: 100%;
+  padding: 0 .3rem;
+  background: none;
+  border: 0;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: .8rem;
+  line-height: 1;
+}
+.dragbar .up:hover { color: #fff; }
+/* While something is carried: the section title bars it may be dropped on are outlined, the one under the pointer is solid. */
+.frame.droptarget > header { box-shadow: inset 0 0 0 2px #ffd34d88; }
+.frame.dropover > header { box-shadow: inset 0 0 0 3px #ffd34d; background: #ffd34d33; }

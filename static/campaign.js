@@ -248,8 +248,9 @@ function cardShell(item, className, dragTitle = "Drag to move this card") {
   const bar = el("div", { className: "dragbar", textContent: "⠿⠿⠿", title: dragTitle });
   bar.addEventListener("pointerdown", ev => {
     if (ev.button !== 0) return;
-    Canvas.dragItems(ev, [{ obj: item, el: card }], dragHooks(() => adoptCard(item)));   // after the drop it may belong to another section
+    Canvas.dragItems(ev, [{ obj: item, el: card }], dragHooks(item));   // dropped on a section's header it moves into that section
   });
+  bar.append(Nodes.upButton(nst(), item, C().sections, () => moveUp(item)) ?? "");
   card.prepend(bar);
   return card;
 }
@@ -418,7 +419,7 @@ function timerDone(card, late) {
 function openTimerDlg(item) {
   Nodes.form({
     title: "Timer",
-    fields: Timers.fields(item, { sounds: soundChoices().map(s => ({ value: s.id, label: s.label })), sections: sectionOptions() }),
+    fields: Timers.fields(item, { sounds: soundChoices().map(s => ({ value: s.id, label: s.label })), sections: nst().options(item) }),
     save: v => { edits.record("edited a timer"); Timers.apply(item, v); save(); render(true); },
   });
 }
@@ -449,38 +450,35 @@ function relayout() { frames = Canvas.layoutFrames(frameModel()); }
 const cardEl = item => document.querySelector(`.flag[data-iid="${item.id}"]`);
 const cardsOf = items => items.map(i => ({ obj: i, el: cardEl(i) }));
 
-// dragHooks(after): the hooks passed to Canvas.dragItems for every drag on this page. While dragging, `drag`
-// blocks render() and the frames and links are re-fitted on every step. When the drag ends, `after()` runs
-// (it decides what the drop means), then everything is saved and redrawn.
-function dragHooks(after) {
+// nst(): the nesting rules for this board (Nodes.nest: depth, canEnter, moveInto, moveUp).
+const nst = () => Nodes.nest(C().sections);
+// moveUp(obj): take a card or section out of its section into that section's parent: the ONLY way to remove something from a section.
+function moveUp(obj) {
+  edits.record("moved up a level");
+  nst().moveUp(obj);
+  save();
+  render(true);
+}
+// dragHooks(obj): the hooks passed to Canvas.dragItems for every drag on this page; `obj` is the card or section being carried. While dragging,
+// `drag` blocks render() and the frames and links are re-fitted on every step. A card or section stays in its section wherever it is dragged
+// (its frame just stretches); it changes section only by being dropped on the HEADER of another section it may enter (the sections it may enter
+// are highlighted while it is carried, see Nodes.dropper). When the drag ends everything is saved and redrawn.
+function dragHooks(obj) {
+  const dd = Nodes.dropper(nst(), C().sections, obj);
   return {
-    onStart: () => { drag = { kind: "node" }; },
-    onMove: () => { relayout(); scheduleDraw(); },
-    onEnd: moved => {
+    onStart: () => { drag = { kind: "node" }; dd.start(); },
+    onMove: e => { relayout(); scheduleDraw(); dd.over(e); },
+    onEnd: (moved, e) => {
       drag = null;
-      if (moved) { edits.record("moved something"); after?.(); save(); }
+      const target = dd.end(e);
+      if (moved) {
+        edits.record(target ? "moved into a section" : "moved something");
+        if (target) { nst().moveInto(obj, target); }
+        save();
+      }
       render(true);
     }
   };
-}
-
-// adoptCard(item): after a card is dropped, decide which section it belongs to NOW. The frames are computed WITHOUT this card (otherwise its own
-// frame would have stretched to cover it wherever it was dropped); if the card's centre is inside a frame it joins the innermost one. Dropped in
-// empty space it stays where it was (membership unchanged).
-function adoptCard(item) {
-  const card = cardEl(item);
-  if (!card) return;
-  const rects = Canvas.layoutFrames(frameModel(item.id), true),   // true = just compute, change nothing
-    fid = Canvas.frameAt(rects, item.x + card.offsetWidth / 2, item.y + card.offsetHeight / 2);
-  if (fid) item.section = fid.slice(4);
-}
-// adoptSection(sec): after a section's frame is dragged, if its centre is inside ANOTHER section's frame (not one of its own descendants) it joins that section.
-function adoptSection(sec) {
-  const mine = frames[`sec:${sec.id}`];
-  if (!mine) return;
-  const rects = Canvas.layoutFrames(frameModel(null, sec.id), true),
-    fid = Canvas.frameAt(rects, (mine.l + mine.r) / 2, (mine.t + mine.b) / 2);
-  if (fid) Nodes.reparent(C().sections, sec.id, fid.slice(4));
 }
 
 // placeCard(item, secId): choose a free canvas position for a card being added to section `secId`: the nearest free spot to that section's
@@ -498,8 +496,8 @@ function placeCard(item, secId) {
 
 // frameEl(fid, level, hue, head, getItems, after, key): builds the shell of a frame: a <div class="frame f-LEVEL"> with its id, a header holding the
 // `head` elements, and link ports so the frame itself can be linked to other things. Dragging the header moves everything inside:
-// `getItems()` returns the { obj, el } list.
-function frameEl(fid, level, hue, head, getItems, after, key) {
+// `getItems()` returns the { obj, el } list and `obj` is the card or section the frame stands for.
+function frameEl(fid, level, hue, head, getItems, obj, key) {
   const frame = el("div", { className: `frame f-${level}` });
   frame.dataset.fid = fid;
   frame.style.setProperty("--gh", hue);
@@ -508,7 +506,7 @@ function frameEl(fid, level, hue, head, getItems, after, key) {
   if (key) addPorts(frame, key);
   header.addEventListener("pointerdown", ev => {
     if (ev.button !== 0 || ev.target.closest("button,input,select,a")) return;
-    Canvas.dragItems(ev, getItems(), dragHooks(after));
+    Canvas.dragItems(ev, getItems(), dragHooks(obj));
   });
   return frame;
 }
@@ -560,7 +558,7 @@ function openSectionDlg(sec) {
     title: "Section settings",
     fields: [
       { key: "name", label: "Name", value: sec.name },
-      { key: "parent", label: "Inside", type: "select", value: sec.parent || "", options: sectionOptions({ except: sec.id }), hint: "(a section can sit inside another)" },
+      { key: "parent", label: "Inside", type: "select", value: sec.parent || "", options: nst().options(sec), hint: "(it can only move into a section it may enter; ⤴ moves it up)" },
     ],
     save: v => {
       edits.record("edited a section");
@@ -586,6 +584,7 @@ function sectionFrame(sec) {
     el("span", { className: "muted", textContent: flags.length ? `${triggered}/${flags.length} triggered` : "" }),
     Nodes.tools([
       { icon: "+", title: "Add a section, flag, encounter, loot table, condition or timer here", run: ev => Canvas.popupMenu(createEntries(sec.id, null), ev.clientX, ev.clientY) },
+      { icon: "⤴", title: "Move this section up into its parent section", hidden: !nst().canMoveUp(sec), run: () => moveUp(sec) },
       { icon: "⚙", title: "Section settings (rename, move inside another section)", run: () => openSectionDlg(sec) },
       { icon: "🗑", title: "Delete section (what is inside stays on the board)", run: () => deleteSection(sec) },
     ]),
@@ -596,7 +595,7 @@ function sectionFrame(sec) {
     ids.forEach(id => { if (!C().items.some(i => Nodes.inside(C().sections, i.section, id))) out.push({ obj: Nodes.byId(C().sections, id), el: document.querySelector(`.frame[data-fid="sec:${id}"]`) }); });
     return out;
   };
-  return frameEl(`sec:${sec.id}`, ["sec", "tile", "sub"][Math.min(d, 2)], hue, head, moveSet, () => adoptSection(sec), "sec:" + sec.id);
+  return frameEl(`sec:${sec.id}`, ["sec", "tile", "sub"][Math.min(d, 2)], hue, head, moveSet, sec, "sec:" + sec.id);
 }
 
 // render(force): rebuild the whole board from S.campaign. Postponed during a drag (see `drag`).
@@ -678,7 +677,7 @@ function openFlagDlg(item, secId) {
   $("#deleteFlag").hidden = !item;
   $("#flagMsg").textContent = "";
   fform.section.textContent = "";
-  sectionOptions().forEach(o => fform.section.append(el("option", { value: o.value, textContent: o.label })));
+  (item ? nst().options(item) : sectionOptions()).forEach(o => fform.section.append(el("option", { value: o.value, textContent: o.label })));
   fform.section.value = item ? item.section || "" : secId ?? firstSection();
   // The sound menu lists the soundboard's sounds. If the flag's sound was deleted, show "(none)".
   fform.sound.textContent = "";

@@ -615,15 +615,15 @@ const Canvas = (() => {
         it.obj.y = Math.round(y + dy);
         if (it.el) { it.el.style.left = it.obj.x + "px"; it.el.style.top = it.obj.y + "px"; }
       });
-      hooks.onMove?.();
+      hooks.onMove?.(e);
     };
-    const up = () => {
+    const up = e => {
       removeEventListener("pointermove", move);
       removeEventListener("pointerup", up);
       removeEventListener("pointercancel", up);
       items.forEach(it => it.el?.classList.remove("dragging-node"));
       clearGuides();
-      hooks.onEnd?.(moved);
+      hooks.onEnd?.(moved, e);
     };
     addEventListener("pointermove", move);
     addEventListener("pointerup", up);

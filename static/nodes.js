@@ -9,6 +9,8 @@
 //
 // Everything here works on those plain arrays, so both pages use the same code:
 //   TREE   Nodes.kids / descendants / inside / roots / depth / hue / hidden / path / options / fix / model / remove / reparent
+//   PLACEMENT  Nodes.nest(secs) (depth, canEnter, moveInto, moveUp: the nesting rules for ANY object, sections and cards alike),
+//          Nodes.upButton (the move-up button), Nodes.dropper (drag onto a section's header to move into it)
 //   MENUS  Nodes.tools(actions)   the row of small buttons on a section's title bar and on every card (one implementation)
 //          Nodes.form(spec)       the one settings dialog (section settings, timer settings, ...): fields in, values out
 //   (The create menu that opens when empty canvas is clicked is Canvas.clickMenu in canvas.js.)
@@ -55,10 +57,11 @@ const Nodes = (() => {
   const path = (secs, id) => chain(secs, id).reverse().map(s => s.name).join(" › ");
   // options(secs, { except, none }): the sections as drop-down choices, in tree order, indented by depth. `except` leaves out a section and
   // everything below it (a section cannot be moved into itself); `none` adds a first choice with value "".
-  function options(secs, { except = null, none = "(no section)" } = {}) {
+  function options(secs, { except = null, none = "(no section)", keep = null } = {}) {
     const skip = except ? new Set([except, ...descendants(secs, except)]) : new Set(), out = none == null ? [] : [{ value: "", label: none }];
     const walk = (list, d) => list.forEach(s => {
       if (skip.has(s.id)) return;
+      if (keep && !keep(s)) { walk(kids(secs, s.id), d + 1); return; }   // not offered, but what is inside it may be
       out.push({ value: s.id, label: "  ".repeat(d) + (d ? "↳ " : "") + s.name });
       walk(kids(secs, s.id), d + 1);
     });
@@ -98,6 +101,62 @@ const Nodes = (() => {
     if (!sec || (parentId && inside(secs, parentId, id))) return false;
     sec.parent = parentId || "";
     return true;
+  }
+
+  // ---------------------------------------------------------------- placement: the "has a parent" component
+  // Every board object (a section, a sound, a flag, a timer ...) HAS a parent link: a section's is `parent`, a card's is `section`. All the rules
+  // about nesting live here, written against that one idea, so no page and no kind of object needs its own copy. A new kind of object only
+  // needs a row in LINKS saying which field is its parent link.
+  //   depth      how many sections are above the object (a top-level section: 0; a card in a top-level section: 1; a loose card: 0)
+  //   canEnter   may the object be moved INTO this section? Not itself or its own descendants, not the section it is already in, and only a
+  //              section whose depth is the object's depth or less (a deeper section is not offered)
+  //   moveUp     the ONLY way to take an object out of its section: it goes into that section's own parent (or to the top level)
+  const LINKS = [{ test: (secs, o) => secs.includes(o), key: "parent" }, { test: () => true, key: "section" }];
+  const treeDepth = depth;   // (the tree function above; `depth` is also a name inside nest)
+  function nest(secs) {
+    const key = o => LINKS.find(l => l.test(secs, o)).key, parentId = o => o[key(o)] || "";
+    const depthOfObj = o => (key(o) === "parent" ? treeDepth(secs, o.id) : chain(secs, o.section).length);
+    const canEnter = (o, t) => !!t && t !== o && t.id !== parentId(o) && !inside(secs, t.id, o.id) && treeDepth(secs, t.id) <= depthOfObj(o);
+    const canMoveUp = o => !!byId(secs, parentId(o));
+    return {
+      depth: depthOfObj, canEnter, canMoveUp, parentId,
+      targets: o => secs.filter(t => canEnter(o, t)),
+      // moveInto(o, t): put the object inside section t (refused, returning false, if the rules say no)
+      moveInto(o, t) { if (!canEnter(o, t)) return false; o[key(o)] = t.id; return true; },
+      moveUp(o) { const up = byId(secs, parentId(o)); if (!up) return false; o[key(o)] = up.parent || ""; return true; },
+      // options(o): the drop-down choices for moving an EXISTING object from a dialog: only where it already is, or where it may enter
+      options: o => options(secs, { keep: t => t.id === parentId(o) || canEnter(o, t), none: parentId(o) ? null : "(no section)" }),
+    };
+  }
+
+  // upButton(nest, obj, secs, run): the small "move up" button for a card's drag bar: takes the object out of its section into that section's
+  // parent. null when the object is in no section. `run()` does the move (the page records the undo step, saves and redraws).
+  function upButton(nst, obj, secs, run) {
+    if (!nst.canMoveUp(obj)) return null;
+    const up = byId(secs, nst.parentId(obj)), to = up && byId(secs, up.parent) ? `"${byId(secs, up.parent).name}"` : "the top level";
+    return el("button", { type: "button", className: "up", textContent: "⤴", title: `Move up out of "${up.name}" into ${to}`,
+      onpointerdown: ev => ev.stopPropagation(), onclick: ev => { ev.stopPropagation(); run(); } });
+  }
+
+  // dropper(nest, secs, obj): the drag-and-drop half. To put an object into another section you drag it onto that section's HEADER (title bar).
+  // While it is carried, every section it may enter (nest.canEnter) has its header highlighted; the one under the pointer is highlighted
+  // more. Use the three calls from Canvas.dragItems' hooks: start() when the drag begins, over(event) as the pointer moves, end(event) on release
+  // (clears the highlights and returns the section dropped on, or null).
+  function dropper(nst, secs, obj) {
+    const targets = new Set(nst.targets(obj).map(t => t.id)), frame = id => document.querySelector(`.frame[data-fid="sec:${id}"]`);
+    const hit = e => {
+      for (const n of document.elementsFromPoint(e.clientX, e.clientY)) {
+        const f = n.matches?.(".frame > header") ? n.parentElement : null, id = f?.dataset.fid?.slice(4);
+        if (id && targets.has(id)) return byId(secs, id);
+      }
+      return null;
+    };
+    const clear = () => document.querySelectorAll(".droptarget,.dropover").forEach(n => n.classList.remove("droptarget", "dropover"));
+    return {
+      start: () => targets.forEach(id => frame(id)?.classList.add("droptarget")),
+      over: e => { document.querySelectorAll(".dropover").forEach(n => n.classList.remove("dropover")); const t = e && hit(e); if (t) frame(t.id)?.classList.add("dropover"); },
+      end: e => { const t = e && e.type !== "pointercancel" ? hit(e) : null; clear(); return t; },
+    };
   }
 
   // ---------------------------------------------------------------- menus
@@ -150,5 +209,5 @@ const Nodes = (() => {
     return dlg;
   }
 
-  return { el, byId, kids, roots, descendants, inside, chain, depth, hue, hidden, path, options, fix, model, remove, reparent, tools, form };
+  return { el, byId, kids, roots, descendants, inside, chain, depth, hue, hidden, path, options, fix, model, remove, reparent, nest, upButton, dropper, tools, form };
 })();

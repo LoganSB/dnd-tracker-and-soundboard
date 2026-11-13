@@ -1420,38 +1420,36 @@ function relayout() { frames = Canvas.layoutFrames(frameModel()); }
 const cardEl = card => document.querySelector(`[data-iid="${card.id}"]`);
 const cardsOf = list => list.map(c => ({ obj: c, el: cardEl(c) }));
 
-// dragHooks(after): the hooks passed to Canvas.dragItems for every drag on this page. While dragging,
-// `drag` blocks render(), and the frames and cables are re-fitted on every step. When the drag ends,
-// `after(moved)` runs (it decides what the drop means), then everything is saved and redrawn.
-function dragHooks(after) {
+// nst(): the nesting rules for this board (Nodes.nest: depth, canEnter, moveInto, moveUp).
+const nst = () => Nodes.nest(S.sections);
+// moveUp(obj): take a card or section out of its section into that section's parent: the ONLY way to remove something from a section.
+function moveUp(obj) {
+  edits.record("moved up a level");
+  nst().moveUp(obj);
+  if (buses.has(obj.id)) busFor(obj);   // (a section's audio bus now feeds its new parent's bus)
+  save();
+  render(true);
+}
+// dragHooks(obj): the hooks passed to Canvas.dragItems for every drag on this page; `obj` is the card or section being carried. While dragging,
+// `drag` blocks render() and the frames and links are re-fitted on every step. A card or section stays in its section wherever it is dragged
+// (its frame just stretches); it changes section only by being dropped on the HEADER of another section it may enter (the sections it may enter
+// are highlighted while it is carried, see Nodes.dropper). When the drag ends everything is saved and redrawn.
+function dragHooks(obj) {
+  const dd = Nodes.dropper(nst(), S.sections, obj);
   return {
-    onStart: () => { drag = { kind: "node" }; },
-    onMove: () => { relayout(); scheduleDraw(); },
-    onEnd: moved => {
+    onStart: () => { drag = { kind: "node" }; dd.start(); },
+    onMove: e => { relayout(); scheduleDraw(); dd.over(e); },
+    onEnd: (moved, e) => {
       drag = null;
-      if (moved) { edits.record("moved something"); after?.(); save(); }
+      const target = dd.end(e);
+      if (moved) {
+        edits.record(target ? "moved into a section" : "moved something");
+        if (target) { nst().moveInto(obj, target); if (buses.has(obj.id)) busFor(obj); }
+        save();
+      }
       render(true);
     }
   };
-}
-
-// adoptCard(card): after a card is dropped, decide which section it belongs to NOW. The frames are computed WITHOUT this card (otherwise its own
-// frame would have stretched to cover it wherever it was dropped); if the card's centre is inside a frame it joins the innermost one. Dropped in
-// empty space it stays where it was (membership unchanged).
-function adoptCard(card) {
-  const node = cardEl(card);
-  if (!node) return;
-  const rects = Canvas.layoutFrames(frameModel(card.id), true),   // true = just compute, change nothing
-    fid = Canvas.frameAt(rects, card.x + node.offsetWidth / 2, card.y + node.offsetHeight / 2);
-  if (fid) card.section = fid.slice(4);
-}
-// adoptSection(sec): after a section's frame is dragged, if its centre is inside ANOTHER section's frame (not one of its own descendants) it joins that section.
-function adoptSection(sec) {
-  const mine = frames[`sec:${sec.id}`];
-  if (!mine) return;
-  const rects = Canvas.layoutFrames(frameModel(null, sec.id), true),
-    fid = Canvas.frameAt(rects, (mine.l + mine.r) / 2, (mine.t + mine.b) / 2);
-  if (fid) { Nodes.reparent(S.sections, sec.id, fid.slice(4)); busFor(sec); }
 }
 
 // placeCard(card, secId): choose a free canvas position for a card being added to section `secId`: the nearest free spot to that section's
@@ -1504,9 +1502,9 @@ function soundEl(snd, info, path) {
   const bar = el("div", { className: "dragbar", textContent: "⠿⠿⠿", title: "Drag to move this sound" });
   bar.addEventListener("pointerdown", ev => {
     if (ev.button !== 0) return;
-    // After the drop the card may now belong to another section (see adoptCard).
-    Canvas.dragItems(ev, [{ obj: snd, el: b }], dragHooks(() => adoptCard(snd)));
+    Canvas.dragItems(ev, [{ obj: snd, el: b }], dragHooks(snd));   // dropped on a section's header it moves into that section
   });
+  bar.append(Nodes.upButton(nst(), snd, S.sections, () => moveUp(snd)) ?? "");
   b.append(
     bar,
     el("span", { className: "nm", textContent: snd.name || "…" }),
@@ -1582,8 +1580,8 @@ function soundEl(snd, info, path) {
 }
 
 // frameEl(level, fid, hue, head, getItems, after): builds the shell of a frame: a <div class="frame f-LEVEL"> with its id and a header holding
-// the `head` elements. Dragging the header moves everything inside: `getItems()` returns the { obj, el } list, `after` runs on drop.
-function frameEl(level, fid, hue, head, getItems, after) {
+// the `head` elements. Dragging the header moves everything inside: `getItems()` returns the { obj, el } list, `obj` is the card or section the frame stands for.
+function frameEl(level, fid, hue, head, getItems, obj) {
   const frame = el("div", { className: `frame f-${level}` });
   frame.dataset.fid = fid;
   frame.style.setProperty("--gh", hue);   // colour for the frame (CSS custom property, read by the stylesheet)
@@ -1591,7 +1589,7 @@ function frameEl(level, fid, hue, head, getItems, after) {
   frame.append(header);
   header.addEventListener("pointerdown", ev => {
     if (ev.button !== 0 || ev.target.closest("button,input,select,a")) return;
-    Canvas.dragItems(ev, getItems(), dragHooks(after));
+    Canvas.dragItems(ev, getItems(), dragHooks(obj));
   });
   return frame;
 }
@@ -1642,7 +1640,7 @@ function openSectionDlg(sec) {
     title: "Section settings",
     fields: [
       { key: "name", label: "Name", value: sec.name },
-      { key: "parent", label: "Inside", type: "select", value: sec.parent || "", options: sectionOptions({ except: sec.id }), hint: "(a section can sit inside another)" },
+      { key: "parent", label: "Inside", type: "select", value: sec.parent || "", options: nst().options(sec), hint: "(it can only move into a section it may enter; ⤴ moves it up)" },
       { key: "fadeOn", label: "Fade out when stopping a sound here", type: "checkbox", value: sec.fade?.on ?? true },
       { key: "fadeSecs", label: "Fade-out seconds", type: "number", min: 0.1, step: 0.1, value: sec.fade?.secs ?? 1 },
       { key: "linkSecs", label: "Crossfade seconds when a chain moves on", type: "number", min: 0, step: 0.1, value: sec.linkFade ?? 2 },
@@ -1692,6 +1690,7 @@ function sectionFrame(sec) {
     Nodes.tools([
       { icon: "■", title: "Stop everything in this section", run: () => stopSection(sec) },
       { icon: "+", title: "Add a section, sound or timer here", run: ev => Canvas.popupMenu(createEntries(sec.id, null), ev.clientX, ev.clientY) },
+      { icon: "⤴", title: "Move this section up into its parent section", hidden: !nst().canMoveUp(sec), run: () => moveUp(sec) },
       { icon: "⚙", title: "Section settings (rename, move inside another section, fades)", run: () => openSectionDlg(sec) },
       { icon: "🗑", title: "Delete section (what is inside stays on the board)", hidden: !!sec.pinned, run: () => deleteSection(sec) },
     ]),
@@ -1704,7 +1703,7 @@ function sectionFrame(sec) {
     });
     return out;
   };
-  return frameEl(["sec", "tile", "sub"][Math.min(d, 2)], `sec:${sec.id}`, hue, head, moveSet, () => adoptSection(sec));
+  return frameEl(["sec", "tile", "sub"][Math.min(d, 2)], `sec:${sec.id}`, hue, head, moveSet, sec);
 }
 
 // ------------------------------------------------------------ timer cards
@@ -1719,7 +1718,8 @@ function timerEl(t) {
   b.style.top = t.y + "px";
   if (Nodes.hidden(S.sections, t.section)) b.style.display = "none";
   const bar = el("div", { className: "dragbar", textContent: "⠿⠿⠿", title: "Drag to move this timer" });
-  bar.addEventListener("pointerdown", ev => { if (ev.button === 0) Canvas.dragItems(ev, [{ obj: t, el: b }], dragHooks(() => adoptCard(t))); });
+  bar.addEventListener("pointerdown", ev => { if (ev.button === 0) Canvas.dragItems(ev, [{ obj: t, el: b }], dragHooks(t)); });
+  bar.append(Nodes.upButton(nst(), t, S.sections, () => moveUp(t)) ?? "");
   b.append(bar, el("div", { className: "ftitle" },
     el("span", { className: "fmark", textContent: "⏱" }),
     el("span", { className: "fname", textContent: t.name }),
@@ -1743,7 +1743,7 @@ function timerDone(card, late) {
 function openTimerDlg(t) {
   Nodes.form({
     title: "Timer",
-    fields: Timers.fields(t, { sounds: allSounds().map(s => ({ value: s.id, label: (s.section ? Nodes.path(S.sections, s.section) + " › " : "") + s.name })), sections: sectionOptions() }),
+    fields: Timers.fields(t, { sounds: allSounds().map(s => ({ value: s.id, label: (s.section ? Nodes.path(S.sections, s.section) + " › " : "") + s.name })), sections: nst().options(t) }),
     save: v => { edits.record("edited a timer"); Timers.apply(t, v); save(); render(true); },
   });
 }
@@ -1841,7 +1841,7 @@ document.querySelectorAll("[data-close]").forEach(b => (b.onclick = () => b.clos
 function openSoundDlg(snd, secId) {
   editing = snd;
   const sel = form.section;
-  sel.replaceChildren(...sectionOptions().map(o => el("option", { value: o.value, textContent: o.label })));
+  sel.replaceChildren(...(snd ? nst().options(snd) : sectionOptions()).map(o => el("option", { value: o.value, textContent: o.label })));
   form.reset();   // clear any text left over from last time
   $("#soundDlgTitle").textContent = snd ? "Edit sound" : "Add sound";
   $("#deleteSound").hidden = !snd;   // hide the Delete button when adding
