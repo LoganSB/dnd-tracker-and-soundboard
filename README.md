@@ -67,6 +67,13 @@ Every file starts with a plain-language overview, and every function has a comme
 ## Icon
 `static/icon.jpeg` is the browser tab icon (every page names it in a `<link rel="icon">`, and `/favicon.ico` serves it too) and the round image in front of "DND Tracker" in the banner (`templates/_nav.html`, `login.html`, `invite.html`, `landing.html`; styled by `.brandicon`). To change it, replace that file.
 
+## Conditions and triggers (campaign tracker)
+A **condition** card (menu: New condition, or the **+ Condition** button) gathers the nodes linked into it and unlocks the nodes linked out of it once enough of them are done, for example "3 of 8 = marginal success, 5 of 8 = full success".
+- **Groups and tiers.** A card has one or more *groups* (separate condition groupings in the same node); each group has *tiers*: a count and a name. A tier is reached when at least that many of the group's linked nodes are done ("done" is the usual meaning: a flag triggered, a checklist entry ticked, a tile finished, or another condition card at its top tier). The card shows each group as `done/total` with a progress bar and its tiers lit as they are reached.
+- **What each link is for.** Every link INTO the card counts toward one group, and every link OUT of it is unlocked by one group's tier. Choose these in the card's settings (click the card or ⚙); the settings open by themselves when you link into a card with several groups, or out of one with several tiers. The default is the first group, and for an output its highest tier.
+- **Unlock highlight.** The moment an output becomes unlocked, its wire and its target card flash, the same flash used when a jump from the Encounters tab lands on a card. The wire turns solid green and the target stops being "locked". Opening the page flashes nothing; only changes do. Loops of conditions simply count as not met.
+- Stored with the campaign: the card is an item with `condition = { groups: [{ id, name, tiers: [{ id, need, label }] }] }`; links get `group` (incoming) or `when = { group, tier }` (outgoing). The logic is `groupState`, `linkSatisfied` and `condDone` in `static/campaign.js`.
+
 ## Sound amp (for quiet recordings)
 A sound's settings have an **Amp** slider from 1 (off) to 4 (about +12 dB), for recordings that are quiet even with the card's volume slider at full. The sound plays at its volume times its amp (`level()` in `static/app.js`), a boosted card shows a small `×2.0` badge, and changing the amp takes effect at once on a sound that is playing. Very loud sounds boosted a lot can distort.
 

@@ -2681,3 +2681,19 @@ body.canvaspage .flag {
 
 h1 .brandicon { width: 1.15em; height: 1.15em; margin-right: .35rem; }
 .moreBtn { margin-top: .5rem; }
+
+/* Condition cards and the unlock highlight (campaign.js, "conditions and triggers"). */
+.flag.cond { border-left-color: #4fa3ff; min-width: 250px; }
+.flag.cond .cgroup { margin-top: .5rem; }
+.flag.cond .cghead { display: flex; justify-content: space-between; font-size: .85rem; margin-bottom: .2rem; }
+.flag.cond .ctiers { display: flex; flex-wrap: wrap; gap: .25rem; margin-top: .3rem; }
+.flag.cond .ctier { font-size: .7rem; padding: .1rem .4rem; border-radius: 999px; background: #0004; color: var(--muted); border: 1px solid transparent; }
+.flag.cond .ctier.on { color: var(--text); background: rgba(62, 207, 142, .22); border-color: var(--ok); }
+.flag.cond .ctier.best { font-weight: 700; }
+#condDlg { min-width: min(560px, 94vw); }
+#condDlg .tiers { margin: .4rem 0; }
+/* The unlock flash: the target card or frame pulses with a ring (like a card reached from another tab) and the wire glows. */
+.linkable.flash { animation: flashring .5s ease-in-out 4; }
+.link.flash { animation: wireflash .5s ease-in-out 4; }
+@keyframes wireflash { 50% { stroke-width: 7px; filter: drop-shadow(0 0 8px #ff4fd8); } }
+#condDlg .subrow .inum { flex: 0 0 5rem; width: 5rem; }

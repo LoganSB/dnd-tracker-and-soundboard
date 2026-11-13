@@ -38,6 +38,7 @@
     <button id="addFlagBtn">+ Flag</button>
     <button id="addEncounterBtn">+ Encounter</button>
     <button id="addLootTableBtn">+ Loot table</button>
+    <button id="addConditionBtn" title="A condition: unlocks what is linked out of it once enough of what is linked into it is done">+ Condition</button>
     <!-- saveState: "saved" / "saving…" text updated by campaign.js. -->
     <span id="saveState" class="muted">saved</span>
   </div>
@@ -116,6 +117,16 @@
   </div>
   <div id="lootNewHost"></div>
   <menu><span class="grow"></span><button type="button" data-close>Close</button><button type="button" id="useLootBtn" class="primary" hidden>Use this table</button></menu>
+</dialog>
+
+<!-- condDlg: a condition card's settings (groups, tiers, and which group / tier each linked node is for). campaign.js builds the body
+     (#condBody) from a copy of the card's data; Save writes it back, Cancel throws it away. -->
+<dialog id="condDlg">
+  <form method="dialog" id="condForm">
+    <h2>Condition</h2>
+    <div id="condBody"></div>
+    <menu><span class="grow"></span><button type="button" data-close>Cancel</button><button type="submit" class="primary">Save</button></menu>
+  </form>
 </dialog>
 
 <!-- tileDlg: rename a tile, move it to another section, and manage its subsections. -->

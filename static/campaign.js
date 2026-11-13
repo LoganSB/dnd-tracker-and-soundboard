@@ -109,6 +109,10 @@ function normalize() {
     t.items ||= [];
     t.w ||= 400;   // (older saves: the tile's old width, used only to convert its flags to free positions)
     t.items.forEach(i => {
+      if (i.condition) {   // a condition card: make sure every group and tier has an id
+        i.condition.groups ||= [];
+        i.condition.groups.forEach(g => { g.id ||= uid(); g.tiers ||= []; g.tiers.forEach(x => (x.id ||= uid())); });
+      }
       i.checklist ||= [];
       i.loot ||= { entries: [], log: [] };
       i.loot.entries ||= [];
@@ -247,6 +251,7 @@ const timeText = ms => new Date(ms).toLocaleString([], { month: "short", day: "n
 //   - Buttons: 🔊 plays the linked sound again, 🎁 opens the reward popup, ⚙ edits the flag.
 function flagEl(item, tile) {
   if (item.encounter) return encounterEl(item, tile);
+  if (item.condition) return condEl(item, tile);
   const total = item.checklist.length,
     ticked = item.checklist.filter(c => c.done).length;
   const cls = ["flag", item.triggered ? "done" : "", total && ticked === total ? "complete" : ""];
@@ -634,6 +639,7 @@ function render(force = false) {
   C().tiles.forEach(t => t.items.forEach(i => root.append(flagEl(i, t))));
   relayout();
   markLinked();   // lit-up ports and "locked" styling from the links
+  trackUnlocks();
   // Watch every flag's size: when one grows or shrinks (a checklist item was added, text wrapped) the frames
   // and links must follow.
   cardObserver.disconnect();
@@ -797,6 +803,7 @@ Canvas.clickMenu($("#stage"), () => frames, (at, here) => {
     ["New flag", () => { newAt = at; openFlagDlg(null, tile.id); }],
     ["New encounter", () => openLibDlg("encounter", at, tile.id)],
     ["New loot table", () => openLibDlg("loot", at, tile.id)],
+    ["New condition", () => newCondition(at, tile.id)],
   ];
 });
 
@@ -1113,6 +1120,213 @@ nldlg.addEventListener("close", async () => {
   drawLoot();
 });
 
+// ------------------------------------------------------------ conditions and triggers
+// A CONDITION card gathers the nodes linked INTO it and unlocks the nodes linked OUT of it once enough of them are done.
+//   item.condition = { groups: [ { id, name, tiers: [ { id, need, label } ] } ] }
+// Each group counts the incoming links assigned to it (link.group = the group's id; none = the first group); a link counts when its
+// source is done. A tier is reached when the count is at least its `need` ("3 of 8 = marginal success, 5 of 8 = full success"). So
+// one card can hold several separate condition groupings, each with its own tiers.
+// A link OUT of a condition card carries link.when = { group, tier } (none = the first group's highest tier): it is satisfied, and
+// its target unlocked, once that tier is reached. When that first happens the target card and the wire flash, the same
+// highlight used when a jump from the Encounters tab lands on a card.
+const isCond = item => !!item?.condition;
+const condKey = item => "flag:" + item.id;
+const topTier = g => [...g.tiers].sort((a, b) => b.need - a.need)[0];
+// visiting: condition cards being evaluated right now, so a loop of conditions (A feeds B feeds A) counts as not met instead of
+// recursing forever.
+const visiting = new Set();
+
+// groupOf(item, link): the group an incoming link counts toward (its own choice, else the first group).
+const groupOf = (item, l) => item.condition.groups.find(g => g.id === l.group) || item.condition.groups[0];
+
+// linkSatisfied(link): is the thing this link waits for done? An ordinary source: isDone. A condition card: the chosen tier is reached.
+function linkSatisfied(l) {
+  const src = lookup(l.from)?.obj;
+  if (!isCond(src)) return isDone(l.from);
+  const g = src.condition.groups.find(x => x.id === l.when?.group) || src.condition.groups[0];
+  const tier = g && (g.tiers.find(t => t.id === l.when?.tier) || topTier(g));
+  return !!tier && groupState(src, g).done >= tier.need;
+}
+
+// groupState(item, group) -> { done, total, best }: links counted, links in the group, and the highest tier reached (or null).
+function groupState(item, g) {
+  if (visiting.has(item.id)) return { done: 0, total: 0, best: null };
+  visiting.add(item.id);
+  try {
+    const mine = C().links.filter(l => l.to === condKey(item) && groupOf(item, l) === g);
+    const done = mine.filter(linkSatisfied).length;
+    const best = [...g.tiers].filter(t => done >= t.need).sort((a, b) => b.need - a.need)[0] || null;
+    return { done, total: mine.length, best };
+  } finally { visiting.delete(item.id); }
+}
+
+// condDone(item): every group (that has tiers) has reached its highest tier. This is what isDone() says for a condition card.
+function condDone(item) {
+  const gs = item.condition.groups.filter(g => g.tiers.length);
+  return gs.length > 0 && gs.every(g => groupState(item, g).done >= topTier(g).need);
+}
+
+// ---- the unlock highlight. After every render, links out of condition cards that are satisfied NOW but were not at the previous
+// render are "newly unlocked": they go in `flashing` (link id -> time it stops) and drawLinks() makes the wire and the target card
+// flash until then. lastSat is null on the first render, so opening the page flashes nothing.
+let lastSat = null;
+const flashing = new Map();
+function trackUnlocks() {
+  const sat = new Set(C().links.filter(linkSatisfied).map(l => l.id));
+  if (lastSat) C().links.forEach(l => { if (sat.has(l.id) && !lastSat.has(l.id) && isCond(lookup(l.from)?.obj)) flashing.set(l.id, Date.now() + 2200); });
+  lastSat = sat;
+}
+
+// newCondition(at, tileId): ask for a name, add a condition card (one group with two tiers to start from) and open its settings.
+function newCondition(at, tileId) {
+  const name = prompt("Condition name (e.g. 'Defeat the guardians')");
+  if (!name) return;
+  const tile = C().tiles.find(t => t.id === tileId) || C().tiles[0];
+  const card = { id: uid(), name, checklist: [], triggered: false, loot: { entries: [], log: [] },
+    condition: { groups: [{ id: uid(), name: "Conditions", tiers: [{ id: uid(), need: 1, label: "Marginal success" }, { id: uid(), need: 2, label: "Full success" }] }] } };
+  if (at) { card.x = Math.round(at.x - 130); card.y = Math.round(at.y - 40); } else placeFlag(card, tile);
+  tile.items.push(card);
+  save();
+  render(true);
+  openCondDlg(card);
+}
+
+// condEl(item, tile): the card. Per group: its name, how many conditions are met out of how many are linked, a progress bar and
+// its tiers (reached ones lit, the best one in bold). Click the card (or ⚙) for the settings; 🗑 removes it (links to it go too).
+function condEl(item, tile) {
+  const card = el("div", { className: "flag cond" + (condDone(item) ? " done" : ""), role: "button", tabIndex: 0 });
+  card.dataset.id = item.id;
+  card.dataset.iid = item.id;
+  card.dataset.sec = tile.section;
+  card.dataset.tile = tile.id;
+  card.dataset.sub = tile.id + ":" + (item.group || "");
+  card.style.left = item.x + "px";
+  card.style.top = item.y + "px";
+  if (C().sections.find(x => x.id === tile.section)?.collapsed) card.style.display = "none";
+  card.style.setProperty("--maxw", (item.maxWidth || 320) + "px");
+  card.title = "A condition: link nodes into it, and link nodes out of it to unlock them. Click for its settings.";
+  card.append(el("div", { className: "ftitle" },
+    el("span", { className: "fmark", textContent: "⚖" }),
+    el("span", { className: "fname", textContent: item.name }),
+    el("span", { className: "ftools" },
+      el("button", { className: "tiny gear", textContent: "⚙", title: "Condition settings: groups, tiers and what each link is for", onclick: ev => { ev.stopPropagation(); openCondDlg(item); } }),
+      el("button", { className: "tiny fdel", textContent: "🗑", title: "Delete this condition", onclick: ev => {
+        ev.stopPropagation();
+        if (!confirm(`Delete condition "${item.name}"?`)) return;
+        const loc = locate(item.id);
+        if (loc) loc.tile.items.splice(loc.i, 1);
+        save();
+        render();
+      } }))));
+  addPorts(card, condKey(item));
+  item.condition.groups.forEach(g => {
+    const st = groupState(item, g);
+    card.append(el("div", { className: "cgroup" },
+      el("div", { className: "cghead" }, el("span", { textContent: g.name }), el("b", { textContent: `${st.done}/${st.total}` })),
+      el("div", { className: "fprog" }, el("div", { style: `width:${st.total ? (st.done / st.total) * 100 : 0}%` })),
+      el("div", { className: "ctiers" }, ...[...g.tiers].sort((a, b) => a.need - b.need).map(t =>
+        el("span", { className: "ctier" + (st.done >= t.need ? " on" : "") + (st.best === t ? " best" : ""), textContent: `${t.label} · ${t.need}`, title: `Reached when ${t.need} of the linked conditions are met` })))));
+  });
+  if (!item.condition.groups.length) card.append(el("div", { className: "muted", textContent: "No groups yet: open the settings." }));
+  const bar = el("div", { className: "dragbar", textContent: "⠿⠿⠿", title: "Drag to move this card" });
+  bar.addEventListener("pointerdown", ev => {
+    if (ev.button !== 0) return;
+    Canvas.dragItems(ev, [{ obj: item, el: card }], dragHooks(() => adoptFlag(item)));
+  });
+  card.prepend(bar);
+  card.addEventListener("click", ev => { if (!ev.target.closest(".ftools,.dragbar,.lp")) openCondDlg(item); });
+  card.addEventListener("keydown", ev => { if (ev.key === "Enter" && ev.target === card) card.click(); });
+  return card;
+}
+
+// ---- the condition settings dialog. Everything is edited on a COPY (draft) and written back by Save, so Cancel discards it.
+//   Groups: name, and tiers (how many conditions must be met, and what to call it).
+//   Inputs: every node linked INTO this card, and which group it counts toward.
+//   Outputs: every node linked OUT of this card, and which group and tier unlocks it.
+const cdlg = $("#condDlg");
+let condItem = null, draft = null;
+function openCondDlg(item) {
+  condItem = item;
+  const key = condKey(item);
+  draft = {
+    name: item.name,
+    groups: item.condition.groups.map(g => ({ id: g.id, name: g.name, tiers: g.tiers.map(t => ({ ...t })) })),
+    ins: Object.fromEntries(C().links.filter(l => l.to === key).map(l => [l.id, groupOf(item, l)?.id || ""])),
+    outs: Object.fromEntries(C().links.filter(l => l.from === key).map(l => {
+      const g = item.condition.groups.find(x => x.id === l.when?.group) || item.condition.groups[0];
+      const t = g && (g.tiers.find(x => x.id === l.when?.tier) || topTier(g));
+      return [l.id, g && t ? g.id + ":" + t.id : ""];
+    })),
+  };
+  drawCond();
+  cdlg.showModal();
+}
+function drawCond() {
+  const body = $("#condBody");
+  body.textContent = "";
+  const name = el("input", { value: draft.name, placeholder: "Condition name" });
+  name.oninput = () => (draft.name = name.value);
+  body.append(el("label", {}, "Name ", name));
+  body.append(el("h3", { textContent: "Groups and tiers" }),
+    el("p", { className: "muted", textContent: "A group counts the nodes linked into this card. A tier is reached when that many of them are done (for example 3 for marginal success, 5 for full success)." }));
+  draft.groups.forEach(g => {
+    const gname = el("input", { value: g.name, placeholder: "Group name" });
+    gname.oninput = () => (g.name = gname.value);
+    const tiers = el("div", { className: "tiers" });
+    g.tiers.forEach(t => {
+      const need = el("input", { type: "number", min: 1, step: 1, value: t.need, className: "inum", title: "How many conditions must be met" });
+      need.onchange = () => (t.need = Math.max(1, Math.floor(+need.value || 1)));
+      const label = el("input", { value: t.label, placeholder: "e.g. Full success" });
+      label.oninput = () => (t.label = label.value);
+      tiers.append(el("div", { className: "row subrow" }, need, label,
+        el("button", { type: "button", className: "danger tiny", textContent: "✕", onclick: () => { g.tiers = g.tiers.filter(x => x !== t); drawCond(); } })));
+    });
+    body.append(el("fieldset", { className: "subsfield" }, el("legend", { textContent: "Group" }),
+      el("div", { className: "row" }, gname, el("button", { type: "button", className: "danger tiny", textContent: "Remove group", onclick: () => { draft.groups = draft.groups.filter(x => x !== g); drawCond(); } })),
+      tiers, el("button", { type: "button", className: "tiny", textContent: "+ Tier", onclick: () => { g.tiers.push({ id: uid(), need: (g.tiers.at(-1)?.need || 0) + 1, label: "" }); drawCond(); } })));
+  });
+  body.append(el("button", { type: "button", textContent: "+ Group", onclick: () => { draft.groups.push({ id: uid(), name: "Conditions", tiers: [{ id: uid(), need: 1, label: "Success" }] }); drawCond(); } }));
+
+  const key = condKey(condItem);
+  const gopts = () => draft.groups.map(g => el("option", { value: g.id, textContent: g.name || "(unnamed group)" }));
+  const ins = C().links.filter(l => l.to === key);
+  body.append(el("h3", { textContent: "Inputs: what each linked node counts toward" }));
+  if (!ins.length) body.append(el("p", { className: "muted", textContent: "Nothing is linked into this card yet. Drag from a node's output circle onto it." }));
+  ins.forEach(l => {
+    const sel = el("select", {}, ...gopts());
+    sel.value = draft.ins[l.id] || draft.groups[0]?.id || "";
+    sel.onchange = () => (draft.ins[l.id] = sel.value);
+    body.append(el("div", { className: "row subrow" }, el("span", { className: "grow", textContent: lookup(l.from)?.name || "?" }), sel));
+  });
+  const outs = C().links.filter(l => l.from === key);
+  body.append(el("h3", { textContent: "Outputs: what unlocks each linked node" }));
+  if (!outs.length) body.append(el("p", { className: "muted", textContent: "Nothing is linked out of this card yet. Drag from its output circle onto a node to unlock it." }));
+  outs.forEach(l => {
+    const sel = el("select", {});
+    draft.groups.forEach(g => g.tiers.forEach(t => sel.append(el("option", { value: g.id + ":" + t.id, textContent: `${g.name || "group"}: ${t.label || "tier"} (${t.need})` }))));
+    sel.value = draft.outs[l.id];
+    if (sel.value !== draft.outs[l.id]) sel.selectedIndex = 0;
+    sel.onchange = () => (draft.outs[l.id] = sel.value);
+    draft.outs[l.id] = sel.value;
+    body.append(el("div", { className: "row subrow" }, el("span", { className: "grow", textContent: lookup(l.to)?.name || "?" }), sel));
+  });
+}
+$("#condForm").addEventListener("submit", ev => {
+  ev.preventDefault();
+  const item = condItem;
+  linkHistory.record("changed a condition");   // so Undo can put the links' group and tier choices back
+  item.name = draft.name.trim() || item.name;
+  // Tiers need a label; a group with no tiers could never be reached, so it is dropped with a warning in the card's text.
+  item.condition.groups = draft.groups.map(g => ({ id: g.id, name: g.name.trim() || "Conditions", tiers: g.tiers.map(t => ({ id: t.id, need: Math.max(1, Math.floor(+t.need || 1)), label: t.label.trim() || `${t.need} met` })) }));
+  C().links.forEach(l => {
+    if (l.id in draft.ins) l.group = draft.ins[l.id];
+    if (l.id in draft.outs && draft.outs[l.id]) { const [group, tier] = draft.outs[l.id].split(":"); l.when = { group, tier }; }
+  });
+  cdlg.close();
+  save();
+  render(true);
+});
+
 // ------------------------------------------------------------ campaign links
 // Links are cables between ANY two items on the board, to show how things depend on each other: "this
 // flag unlocks that tile", "finishing this checklist entry opens that section". They are stored in
@@ -1184,12 +1398,12 @@ function lookup(key) {
   }
   return null;
 }
-// isDone(key): has the party finished this item? flag = triggered; checklist entry = ticked; subsection = it has flags and all are triggered; tile = it has flags and all are
+// isDone(key): has the party finished this item? flag = triggered (a condition card: every group at its top tier); checklist entry = ticked; subsection = it has flags and all are triggered; tile = it has flags and all are
 // triggered; section = it has tiles and all are done.
 function isDone(key) {
   const it = lookup(key);
   if (!it) return false;
-  if (it.kind === "flag") return !!it.obj.triggered;
+  if (it.kind === "flag") return isCond(it.obj) ? condDone(it.obj) : !!it.obj.triggered;
   if (it.kind === "chk") return !!it.obj.done;
   if (it.kind === "sub") { const f = it.tile.items.filter(i => i.group === it.obj.id); return f.length > 0 && f.every(i => i.triggered); }
   if (it.kind === "tile") return it.obj.items.length > 0 && it.obj.items.every(i => i.triggered);
@@ -1244,7 +1458,8 @@ function addPorts(node, key, small = false) {
 function markLinked() {
   const waiting = {};   // key -> names of sources not done yet
   C().links.forEach(l => {
-    if (!isDone(l.from)) (waiting[l.to] ||= []).push(lookup(l.from)?.name || "?");
+    if (isCond(lookup(l.to)?.obj)) return;   // links INTO a condition card are its conditions, not things it waits for
+    if (!linkSatisfied(l)) (waiting[l.to] ||= []).push(lookup(l.from)?.name || "?");
   });
   Object.entries(waiting).forEach(([key, names]) => {
     const n = document.querySelector(`[data-lid="${key}"]`);
@@ -1260,6 +1475,11 @@ function addLink(from, to) {
   C().links.push({ id: uid(), from, to });
   save();
   render(true);
+  // Linking into a condition card that has several groups, or out of one that has several tiers, needs a choice (which group
+  // does this node count toward? which tier unlocks this output?): open its settings so it can be made right away.
+  const t = lookup(to)?.obj, f = lookup(from)?.obj;
+  const ask = (isCond(t) && t.condition.groups.length > 1 && t) || (isCond(f) && f.condition.groups.reduce((n, g) => n + g.tiers.length, 0) > 1 && f);
+  if (ask) openCondDlg(ask);
 }
 
 // startLink(ev, from, existing): the pointer went down on a port of item `from`. `existing` is the link
@@ -1312,7 +1532,7 @@ function startLink(ev, from, existing) {
       linkHistory.record("re-routed a link");
       // Re-route: point the existing link at the new item (or just drop it if that exact link already exists).
       if (C().links.some(l => l !== existing && l.from === from && l.to === to)) C().links = C().links.filter(l => l !== existing);
-      else existing.to = to;
+      else { existing.to = to; delete existing.group; }   // (a new target: the old group choice no longer applies)
     } else if (!moved && !cancelled && existing) {
       linkHistory.record("removed a link");
       C().links = C().links.filter(l => l !== existing);   // a plain click on a filled port removes the link
@@ -1365,8 +1585,8 @@ function drawLinks() {
   links.forEach(({ l }, n) => {
     // Cables.pair adds the visible cable (solid green if its source is done, dashed otherwise) and a wider invisible one on top
     // that is easy to click; clicking it removes the link.
-    Cables.pair(layer, ds[n], {
-      cls: "link " + (isDone(l.from) ? "sat" : "wait"),
+    const vis = Cables.pair(layer, ds[n], {
+      cls: "link " + (linkSatisfied(l) ? "sat" : "wait"),
       title: `${lookup(l.from)?.name} → ${lookup(l.to)?.name}  (click to remove)`,
       onRemove: () => {
         linkHistory.record("removed a link");
@@ -1375,6 +1595,15 @@ function drawLinks() {
         render(true);
       },
     });
+    // A link out of a condition card that was JUST unlocked: its wire and its target card flash (the same flash that marks a card
+    // reached from another tab) until `until`. The page is redrawn often, so the flash is re-applied on every draw until it ends.
+    const until = flashing.get(l.id) || 0;
+    if (until > Date.now()) {
+      const target = document.querySelector(`[data-lid="${l.to}"]`);
+      vis.classList.add("flash");
+      target?.classList.add("flash");
+      setTimeout(() => { vis.classList.remove("flash"); target?.classList.remove("flash"); }, until - Date.now());
+    }
   });
 }
 // scheduleDraw(): redraw the cables at the next screen repaint (requestAnimationFrame also merges
@@ -1392,6 +1621,7 @@ $("#addSectionBtn").onclick = () => {
 $("#addFlagBtn").onclick = () => { newAt = null; openFlagDlg(null, C().tiles[0].id); };
 $("#addEncounterBtn").onclick = () => openLibDlg("encounter", null, C().tiles[0].id);
 $("#addLootTableBtn").onclick = () => openLibDlg("loot", null, C().tiles[0].id);
+$("#addConditionBtn").onclick = () => newCondition(null, C().tiles[0].id);
 // This page runs inside a frame of the app shell (shell.html), which keeps it loaded but hidden while you
 // look at other tabs. A hidden frame cannot measure layout, so when the shell shows this tab again it
 // sends { type: "shown" } and we redraw the cables.
