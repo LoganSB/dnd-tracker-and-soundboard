@@ -10,7 +10,7 @@
 //                               Creatures. `patch(body)` sends a change (PATCH /api/party/<id>) and must return a promise; the page
 //                               then redraws the panel.
 //   Sheet.inventory(m, add)     every item, carried or in a bag, as one searchable table (click an item for its description)
-//   Sheet.spells(m, add)        every spell as one table (filter by level, school; click for the text)
+//   Sheet.spells(m, add, patch) the spell slots (pips, with a long-rest button) above every spell as one table (filter by level, school; click for the text)
 //   Sheet.features(m, add)      race / background / class features, feats and notes as one table (filter by source)
 //                               `add` (each of the three, optional): called by the + Add loot / + Add spell / + Add note button above the table;
 //                               the page decides what it does (party.js opens the search pop-up or the note form)
@@ -53,9 +53,11 @@ const Sheet = (() => {
   }
 
   // ---- spells
-  function spells(m, add) {
+  function spells(m, add, patch) {
     const rows = [...m.spells].sort((a, b) => a.level - b.level || b.prepared - a.prepared || a.name.localeCompare(b.name));
-    return withAdd("+ Add spell", add, dataTable({
+    // The spell slot tracker (the same pips as the Tracker page: Vitals.slots), above the list; nothing for a character with no slots.
+    const slots = patch && panel(m, patch, run => { const pips = Vitals.slots(m, run); return pips.length ? h("div", { className: "spellslots" }, h("h3", { textContent: "Spell slots" }), ...pips) : h("span"); });
+    return h("div", {}, slots, withAdd("+ Add spell", add, dataTable({
       key: `sheet.${m.id}.spells`, rows, empty: "No spells.",
       columns: [
         { label: "Spell", text: s => s.name },
@@ -68,7 +70,7 @@ const Sheet = (() => {
         { label: "Comp.", text: s => s.components },
       ],
       detail: s => ((s.materials ? `Materials: ${s.materials}\n\n` : "") + s.text) || null, rowClass: s => (s.prepared ? "equipped" : ""),
-    }));
+    })));
   }
 
   // ---- features, feats and notes
@@ -99,23 +101,42 @@ const Sheet = (() => {
     const run = body => patch(body).then(draw).catch(e => { note.textContent = e.message; note.className = "bad"; });
     function draw() { note.textContent = ""; note.className = "muted"; box.replaceChildren(build(run, note)); }
     draw();
+    box.redraw = draw;   // for a page that changes `m` itself (the companion pop-up) and wants the panel drawn again
     return box;
   }
 
   // statistics(m, run): the tiles AC, Initiative, Speed, Passive Perception, Proficiency and Inspiration (with - / +).
   function statistics(m, run) {
     const s = m.stats;
+    // The conditions change some numbers (conditions.js): speed 0 or half, passive Perception -5. A changed tile shows the new number, the old one
+    // struck through, a badge and the reason (the conditions that caused it), so it is plain WHY it differs from the sheet.
+    const fx = Conditions.effects(Conditions.parse(m.conditions));
+    const changed = (label, now, was, why, title) => {
+      const t = tile(label, now, `${title}\nWas ${was}: ${why}`, h("div", { className: "was" }, h("s", { textContent: was }), " ", h("span", { className: "why", textContent: "⚠ " + why })));
+      t.classList.add("changed");
+      return t;
+    };
+    const speedTile = () => {
+      if (!fx.speed || !s.speedFeet) return tile("Speed", s.speed || "—", s.speedNote);
+      const now = Conditions.speed(s.speedFeet, fx.speed);
+      return changed("Speed", `${now} ft`, s.speed, `${fx.speed.kind === "zero" ? "0" : "halved"} by ${fx.speed.why.join(", ")}`, s.speedNote);
+    };
+    const percTile = () => (!fx.perception ? tile("Passive Perception", s.passivePerception, "10 + Perception")
+      : changed("Passive Perception", s.passivePerception + fx.perception.delta, s.passivePerception, `-5 (disadvantage on checks) from ${fx.perception.why.join(", ")}`, "10 + Perception"));
     const insp = h("div", { className: "stat", title: "Inspiration" }, h("div", { className: "muted", textContent: "Inspiration" }), h("b", { textContent: m.inspiration }),
       h("div", { className: "row" }, h("button", { className: "tiny", textContent: "−", onclick: () => run({ inspiration: m.inspiration - 1 }) }),
         h("button", { className: "tiny", textContent: "+", onclick: () => run({ inspiration: m.inspiration + 1 }) })));
     return h("div", {}, h("div", { className: "stats" },
-      tile("Armor class", s.ac, s.acNote), tile("Initiative", sgn(s.initiative), "Dexterity modifier"), tile("Speed", s.speed || "—"),
-      tile("Passive Perception", s.passivePerception, "10 + Perception"), tile("Proficiency", sgn(s.profBonus), "Proficiency bonus"), insp),
+      tile("Armor class", s.ac, s.acNote), tile("Initiative", sgn(s.initiative), "Dexterity modifier"), speedTile(),
+      percTile(), tile("Proficiency", sgn(s.profBonus), "Proficiency bonus"), insp),
+      // the effects that are not a single number on a tile: no actions, halved hit point maximum, disadvantage on saves
+      [fx.noActions.length ? "Can't take actions or reactions" + ` (${fx.noActions.join(", ")})` : "", fx.hpMax.length ? `Hit point maximum halved (${fx.hpMax.join(", ")})` : "",
+        fx.saves.length ? `Disadvantage on saving throws (${fx.saves.join(", ")})` : ""].filter(Boolean).map(t => h("p", { className: "condwarn", textContent: "⚠ " + t })),
       h("p", { className: "muted", textContent: "Armor class, initiative and proficiency are worked out from the character's ability scores, level and equipped items; bonuses from class features and spells are not included." }));
   }
 
   // attacks(m): the equipped weapons from the character's items, with attack bonus and damage plus type.
-  const attacks = m => h("div", {}, dataTable({
+  const attacks = m => h("div", {}, ((why) => (why.length ? h("p", { className: "condwarn", textContent: `⚠ Disadvantage on your attack rolls (${why.join(", ")})` }) : null))(Conditions.effects(Conditions.parse(m.conditions)).attacks), dataTable({
     key: `sheet.${m.id}.attacks`, rows: m.attacks, empty: "No weapons equipped.",
     columns: [{ label: "Weapon", text: a => a.name }, { label: "Attack", text: a => sgn(a.atk) },
       { label: "Damage", text: a => a.damage + (a.damage2h ? ` (${a.damage2h} two-handed)` : "") }, { label: "Notes", text: a => a.notes }],
@@ -124,7 +145,7 @@ const Sheet = (() => {
   // ---- the Tracker page, below the live tracker: hit dice first, then Conditions, Statistics, Attacks and Creatures, each under a thin line.
   // All of it sits in the one card the live tracker is in (party.js puts the tracker widget above this). Everything is built from the
   // character's own data (the Fight Club import): hit dice from the classes, attacks from the equipped items, creatures from <monster>.
-  function trackerExtras(m, patch) {
+  function trackerExtras(m, patch, addCompanion) {
     return panel(m, patch, (run, note) => {
       const part = (title, ...kids) => h("div", { className: "part" }, h("hr", { className: "thin" }), h("h3", { textContent: title }), ...kids);
       return h("div", { className: "trackerextras" },
@@ -132,7 +153,7 @@ const Sheet = (() => {
         part("Conditions", Vitals.conditions(m, run)),
         part("Statistics", statistics(m, run)),
         part("Attacks", attacks(m)),
-        part("Creatures", creatures(m, run)),
+        part("Creatures", creatures(m, run, addCompanion)),
         note);
     });
   }
@@ -155,33 +176,26 @@ const Sheet = (() => {
     });
   }
 
-  // creatures: companions, familiars and summons. Two kinds share one table: the companions Fight Club has on the character (m.companions:
-  // name, kind, hit dice, ability scores; read-only here) and creatures added on this page (m.creatures: name, hit points, armor class,
-  // a note; the hp buttons change one and the whole list is saved, because Fight Club has no hit points for them).
-  function creatures(m, run) {
+  // creatures: companions, familiars and summons. Two kinds share one table: the creatures added with "+ Add companion" (m.creatures: name, hit
+  // points, armor class, the monster it is; the hp buttons change one and the whole list is saved, because Fight Club has no hit points for them;
+  // the server also wrote each as a Fight Club companion) and any companion that only exists in the imported file (m.companions: name, kind, hit
+  // dice, ability scores; read-only here). `addCompanion` opens the monster search (party.js); the page redraws after it.
+  function creatures(m, run, addCompanion) {
     const list = m.creatures || [];
-    const fromFile = (m.companions || []).map(c => ({ name: c.name, hp: null, ac: "", file: true,
+    const have = new Set(list.map(c => c.name));
+    const fromFile = (m.companions || []).filter(c => !have.has(c.name)).map(c => ({ name: c.name, hp: null, ac: "", file: true,
       notes: [c.kind, c.hd && c.hd + " hit dice", c.abilities.length && "STR/DEX/CON/INT/WIS/CHA " + c.abilities.join("/")].filter(Boolean).join(" · ") }));
     const save = next => run({ creatures: next });
     const change = (c, fields) => save(list.map(x => (x === c ? { ...x, ...fields } : x)));
-    const name = h("input", { placeholder: "Name (e.g. Owl familiar)", className: "grow", maxLength: 40 });
-    const hp = h("input", { type: "number", min: 0, placeholder: "HP", className: "inum" });
-    const ac = h("input", { type: "number", min: 0, placeholder: "AC", className: "inum" });
-    const notes = h("input", { placeholder: "Notes", className: "grow", maxLength: 200 });
-    const add = () => {
-      if (!name.value.trim()) { name.focus(); return; }
-      save([...list, { name: name.value.trim(), hp: +hp.value || 0, hpMax: +hp.value || 0, ac: +ac.value || 0, notes: notes.value.trim() }]);
-    };
-    [name, hp, ac, notes].forEach(i => (i.onkeydown = ev => { if (ev.key === "Enter") { ev.preventDefault(); add(); } }));
     return h("div", {}, dataTable({
-      key: `sheet.${m.id}.creatures`, rows: [...fromFile, ...list], empty: "No creatures yet. Add a familiar, pet or summon below.",
+      key: `sheet.${m.id}.creatures`, rows: [...fromFile, ...list], empty: "No creatures yet. Add a familiar, pet or summon from the monster list.",
       columns: [{ label: "Name", text: c => c.name },
         { label: "HP", text: c => (c.file ? "" : `${c.hp}/${c.hpMax}`), show: c => c.file ? "" : h("span", { className: "nowrap" },
           h("button", { className: "tiny", textContent: "−", onclick: () => change(c, { hp: Math.max(0, c.hp - 1) }) }), ` ${c.hp}/${c.hpMax} `,
           h("button", { className: "tiny", textContent: "+", onclick: () => change(c, { hp: Math.min(c.hpMax || 1e4, c.hp + 1) }) })) },
         { label: "AC", text: c => String(c.ac || "") }, { label: "Notes", text: c => c.notes }],
-      actions: c => (c.file ? [] : [h("button", { className: "tiny danger", textContent: "✕", title: "Remove", onclick: () => save(list.filter(x => x !== c)) })]),
-    }), h("div", { className: "row addrow" }, name, hp, ac, notes, h("button", { className: "primary tiny", textContent: "Add creature", onclick: add })));
+      actions: c => (c.file ? [] : [h("button", { className: "tiny danger", textContent: "✕", title: "Remove", onclick: () => { if (confirm(`Remove ${c.name}?`)) save(list.filter(x => x !== c)); } })]),
+    }), addCompanion ? h("div", { className: "row addbar" }, h("button", { className: "primary", textContent: "+ Add companion", onclick: addCompanion })) : null);
   }
 
   return { stats, trackerExtras, inventory, spells, features, counts };

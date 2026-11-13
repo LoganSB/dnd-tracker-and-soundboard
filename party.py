@@ -373,6 +373,10 @@ def detail(cid, root):
         {k: _t(race, k) for k in ("name", "speed", "age", "height", "weight", "eyes", "skin", "hair")}
         if race is not None else {}
     )
+    # Fight Club leaves <speed> out of a race whose speed is the standard 30 (Human, Half-Orc, Goblin ...) and writes it only for the others
+    # (Leonin 35, Aarakocra 25), so a missing tag means 30 feet.
+    if race is not None and not d["raceInfo"]["speed"]:
+        d["raceInfo"]["speed"] = "30"
     d["raceFeats"] = _feats(race) if race is not None else []
     bg = root.find("background")
     d["background"] = {"name": _t(bg, "name"), "feats": _feats(bg)} if bg is not None else {}
@@ -672,6 +676,11 @@ def update_member(cid):
             if e is None:
                 e = ET.SubElement(c, "hdCurrent")
             e.text = str(max(0, int(body["hdCurrent"])))
+        if "creatures" in body:
+            # A creature taken off the list also leaves the character's file (the Fight Club <monster> that "Add companion" wrote for it).
+            gone = {c.get("name") for c in _extra().get(cid, {}).get("creatures", [])} - {str(c.get("name")) for c in body["creatures"]}
+            for mon in [x for x in root.findall("monster") if _t(x, "name") in gone]:
+                root.remove(mon)
         if "hitDice" in body:
             for c, v in zip(root.findall("class"), body["hitDice"]):
                 e = c.find("hdCurrent")
@@ -801,6 +810,46 @@ def add_spell(cid):
     return jsonify(ok=True, name=name)
 
 
+# Fight Club's <size> on a monster or race: 0 = Tiny (a squirrel), 1 = Small (a goblin); the larger sizes follow in order (inferred: only those two
+# appear in the sample files).
+SIZE_CODE = {"tiny": 0, "small": 1, "medium": 2, "large": 3, "huge": 4, "gargantuan": 5}
+
+
+@bp.post("/api/party/<cid>/companions")
+def add_companion(cid):
+    """POST /api/party/<id>/companions {name, kind, size, abilities:[6], hd, hp, ac} -> the updated summary: add a companion chosen from the monster
+    search. `kind` is the monster's name ("Wolf"), `name` what the character calls it ("Fang"). It is written as a Fight Club <monster> (label, name,
+    size, type, abilities, hd: the six fields a real file has) and also as a creature in the sidecar list, which is where its hit points and AC are
+    tracked (Fight Club stores neither)."""
+    _guard(cid)
+    b = request.get_json(force=True, silent=True) or {}
+    kind = _text(b.get("kind"), 60)
+    name = _text(b.get("name"), 40) or kind
+    if not kind:
+        return jsonify(error="Choose a monster first"), 400
+    scores = (_ints(",".join(str(x) for x in b.get("abilities", []))) + [10] * 6)[:6]
+    with lock:
+        root = _load(cid)
+        ex = _extra()
+        mine = ex.setdefault(cid, {})
+        creatures = mine.setdefault("creatures", [])
+        if len(creatures) >= 20:
+            return jsonify(error="A character can have 20 creatures; remove one first"), 400
+        mon = ET.Element("monster")
+        _sub(mon, "label", kind)
+        _sub(mon, "name", name)
+        _sub(mon, "size", str(SIZE_CODE.get(_text(b.get("size"), 20).lower(), 2)))
+        _sub(mon, "type", kind)
+        _sub(mon, "abilities", "".join(f"{v}," for v in scores))
+        _sub(mon, "hd", _text(b.get("hd"), 20))
+        _append(root, root, mon, ("monster",), ("slots", "slotsCurrent", "money"))
+        _write(cid, root)
+        hp = max(0, min(10 ** 4, int(_num(b.get("hp")))))
+        creatures.append({"id": uuid.uuid4().hex[:8], "name": name, "hp": hp, "hpMax": hp, "ac": max(0, int(_num(b.get("ac")))), "notes": kind})
+        _save_extra(ex)
+        return jsonify(summary(cid, root))
+
+
 @bp.post("/api/party/<cid>/notes")
 def add_note(cid):
     """POST /api/party/<id>/notes {name, text} -> {"ok": true, "name"}: add a note to the character (shown under Feats, Features and Notes)."""
@@ -898,6 +947,8 @@ def export_party():
     name ("export.zip") so existing links and buttons still work."""
     with lock:
         ids = [i for i in _ids() if _may_use(i)]
+    if not ids:
+        return jsonify(error="There are no characters to download yet"), 404   # (the button shows this beside itself instead of saving an empty file)
     return _backup_download(ids, "FightClub5")
 
 

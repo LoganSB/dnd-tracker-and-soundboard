@@ -5,7 +5,7 @@
 // The editor, the save logic and the search panel are shared with the Loot tab: builder.js (the editor) and finder.js
 // (the search). This file only says what is specific to encounters: the columns, the difficulty rating, and the buttons.
 //
-// MONSTER SEARCH makes no API calls while you type (see finder.js): the page downloads one list of every monster, which
+// MONSTER SEARCH (monsters.js, shared with the character sheet) makes no API calls while you type (see finder.js): the page downloads one list of every monster, which
 // the server keeps on disk and rebuilds from Open5e at most monthly.
 //
 // SERVER ROUTES (all in encounters.py)
@@ -27,7 +27,7 @@ const THRESH = [null, [25, 50, 75, 100], [50, 100, 150, 200], [75, 150, 225, 400
   [800, 1600, 2400, 3600], [1000, 2000, 3000, 4500], [1100, 2200, 3400, 5100], [1250, 2500, 3800, 5700], [1400, 2800, 4300, 6400],
   [1600, 3200, 4800, 7200], [2000, 3900, 5900, 8800], [2100, 4200, 6300, 9500], [2400, 4900, 7300, 10900], [2800, 5700, 8500, 12700]];
 const MULT = [1, 1.5, 2, 2.5, 3, 4];           // the DMG's multiplier steps, by number of monsters
-const crText = cr => ({ 0.125: "1/8", 0.25: "1/4", 0.5: "1/2" }[cr] ?? String(cr));
+const crText = Monsters.crText;   // (monsters.js: the monster search is shared with the character sheet)
 
 // rate(lines, size, level) -> { xp, adjusted, label, thresholds } for a party of `size` characters all of `level`.
 function rate(lines, size, level) {
@@ -49,41 +49,12 @@ function partyInfo() {
   return { size: sizeLvl.size ?? (party.length || 4), level: sizeLvl.level ?? (lv.length ? Math.round(lv.reduce((a, b) => a + b, 0) / lv.length) : 1), fromParty: !!party.length };
 }
 
-const preview = slug => window.open("/monster/" + slug, "dmmonster", "width=540,height=760");
-let monsterNote = "Loading the monster list…";
-
-// monsterPanel(add): the monster search (Finder.panel) filled from the downloaded list. `add(row)` is called by the + buttons.
-function monsterPanel(add) {
-  const panel = Finder.panel({
-    rows: [], note: () => monsterNote, placeholder: "Type any part of a name (typos are fine), or cr 5",
-    hint: "Matches while you type, with or without typos, from the Open5e monster list (includes the Kobold Press books). Try: gobln, drag, undead cr 5+, cr 1/2.",
-    label: m => `${m.name} (CR ${crText(m.cr)})`, sub: m => `${m.type} · ${m.docTitle}`,
-    num: { label: "CR", get: m => m.cr },
-    columns: [{ label: "Monster", text: m => m.name }, { label: "CR", text: m => crText(m.cr) }, { label: "Type", text: m => m.type },
-      { label: "AC / HP", text: m => `${m.ac ?? "?"} / ${m.hp ?? "?"}` }, { label: "Book", text: m => m.docTitle }],
-    onAdd: add, preview: m => preview(m.slug),
-    // The type and book menus need the list to know their choices, so the panel is told them when the list arrives.
-    filters: [{ key: "type", label: "Type", all: "Any type", options: [], get: m => m.type }, { key: "doc", label: "Book", all: "Any book", options: [], get: m => m.doc }],
-  });
-  Finder.loadIndex("/api/monsters/index", ([slug, name, type, cr, ac, hp, bonus, doc], d) => {
-    const t = type ? type[0].toUpperCase() + type.slice(1).toLowerCase() : "";
-    return { slug, name, type: t, cr, ac, hp, bonus, doc, docTitle: d.docs[doc] || doc, xp: d.xp[cr] || 0, extraText: `${t} ${d.docs[doc] || ""}` };
-  }, () => { monsterNote = "Downloading the monster list from Open5e (first time only)…"; panel.redraw(); })
-    .then(({ rows, d }) => {
-      panel.setOptions("type", [...new Set(rows.map(m => m.type).filter(Boolean))].sort().map(t => [t, t]));
-      panel.setOptions("doc", Object.entries(d.docs).sort((a, b) => a[1].localeCompare(b[1])));
-      panel.setRows(rows);
-    })
-    .catch(e => { monsterNote = "Could not load the monster list: " + e.message; panel.redraw(); });
-  return panel;
-}
-
 const config = {
   api: "/api/encounters", noun: "encounter", list: "monsters", box: "enc", title: "Encounter", finderTitle: "Find monsters",
   head: ["How many", "Monster", "CR", "AC", "HP", "Init +"],
   row: (l, ctx) => [ctx.num(l, "count"), l.name, crText(l.cr), ctx.num(l, "ac"), ctx.num(l, "hp"), ctx.num(l, "bonus")],
-  preview: l => (l.slug ? preview(l.slug) : null),
-  finder: monsterPanel,
+  preview: l => (l.slug ? Monsters.preview(l.slug) : null),
+  finder: add => Monsters.panel(add),
   // Maps (pictures and PDFs) attached to the encounter: upload, view, download, delete (maps.js, shared with the campaign tracker).
   attach: rec => Maps.panel(rec),
   addEntry: (rec, m) => {

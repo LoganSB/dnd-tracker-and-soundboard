@@ -32,8 +32,6 @@ const Finder = (() => {
   //                    « ‹ › » at the right. A size button only exists when the list is longer than the size before it (10 rows show none,
   //                    11 rows show 10 and 20, 30 rows show 10, 20 and 50, 51 or more show all four); clicking the highlighted one does
   //                    nothing. The arrows only exist when there is more than one page. onChange() is called after any click.
-  //
-  // showMore(onChange, step) -> { el, sync(total, shown) }: the plain "Show more (N left)" button the small pop-up lists use (they add `step` rows).
   const pageSize = {
     options: [10, 20, 50, 100],
     get() { try { const n = +localStorage.getItem("finder.pageSize"); return this.options.includes(n) ? n : 20; } catch (_) { return 20; } },
@@ -70,12 +68,6 @@ const Finder = (() => {
           return rows;
         } };
       return api;
-    },
-    showMore(onChange, step) {
-      const b = el("button", { className: "tiny moreBtn" });
-      let shown = 0;
-      b.onclick = () => onChange(shown + step);
-      return { el: b, sync(total, s) { shown = s; b.hidden = total <= s; b.textContent = `Show more (${total - s} left)`; } };
     },
   };
 
@@ -159,14 +151,14 @@ const Finder = (() => {
   }
 
   // find(rows, f, cfg): f = { q, filters: {key: value}, numMin, numMax }; cfg = { num: row -> number (or null for lists
-  // with no number), filters: [{ key, get }], keepOrder: true to leave rows in their given order when matches tie (tables) }.
+  // with no number), filters: [{ key, get(row) -> one value, or tags(row) -> a list of values (a spell for several classes)}], keepOrder: true to leave rows in their given order when matches tie (tables) }.
   // Returns the matching rows, best first.
   function find(rows, f, cfg) {
     const q = parseQuery(f.q || "", !!cfg.num);
     const lo = f.numMin === "" || f.numMin == null ? -1 : +f.numMin, hi = f.numMax === "" || f.numMax == null ? 99 : +f.numMax;
     const out = [];
     for (const [idx, m] of rows.entries()) {
-      if (cfg.filters?.some(x => f.filters?.[x.key] && x.get(m) !== f.filters[x.key])) continue;
+      if (cfg.filters?.some(x => f.filters?.[x.key] && !(x.tags ? x.tags(m).includes(f.filters[x.key]) : x.get(m) === f.filters[x.key]))) continue;
       if (cfg.num) { const v = cfg.num(m); if (v < lo || v > hi || (q.num && !q.num(v))) continue; }
       let s = 0;
       for (const w of q.words) { const x = score(m, w); if (x == null) { s = null; break; } s += x; }
@@ -180,26 +172,27 @@ const Finder = (() => {
   //   rows      prepared rows (see prep)                 label(m)   "Goblin (CR 1/4)": what suggestions and the result list print
   //   sub(m)    the grey second part of a suggestion      columns    [{ label, text(m) }] for the result table (name first)
   //   num       { label, get(m) } for the number filter (monster CR) or omitted
-  //   filters   [{ key, label, all, options: [[value, text]], get(m) }]
+  //   filters   [{ key, label, all, options: [[value, text]], get(m) or tags(m) }]
   //   onAdd(m)  the "+" button                            preview(m) the 📖 button (optional)
-  //   note()    text to show while there are no rows yet  compact    a smaller version for pop-ups (fewer rows, no hint)
+  //   note()    text to show while there are no rows yet  compact    a smaller layout for pop-ups (no hint line)
+  // The result table is paged by the shared pager (pageSize.pager above: 10 / 20 / 50 / 100 and page arrows), in pop-ups too.
+  // Also returns setFilter(key, value): choose a filter menu's value from code (the spell search starts on the character's class).
   function panel(cfg) {
-    // Paging: the pop-up version shows 6 rows and a "Show more" button; the tabs use the shared pager (pageSize.pager above: sizes and pages).
-    let rows = cfg.rows || [], shown = 6;
-    const more = cfg.compact ? pageSize.showMore(n => { shown = n; redraw(); }, 6) : pageSize.pager(() => redraw());
+    let rows = cfg.rows || [];
+    const more = pageSize.pager(() => redraw());
     const f = { q: "", filters: {}, numMin: "", numMax: "" };
     const q = el("input", { type: "search", placeholder: cfg.placeholder, autocomplete: "off", className: "grow" });
     const sug = el("div", { className: "suggest", hidden: true });
     const byKey = {};
     const menus = (cfg.filters || []).map(x => {
       const sel = el("select", { title: x.label }, el("option", { value: "", textContent: x.all }), x.options.map(([v, t]) => el("option", { value: v, textContent: t })));
-      sel.onchange = () => { f.filters[x.key] = sel.value; shown = 6; more.reset?.(); redraw(); };
+      sel.onchange = () => { f.filters[x.key] = sel.value; more.reset(); redraw(); };
       byKey[x.key] = sel;
       return sel;
     });
     const nmin = cfg.num && el("input", { type: "number", min: 0, max: 30, step: "any", placeholder: cfg.num.label + " from", className: "inum" });
     const nmax = cfg.num && el("input", { type: "number", min: 0, max: 30, step: "any", placeholder: "to", className: "inum" });
-    if (cfg.num) [nmin, nmax].forEach(x => (x.onchange = () => { f.numMin = nmin.value; f.numMax = nmax.value; more.reset?.(); redraw(); }));
+    if (cfg.num) [nmin, nmax].forEach(x => (x.onchange = () => { f.numMin = nmin.value; f.numMax = nmax.value; more.reset(); redraw(); }));
     const results = el("div");
     const fcfg = { num: cfg.num?.get, filters: cfg.filters };
 
@@ -209,12 +202,12 @@ const Finder = (() => {
       pick = -1;
       sug.replaceChildren(...best.map(m => {
         const b = el("button", { type: "button", textContent: cfg.label(m) }, el("span", { className: "muted", textContent: "  " + cfg.sub(m) }));
-        b.onmousedown = ev => { ev.preventDefault(); q.value = m.name; sug.hidden = true; f.q = m.name; shown = 6; more.reset?.(); redraw(); };
+        b.onmousedown = ev => { ev.preventDefault(); q.value = m.name; sug.hidden = true; f.q = m.name; more.reset(); redraw(); };
         return b;
       }));
       sug.hidden = !best.length;
     };
-    q.oninput = () => { clearTimeout(timer); timer = setTimeout(() => { f.q = q.value.trim(); shown = 6; more.reset?.(); redraw(); showSug(); }, 60); };
+    q.oninput = () => { clearTimeout(timer); timer = setTimeout(() => { f.q = q.value.trim(); more.reset(); redraw(); showSug(); }, 60); };
     q.onblur = () => { sug.hidden = true; };
     q.onkeydown = ev => {
       const items = [...sug.children];
@@ -226,16 +219,15 @@ const Finder = (() => {
     function redraw() {
       if (!rows.length) { results.replaceChildren(el("p", { className: (cfg.note?.() || "").startsWith("Could") ? "bad" : "muted", textContent: cfg.note?.() || "" })); return; }
       const list = find(rows, f, fcfg);
-      const visible = cfg.compact ? list.slice(0, shown) : more.show(list, rows.length);
+      const visible = more.show(list, rows.length);
       const body = visible.map(m => el("tr", {}, cfg.columns.map(c => el("td", { textContent: c.text(m) })),
         el("td", { className: "acts" }, el("button", { className: "primary", textContent: "+", title: "Add", onclick: () => cfg.onAdd(m) }),
           cfg.preview ? el("button", { textContent: "📖", title: "Details", onclick: () => cfg.preview(m) }) : null)));
       results.replaceChildren(
-        el("p", { className: "muted", textContent: cfg.compact ? `${list.length} of ${rows.length}` + (f.q ? "" : ", A to Z") : more.text + (f.q ? "" : ", A to Z") }),
+        el("p", { className: "muted", textContent: more.text + (f.q ? "" : ", A to Z") }),
         el("table", { className: "loot" }, el("thead", {}, el("tr", {}, [...cfg.columns.map(c => c.label), ""].map(t => el("th", { textContent: t })))),
           el("tbody", {}, body.length ? body : el("tr", {}, el("td", { colSpan: cfg.columns.length + 1, className: "muted", textContent: "Nothing matches." })))),
         more.el);
-      if (cfg.compact) more.sync(list.length, Math.min(shown, list.length));
     }
     const root = el("div", { className: "finder" + (cfg.compact ? " compact" : "") },
       el("div", { className: "row" }, el("div", { className: "sugwrap grow" }, q, sug), menus, nmin, nmax),
@@ -243,7 +235,15 @@ const Finder = (() => {
     redraw();
     return { el: root, redraw, setRows(r) { rows = r; redraw(); },
       // setOptions(key, [[value, text]]): fill a filter menu once the list (and so its choices) is known.
-      setOptions(key, options) { const sel = byKey[key]; if (sel) sel.append(...options.map(([v, t]) => el("option", { value: v, textContent: t }))); } };
+      setOptions(key, options) { const sel = byKey[key]; if (sel) sel.append(...options.map(([v, t]) => el("option", { value: v, textContent: t }))); },
+      // setFilter(key, value): select `value` in a filter menu and apply it (ignored when the menu has no such choice).
+      setFilter(key, value) {
+        const sel = byKey[key];
+        if (!sel) return;
+        sel.value = value;
+        if (sel.value !== value) return;
+        f.filters[key] = value; more.reset(); redraw();
+      } };
   }
 
   return { el, prep, loadIndex, dist, find, isBadRegex, parseQuery, panel, pageSize };

@@ -66,7 +66,12 @@ async function renderDetail(id) {
   // The toolbar: a picker to switch to another character (this page IS the Characters tab; Home lists, imports and exports characters)
   // and the download of this one. Which character was open is remembered, so the tab comes back to it.
   const picker = h("select", { title: "Choose a character", onchange: () => { store("party.last", picker.value); location.href = "/_/party/" + picker.value; } });
-  bar.append(picker, h("button", { className: "btn", onclick: () => safeDownload(`/api/party/${id}/export.zip`), textContent: "⬇ Download this character" }));
+  // Two downloads: this character, and ALL of them in one Fight Club backup (the server only includes the characters this user may see: the DM
+  // gets every character, a player only the ones assigned to them).
+  const isDM = document.body.dataset.role === "dm";
+  bar.append(picker, h("button", { className: "btn", onclick: () => safeDownload(`/api/party/${id}/export.zip`), textContent: "⬇ Download this character" }),
+    h("button", { className: "btn", onclick: () => safeDownload("/api/party/export.zip"), textContent: isDM ? "⬇ Download all characters" : "⬇ Download all my characters",
+      title: "One Fight Club backup file holding " + (isDM ? "every character" : "every character assigned to you") }));
   fillPicker(picker, id);
   const m = await get("/api/party/" + id);
   document.title = m.name;
@@ -95,14 +100,23 @@ async function renderDetail(id) {
       .catch(e => box.append(h("p", { className: "bad", textContent: "Error: " + e.message })));
     return box;
   };
+  // The Spells page is rebuilt every time it is opened too: its slot pips may have been changed on the Tracker page meanwhile.
+  const spellsPanel = () => {
+    const box = h("div");
+    get("/api/party/" + id).then(fresh => { Object.assign(m, fresh); box.replaceChildren(Sheet.spells(m, addSpell, patch)); })
+      .catch(e => box.append(h("p", { className: "bad", textContent: "Error: " + e.message })));
+    return box;
+  };
   // The Tracker page: ONE card holding the live tracker for this character (HP, death saves, spell slots, trackers: `only` limits it to
   // this character, `initiative: false` leaves out the party's Initiative tab, and `conditions` / `inspiration` are left out because the parts
   // below show them) and, under it, hit dice, conditions, statistics, attacks and creatures (sheet.js).
   const trackerPanel = () => {
     const live = h("div", { className: "trackerlist" });
     mountTracker(live, { only: id, initiative: false, conditions: false, inspiration: false });
-    return h("section", { className: "card sheetcard" }, live, Sheet.trackerExtras(m, patch));
+    extras = Sheet.trackerExtras(m, patch, addCompanion);
+    return h("section", { className: "card sheetcard" }, live, extras);
   };
+  let extras = null;   // the Tracker page's lower part, so the companion pop-up can redraw it
 
   // ---- the Add buttons (inventory, spells, notes). Each saves into the character's Fight Club file (party.py: add_item / add_spell / add_note), then
   // loads the character again and redraws that page. The two search pop-ups reuse the searches the other tabs have (LootTables.itemPanel, Spells.panel)
@@ -129,13 +143,38 @@ async function renderDetail(id) {
   };
   const addSpell = () => {
     let add;
-    const panel = Spells.panel(row => add(row), true);
+    const panel = Spells.panel(row => add(row), { compact: true, defaultClass: m.classes[0]?.name });
     add = search("Add spell: search the spells", panel, async row => {
       const f = await Spells.full(row.slug);
       await post("spells", { name: f.name, level: f.level_int, school: f.school, time: f.casting_time, range: f.range, duration: f.duration, components: f.components,
         materials: f.material, ritual: f.can_be_cast_as_ritual === true || f.ritual === "yes", classes: f.dnd_class,
         text: (f.desc || "").replace(/\*\*/g, "") + (f.higher_level ? `\n\nAt higher levels. ${f.higher_level}` : "") });
     }, "spells").add;
+  };
+  // addCompanion: the monster search in a pop-up. A chosen monster asks what the character calls it (Nodes.form), then party.py writes it as a Fight
+  // Club companion plus a creature with the monster's hit points and AC; the Creatures list is redrawn.
+  const addCompanion = () => {
+    const msg = UI.status();
+    const panel = Monsters.panel(row => choose(row), { compact: true });
+    const dlg = Nodes.popup({ title: "Add companion: search the monsters", body: h("div", {}, msg, panel.el) });
+    const choose = async row => {
+      try {
+        const f = await Monsters.full(row.slug);
+        dlg.close();
+        Nodes.form({
+          title: `Add ${f.name}`, saveLabel: "Add companion",
+          fields: [{ key: "name", label: "Name", value: f.name, placeholder: "What does the character call it?" }],
+          save: async v => {
+            try {
+              await post("companions", { name: v.name.trim() || f.name, kind: f.name, size: f.size, hd: f.hit_dice, hp: f.hit_points, ac: f.armor_class,
+                abilities: [f.strength, f.dexterity, f.constitution, f.intelligence, f.wisdom, f.charisma] });
+              Object.assign(m, await get("/api/party/" + id));
+              extras?.redraw();
+            } catch (e) { return e.message; }
+          },
+        });
+      } catch (e) { msg.say(e.message, true); }
+    };
   };
   const addNote = () => Nodes.form({
     title: "Add a note", saveLabel: "Add note",
@@ -153,7 +192,7 @@ async function renderDetail(id) {
     { id: "tracker", label: "Tracker", render: trackerPanel },
     { id: "stats", label: "Skills and Stats", render: statsPanel, fresh: true },
     { id: "inv", label: () => `Inventory (${counts().items})`, render: () => Sheet.inventory(m, addLoot), fresh: true },
-    { id: "spells", label: () => `Spells (${counts().spells})`, render: () => Sheet.spells(m, addSpell), fresh: true },
+    { id: "spells", label: () => `Spells (${counts().spells})`, render: spellsPanel, fresh: true },
     { id: "feats", label: () => `Feats, Features and Notes (${counts().features})`, render: () => Sheet.features(m, addNote), fresh: true },
   ] });
   view.append(sheet.el);

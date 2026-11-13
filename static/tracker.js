@@ -204,48 +204,8 @@
     // sent through patch().
     const hpBar = m => Vitals.hp(m, body => patch(m, body));
 
-    // slotRows(m) - builds the spell-slot rows for `m`: one row per spell level
-    // that has slots, each with one clickable "pip" per slot (filled = still
-    // available), plus a "Long rest" button. Returns an ARRAY of elements (it
-    // may be empty for non-casters); the caller spreads it into the card.
-    // Data: m.slots[i] = max slots at level i+1; m.slotsCurrent[i] = remaining
-    // (may be missing/short, in which case the max is assumed).
-    function slotRows(m) {
-      const rows = [];
-      // forEach passes (value, index). `max` is the slot count for level i+1.
-      m.slots.forEach((max, i) => {
-        if (!max) return; // no slots at this level: skip (return ends this callback only)
-        // `??` (nullish coalescing): use the right side only if the left is
-        // null/undefined. Unlike `||`, it keeps a legitimate 0 remaining.
-        const cur = m.slotsCurrent[i] ?? max;
-        const pips = h("span", { className: "pips" });
-        for (let k = 0; k < max; k++) {
-          pips.append(h("button", {
-            // pips below `cur` are "on" (available).
-            className: "pip" + (k < cur ? " on" : ""), title: `Level ${i + 1} slot`,
-            // Click handler. Clicking an available pip spends it (remaining
-            // becomes k); clicking an empty pip restores up to it (k + 1).
-            // Net effect: the clicked pip toggles, and those after it follow.
-            onclick: () => {
-              // slice() with no args copies the array (we must not mutate
-              // m.slotsCurrent directly); then pad it with zeros up to the full
-              // length so index i exists.
-              const next = m.slotsCurrent.slice();
-              while (next.length < m.slots.length) next.push(0);
-              next[i] = k < cur ? k : k + 1;
-              patch(m, { slotsCurrent: next });
-            },
-          }));
-        }
-        rows.push(h("div", { className: "slotrow" },
-          h("span", { className: "lbl", textContent: "L" + (i + 1) }), pips));
-      });
-      if (rows.length) {
-        // Restoring everything = setting remaining equal to the maxima.
-        rows.push(h("button", { className: "tiny", textContent: "Long rest: restore slots", onclick: () => patch(m, { slotsCurrent: m.slots }) }));
-      }
-      return rows;
-    }
+    // slotRows(m) - the spell-slot rows: the shared Vitals.slots (vitals.js, also on the character sheet's Spells page), changes sent through patch().
+    const slotRows = m => Vitals.slots(m, body => patch(m, body));
 
     // setTrackers(m, list) - saves a new list of personal trackers for character `m` (the server
     // replaces the whole list, see PATCH /api/party/<id>).

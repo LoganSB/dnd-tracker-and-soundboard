@@ -2693,7 +2693,6 @@ body.canvaspage .flag {
 .brand { display: inline-flex; align-items: center; }
 
 h1 .brandicon { width: 1.15em; height: 1.15em; margin-right: .35rem; }
-.moreBtn { margin-top: .5rem; }
 /* The pager under every list (Finder.pageSize.pager): the 10 / 20 / 50 / 100 buttons at the left (the chosen one highlighted), the page arrows
    and the "21-40 of 90" counter at the right. */
 .pagerbar { display: flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: center; justify-content: space-between; margin-top: .5rem; }
@@ -2811,6 +2810,17 @@ h1 .brandicon { width: 1.15em; height: 1.15em; margin-right: .35rem; }
 /* The Tracker page's one card: the live tracker, then its parts under thin lines (sheet.js trackerExtras). */
 .sheetcard .trackerlist article.pc { background: none; border: 0; padding: 0; margin: 0; }
 .trackerextras h3 { margin: .8rem 0 .4rem; }
+/* A stat the conditions changed (sheet.js statistics): outlined, the old number struck through and the reason underneath. */
+.stat.changed { border: 1px solid var(--warn); background: #f0b4291a; }
+.stat .was { font-size: .72rem; color: var(--muted); margin-top: .15rem; }
+.stat .was .why { color: var(--warn); display: block; }
+.condwarn { color: var(--warn); margin: .3rem 0; font-size: .85rem; }
+/* What each condition does, under the chips (vitals.js). */
+.condlist { width: 100%; margin-top: .4rem; display: grid; gap: .35rem; }
+.condinfo { font-size: .82rem; color: var(--muted); }
+.condinfo b { color: var(--text); }
+.condfx { color: var(--warn); }
+.chip.custom { background: #ffffff12; border-color: #ffffff40; }
 hr.thin { border: 0; border-top: 1px solid #ffffff22; margin: 1rem 0 0; }
 
 /* The shared pop-up (nodes.js): the roomy version holds a search panel. */

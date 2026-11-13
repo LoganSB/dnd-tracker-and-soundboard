@@ -120,6 +120,19 @@ def attacks(d, mods, prof, equipped):
     return rows
 
 
+def _speed(d, equipped):
+    """-> (feet, how). The race's walking speed (30 when the race does not say: party.detail fills that in) plus the class feature Fast Movement
+    (+10 ft for a Barbarian from 5th level, only while not in heavy armor), found by the feature's name in the character's own list."""
+    base = int(float((d.get("raceInfo") or {}).get("speed") or 0))
+    if not base:
+        return 0, ""
+    fast = any(f.get("name", "").strip().lower() == "fast movement" for c in d.get("classes", []) for f in c.get("feats", []))
+    heavy = any(i.get("type") == "Heavy Armor" for i in equipped)
+    if fast and not heavy:
+        return base + 10, f"{base} ft + 10 ft Fast Movement"
+    return base, f"{base} ft base" + (" (Fast Movement is off while in heavy armor)" if fast else "")
+
+
 def derive(d):
     """The calculated part of a character: {profBonus, stats: {ac, acNote, initiative, speed, passivePerception, profBonus},
     skills: [{name, ability, mod, proficient}], saves: [{name, mod, proficient}], attacks: [...]}.
@@ -135,10 +148,10 @@ def derive(d):
         skills.append({"name": name, "ability": ABILITIES[ab], "mod": mods[ab] + (prof if p else 0), "proficient": p})
     saves = [{"name": ABILITIES[n], "mod": mods[n] + (prof if n in profs.get("saves", []) else 0), "proficient": n in profs.get("saves", [])} for n in range(6)]
     ac, how = armor_class(d, mods, equipped)
-    speed = (d.get("raceInfo") or {}).get("speed", "")
+    speed, speed_note = _speed(d, equipped)
     return {
         "profBonus": prof,
-        "stats": {"ac": ac, "acNote": how, "initiative": mods[1], "speed": f"{speed} ft" if speed else "",
+        "stats": {"ac": ac, "acNote": how, "initiative": mods[1], "speed": f"{speed} ft" if speed else "", "speedFeet": speed, "speedNote": speed_note,
                   "passivePerception": 10 + skills[PERCEPTION]["mod"], "profBonus": prof},
         "skills": skills, "saves": saves, "attacks": attacks(d, mods, prof, equipped),
     }
