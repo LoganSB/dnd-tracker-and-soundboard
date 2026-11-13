@@ -107,16 +107,17 @@ const Nodes = (() => {
   // Every board object (a section, a sound, a flag, a timer ...) HAS a parent link: a section's is `parent`, a card's is `section`. All the rules
   // about nesting live here, written against that one idea, so no page and no kind of object needs its own copy. A new kind of object only
   // needs a row in LINKS saying which field is its parent link.
-  //   depth      how many sections are above the object (a top-level section: 0; a card in a top-level section: 1; a loose card: 0)
+  //   depth      the object's level: a section's own depth (top level 0, then 1, 2 ...); a card's is the depth of the section it sits in (-1 for
+  //              a loose card, which may go anywhere)
   //   canEnter   may the object be moved INTO this section? Not itself or its own descendants, not the section it is already in, and only a
-  //              section whose depth is the object's depth or less (a deeper section is not offered)
+  //              section at the object's level or DEEPER (going shallower is what moveUp is for)
   //   moveUp     the ONLY way to take an object out of its section: it goes into that section's own parent (or to the top level)
   const LINKS = [{ test: (secs, o) => secs.includes(o), key: "parent" }, { test: () => true, key: "section" }];
   const treeDepth = depth;   // (the tree function above; `depth` is also a name inside nest)
   function nest(secs) {
     const key = o => LINKS.find(l => l.test(secs, o)).key, parentId = o => o[key(o)] || "";
-    const depthOfObj = o => (key(o) === "parent" ? treeDepth(secs, o.id) : chain(secs, o.section).length);
-    const canEnter = (o, t) => !!t && t !== o && t.id !== parentId(o) && !inside(secs, t.id, o.id) && treeDepth(secs, t.id) <= depthOfObj(o);
+    const depthOfObj = o => (key(o) === "parent" ? treeDepth(secs, o.id) : chain(secs, o.section).length - 1);
+    const canEnter = (o, t) => !!t && t !== o && t.id !== parentId(o) && !inside(secs, t.id, o.id) && treeDepth(secs, t.id) >= depthOfObj(o);
     const canMoveUp = o => !!byId(secs, parentId(o));
     return {
       depth: depthOfObj, canEnter, canMoveUp, parentId,
