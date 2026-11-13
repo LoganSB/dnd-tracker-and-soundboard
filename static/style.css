@@ -1999,11 +1999,20 @@ body.partypage > header {
   padding: .4rem .8rem;
 }
 
-/* Phones: the shared header is tighter. */
+/* Phones: the header is only the banner (brand) and the log-out button; the page links fold into a hamburger menu that drops down
+   under it (shell.html toggles .menu-open on the header). On wider screens the hamburger and the menu-only entries do not exist. */
+.hamburger, .appnav-links .menuonly { display: none; }
 @media (max-width: 600px) {
-  .appnav { gap: .4rem; padding: .35rem .5rem; flex-wrap: wrap; }
-  .appnav .brand { font-size: 1rem; }
-  .appnav-links a { padding: .3rem .55rem; }
+  .appnav { position: relative; gap: .5rem; padding: .35rem .5rem; flex-wrap: nowrap; }
+  .appnav .brand { font-size: 1rem; margin-right: 0; }
+  .hamburger { display: inline-block; font-size: 1.25rem; line-height: 1; padding: .3rem .6rem; }
+  .hamburger.flash { animation: tabflash .7s ease-in-out infinite; color: #fff; }
+  .appnav .who, #partyBtn { display: none; }
+  .appnav-links { display: none; position: absolute; left: 0; right: 0; top: 100%; z-index: 80; flex-direction: column; gap: .2rem;
+    padding: .5rem; background: #0b0911; border-bottom: 1px solid var(--accent); box-shadow: 0 8px 18px #000a; }
+  .appnav.menu-open .appnav-links { display: flex; }
+  .appnav-links a, .appnav-links .menuonly { display: block; padding: .6rem .8rem; text-align: left; }
+  .appnav-links .menuonly { background: none; border: 1px solid transparent; color: var(--muted); }
 }
 
 /* Delete button on a campaign flag card (red on hover). */
@@ -2682,6 +2691,10 @@ body.canvaspage .flag {
 
 h1 .brandicon { width: 1.15em; height: 1.15em; margin-right: .35rem; }
 .moreBtn { margin-top: .5rem; }
+/* The 10 / 20 / 50 / 100 row-count buttons under every list (Finder.pageSize.buttons). The chosen one is highlighted. */
+.sizebtns { display: flex; gap: .3rem; margin-top: .5rem; justify-content: flex-start; }
+.sizebtns[hidden] { display: none; }
+.sizebtns .sizebtn.on { background: var(--accent); border-color: var(--accent); color: #fff; cursor: default; }
 
 /* Condition cards and the unlock highlight (campaign.js, "conditions and triggers"). */
 .flag.cond { border-left-color: #4fa3ff; min-width: 250px; }
@@ -2753,3 +2766,37 @@ h1 .brandicon { width: 1.15em; height: 1.15em; margin-right: .35rem; }
 /* While something is carried: the section title bars it may be dropped on are outlined, the one under the pointer is solid. */
 .frame.droptarget > header { box-shadow: inset 0 0 0 2px #ffd34d88; }
 .frame.dropover > header { box-shadow: inset 0 0 0 3px #ffd34d; background: #ffd34d33; }
+
+/* ==================== Character sheet sub-menus, expanding table rows, chips (ui.js tabs / dataTable, vitals.js) ==================== */
+/* The row of sub-menu buttons (UI.tabs): same look as the tracker's Party / Initiative switch. */
+.subtabs { display: flex; flex-wrap: wrap; gap: .3rem; margin: .6rem 0 .8rem; }
+.subtabs button { flex: 1 1 auto; }
+.subtabs button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.subpanel[hidden] { display: none; }
+.sheetstats { display: grid; gap: .8rem; }
+.stat .prof { color: var(--accent); }
+.nowrap { white-space: nowrap; }
+.addrow { margin-top: .6rem; align-items: center; }
+
+/* A table row that opens to show its description (dataTable's `detail`). The arrow shows it is clickable. */
+.dtable tr.expandable { cursor: pointer; }
+.dtable tr.expandable > td:first-child::before { content: "▸ "; color: var(--muted); }
+.dtable tr.expandable.open > td:first-child::before { content: "▾ "; }
+.dtable tr.expandable:hover { background: #ffffff0d; }
+.dtable tr.equipped > td:first-child { border-left: 3px solid var(--accent); }
+.dtable tr.drow[hidden] { display: none; }
+.dtable td.dtext { white-space: pre-wrap; color: var(--muted); background: #0003; padding: .6rem .8rem; }
+
+/* Condition chips and the add menu (Vitals.conditions). */
+.conds { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; }
+.chips { display: flex; flex-wrap: wrap; gap: .3rem; }
+.chip { display: inline-flex; align-items: center; gap: .3rem; padding: .1rem .2rem .1rem .6rem; border-radius: 999px; background: #ff5d6c26; border: 1px solid var(--bad); font-size: .85rem; }
+.chip .x { border: 0; background: none; color: var(--muted); padding: 0 .35rem; cursor: pointer; }
+.chip .x:hover { color: var(--text); }
+.addcond { display: flex; flex-wrap: wrap; gap: .3rem; width: 100%; }
+.addcond[hidden] { display: none; }
+
+/* Encounter maps (maps.js): the preview that opens under a row. */
+.maps { margin-top: 1rem; }
+.mapthumb { max-width: 100%; max-height: 24rem; border-radius: 6px; display: block; }
+#mapsDlg { width: min(46rem, 94vw); }

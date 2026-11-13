@@ -9,7 +9,9 @@
 //   api(url, method, body)     JSON request; resolves to the answer or throws Error(the server's message).
 //   status()                   a small line of text that can show progress or an error (red when `bad`).
 //   box(key, title, ...body)   a titled panel that can be collapsed; the choice is remembered per `key`.
-//   dataTable(opts)            a table with a search box and a filter menu per filtered column (needs finder.js).
+//   dataTable(opts)            a table with a search box and a filter menu per filtered column (needs finder.js). Rows can expand.
+//   tabs(opts)                 a row of buttons that shows one panel at a time (the sub-menus on a character's page, the tracker's
+//                              Party / Initiative switch); the chosen tab is remembered.
 //
 // A filter or search never changes the data, it only hides rows. Searching uses a regular expression plus finder.js (partial
 // words, small typos); load that file before any page that builds a dataTable.
@@ -59,17 +61,20 @@ function box(key, title, ...body) {
   return sec;
 }
 
-// dataTable({ key, columns, rows, actions, empty }) -> element   (lists 20 rows at a time; the button under it steps through 10 / 20 / 50 / 100)
+// dataTable({ key, columns, rows, actions, empty }) -> element   (lists 10 rows at a time; the buttons under it choose 10 / 20 / 50 / 100)
 //   columns  [{ label, text(row) -> string used for searching and filtering, show(row) -> node or text (optional;
 //            defaults to the text), filter: true to give the column a menu of its distinct values,
 //            tags(row) -> array: with filter, a row belongs to every value in its list (a row in two campaigns shows up under both) }]
 //   actions  (row) -> array of buttons for the last column (omit for none)
+//   detail   (row) -> text or a node shown under the row when it is clicked (omit, or return nothing for a row, and that row does not
+//            expand). This is the "drop-down" rows: an inventory item's description, a spell's text. Open rows stay open while you search.
+//   rowClass (row) -> an extra CSS class for the row (for example "equipped")
 //   empty    text shown when there are no rows at all
 // The search takes the whole typed text as ONE regular expression over the row's text (as it always did; invalid ones are
 // matched as plain text) and, after those rows, adds what Finder.find (finder.js, the matching the monster and item searches
 // use) finds: every word somewhere in the row, partial words, single-letter typos. Rows keep their order when nothing is
 // typed. The count under the box reads "3 of 10". A search or filter only hides rows; it never changes the data.
-function dataTable({ key, columns, rows, actions, empty = "Nothing here yet." }) {
+function dataTable({ key, columns, rows, actions, detail, rowClass, empty = "Nothing here yet." }) {
   const wrap = h("div", { className: "dtable" });
   if (!rows.length) { wrap.append(h("p", { className: "muted", textContent: empty })); return wrap; }
   const search = h("input", { type: "search", placeholder: "Search (typos and regular expressions are fine)", className: "dsearch", title: "Partial words, small typos and regular expressions all work" });
@@ -86,10 +91,11 @@ function dataTable({ key, columns, rows, actions, empty = "Nothing here yet." })
   });
   const count = h("span", { className: "muted dcount" });
   const body = h("tbody");
-  // How many rows to list at a time: the same 10 / 20 / 50 / 100 choice as the monster and item searches (Finder.pageSize). The one
-  // button at the bottom left steps it up (and back down to 10 once everything shows); it only appears when the list is long enough.
+  // How many rows to list at a time: the same 10 / 20 / 50 / 100 choice as the monster and item searches (Finder.pageSize). The
+  // buttons at the bottom left only offer sizes smaller than the list; the chosen one is highlighted.
   let shown = Finder.pageSize.get();
-  const more = Finder.pageSize.more(n => { shown = n; draw(); });
+  const opened = new Set();   // rows whose description is open
+  const more = Finder.pageSize.buttons(n => { shown = n; draw(); });
   const draw = () => {
     store(`q.${key}`, search.value);
     search.classList.toggle("badre", Finder.isBadRegex(search.value));
@@ -104,8 +110,22 @@ function dataTable({ key, columns, rows, actions, empty = "Nothing here yet." })
     const generous = Finder.find(prepared, { q }, { keepOrder: true });
     const list = (q ? [...new Set([...exact, ...generous])] : generous)
       .map(p => p.ref).filter(r => !filters.some((f, i) => f && f.value && !(columns[i].tags ? columns[i].tags(r).includes(f.value) : columns[i].text(r) === f.value)));
-    body.replaceChildren(...list.slice(0, shown).map(r => h("tr", {}, columns.map(c => h("td", {}, c.show ? c.show(r) : c.text(r))),
-      actions ? h("td", { className: "acts" }, actions(r)) : null)));
+    const span = columns.length + (actions ? 1 : 0);
+    body.replaceChildren(...list.slice(0, shown).flatMap(r => {
+      const info = detail ? detail(r) : null;
+      const tr = h("tr", { className: (rowClass?.(r) || "") + (info ? " expandable" + (opened.has(r) ? " open" : "") : "") }, columns.map(c => h("td", {}, c.show ? c.show(r) : c.text(r))),
+        actions ? h("td", { className: "acts" }, actions(r)) : null);
+      if (!info) return [tr];
+      // The description sits in its own row right under this one; clicking anywhere on the row (except its buttons) opens or closes it.
+      const drow = h("tr", { className: "drow", hidden: !opened.has(r) }, h("td", { colSpan: span, className: "dtext" }, info));
+      tr.onclick = ev => {
+        if (ev.target.closest("button, a, input, select")) return;
+        const open = drow.hidden;
+        drow.hidden = !open; tr.classList.toggle("open", open);
+        if (open) opened.add(r); else opened.delete(r);
+      };
+      return [tr, drow];
+    }));
     if (!list.length) body.append(h("tr", {}, h("td", { colSpan: columns.length + 1, className: "muted", textContent: "No rows match." })));
     count.textContent = `${list.length} of ${rows.length}`;
     more.sync(list.length, Math.min(shown, list.length));
@@ -118,6 +138,33 @@ function dataTable({ key, columns, rows, actions, empty = "Nothing here yet." })
   return wrap;
 }
 
+// tabs({ key, tabs, first }) -> { el, show(id), panel(id) }
+//   tabs   [{ id, label, render, fresh }]  render() -> a node, built the first time the tab is shown and kept; with `fresh` it is built
+//          again every time the tab is shown (for a panel whose data may have changed meanwhile). `label` may be a function (called on
+//          each change, so a tab can carry a count).
+//   key    the choice is remembered under it (per browser); first = the tab shown when nothing is remembered.
+// One component for every row of sub-menu buttons: the buttons are class "subtabs", the chosen one has class "on", the panels sit under.
+function tabs({ key, tabs: list, first }) {
+  const bar = h("div", { className: "subtabs", role: "tablist" }), body = h("div", { className: "subpanels" });
+  const panels = {}, buttons = {};
+  const label = t => (typeof t.label === "function" ? t.label() : t.label);
+  const show = id => {
+    if (!list.some(t => t.id === id)) id = first || list[0].id;
+    for (const t of list) {
+      let p = panels[t.id];
+      if (t.id === id && (!p || t.fresh)) { const node = t.render(); if (p) p.replaceChildren(node); else { p = panels[t.id] = h("div", { className: "subpanel" }, node); body.append(p); } }
+      if (p) p.hidden = t.id !== id;
+      buttons[t.id].classList.toggle("on", t.id === id);
+      buttons[t.id].setAttribute("aria-selected", t.id === id);
+      buttons[t.id].textContent = label(t);
+    }
+    store("tab." + key, id);
+  };
+  for (const t of list) bar.append(buttons[t.id] = h("button", { type: "button", role: "tab", textContent: label(t), onclick: () => show(t.id) }));
+  show(stored("tab." + key, first || list[0].id));
+  return { el: h("div", { className: "tabbed" }, bar, body), show, panel: id => panels[id] };
+}
+
 // Encounters and loot tables are shared by every page and every campaign. When one changes (created, edited, renamed, deleted, or put on
 // or taken off a campaign tracker), the page that changed it calls libraryChanged(); every OTHER page that registered with
 // onLibraryChanged(fn) hears it and refreshes (the Browse lists on Home, for example). A BroadcastChannel reaches all frames of the site.
@@ -127,5 +174,5 @@ const libraryChanged = () => channel?.postMessage("changed");
 const onLibraryChanged = fn => channel?.addEventListener("message", fn);
 const offLibraryChanged = fn => channel?.removeEventListener("message", fn);
 
-return { h, api, status, stored, store, box, dataTable, libraryChanged, onLibraryChanged, offLibraryChanged };
+return { h, api, status, stored, store, box, dataTable, tabs, libraryChanged, onLibraryChanged, offLibraryChanged };
 })();

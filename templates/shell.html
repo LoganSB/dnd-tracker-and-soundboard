@@ -48,6 +48,8 @@
 </head>
 <body class="shell">
 <header class="appnav">
+  <!-- Phones only (see .hamburger in style.css): the page links fold into this menu so the header is just the banner and the log-out button. -->
+  <button id="menuBtn" class="hamburger" type="button" aria-label="Menu" aria-expanded="false" aria-controls="appLinks">☰</button>
   {% include "_nav.html" %}
   <span class="grow"></span>
   {% if role == 'dm' %}
@@ -89,7 +91,7 @@
 </div>
 
 <script src="/static/errors.js"></script>
-{% if role == 'dm' %}<script src="/static/tracker.js"></script>{% endif %}
+{% if role == 'dm' %}<script src="/static/ui.js"></script><script src="/static/vitals.js"></script><script src="/static/tracker.js"></script>{% endif %}
 <script>
 (function () {
   // frames: page name -> its <iframe>. urls: the address shown in the browser's address bar for each tab.
@@ -98,6 +100,16 @@
   const urls = { home: "/", sound: "/sound", campaign: "/campaign", encounters: "/encounters", loot: "/loot", party: "/party" };
   let current = {{ active|tojson }};   // tojson writes the Python value as a JavaScript string literal
 
+  // The phone menu (hamburger): opens and closes the list of page links. A phone shows no Party button in the header, so the menu
+  // gets its own "Party tracker" entry (added below) that does the same thing.
+  const header = document.querySelector(".appnav"), menuBtn = document.getElementById("menuBtn");
+  function setMenu(open) {
+    header.classList.toggle("menu-open", open);
+    menuBtn.setAttribute("aria-expanded", open);
+    menuBtn.textContent = open ? "✕" : "☰";
+  }
+  menuBtn.onclick = () => setMenu(!header.classList.contains("menu-open"));
+
   // show(page, push): make `page` the visible tab. Highlights its link, shows its frame and hides the
   // others, gives its frame keyboard focus (so hotkeys and arrow keys reach the soundboard), tells it it
   // is visible, and (when push is true) adds a browser history entry so Back/Forward work.
@@ -105,6 +117,8 @@
     current = page;
     for (const [name, f] of Object.entries(frames)) f.classList.toggle("active", name === page);
     document.querySelectorAll(".appnav-links a").forEach(a => { a.classList.toggle("on", a.dataset.page === page); if (a.dataset.page === page) a.classList.remove("flash"); });
+    if (!document.querySelector(".appnav-links a.flash")) menuBtn.classList.remove("flash");
+    setMenu(false);
     if (push) history.pushState({ page }, "", urls[page]);
     const w = frames[page].contentWindow;
     w.focus();
@@ -146,7 +160,7 @@
     } else if (ev.data?.type === "flashTab") {
       // A timer finished on a page: flash its tab link, unless that tab is the one being looked at.
       const a = document.querySelector(`.appnav-links a[data-page="${CSS.escape(String(ev.data.page))}"]`);
-      if (a && ev.data.page !== current) a.classList.add("flash");
+      if (a && ev.data.page !== current) { a.classList.add("flash"); menuBtn.classList.add("flash"); }
     } else if (ev.data?.type === "goto") {
       goto(ev.data.page, ev.data.path, ev.data.sound, ev.data.node);
     }
@@ -167,6 +181,10 @@
         trackerMounted = true;
       }
     };
+    const menuParty = document.createElement("button");   // the phone menu's copy of the Party button
+    menuParty.type = "button"; menuParty.className = "menuonly"; menuParty.textContent = "🛡 Party tracker";
+    menuParty.onclick = () => { setMenu(false); partyBtn.click(); };
+    document.getElementById("appLinks").append(menuParty);
     document.getElementById("closeTracker").onclick = () => {
       panel.classList.remove("open");
       partyBtn.classList.remove("on-state");

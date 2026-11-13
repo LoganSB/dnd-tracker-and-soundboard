@@ -11,7 +11,7 @@
 //     a monster: "cr 5", "cr 1/2", "3-5", "5+") all work. Best matches first, then shorter names, then A to Z.
 //   * the same matching also drives every searchable TABLE in the app (UI.dataTable in ui.js uses find with keepOrder).
 //   * panel(cfg): the search box with live suggestions (each shows its CR or rarity), filter menus, and the result
-//     table with a "+" button per row. With nothing typed it lists everything A to Z, 20 rows at a time; the button under the list steps through 10, 20, 50 and 100 rows and remembers your choice.
+//     table with a "+" button per row. With nothing typed it lists everything A to Z, 10 rows at a time; the buttons under the list (10 / 20 / 50 / 100, see pageSize) change that and remember your choice.
 // Nothing here calls Open5e: all searching happens in the browser on the downloaded list.
 const Finder = (() => {
   const el = (tag, props = {}, ...kids) => {
@@ -20,37 +20,42 @@ const Finder = (() => {
     return e;
   };
 
-  // pageSize: the "how many rows at a time" choice (10, 20, 50 or 100; default 20), remembered in this browser and shared by every
-  // searchable list in the app: the monster and item searches (panel below) and every UI.dataTable. It is changed with the one
-  // button under each list (pageSize.more), not a menu.
+  // pageSize: how many rows a list shows at a time. One of 10, 20, 50 or 100 (default 10), remembered in this browser and shared by
+  // every searchable list in the app: the monster and item searches (panel below) and every UI.dataTable.
+  //
+  // buttons(onChange) -> { el, sync(total, shown) } is the control under a list: up to four buttons (10 / 20 / 50 / 100) at the bottom
+  // left, the current choice highlighted. A button only exists when the list is longer than the size before it, so 3 or 10 rows show
+  // none, 11 rows show 10 and 20, 30 rows show 10, 20 and 50, and 51 or more show all four. Clicking the highlighted button does
+  // nothing; clicking another one saves it and calls onChange(n) with the new row count. Call sync(total) after every redraw.
+  //
+  // showMore(onChange, step) -> same shape: the plain "Show more (N left)" button the small pop-up lists use (they add `step` rows).
   const pageSize = {
     options: [10, 20, 50, 100],
-    get() { try { const n = +localStorage.getItem("finder.pageSize"); return this.options.includes(n) ? n : 20; } catch (_) { return 20; } },
+    get() { try { const n = +localStorage.getItem("finder.pageSize"); return this.options.includes(n) ? n : 10; } catch (_) { return 10; } },
     set(n) { try { localStorage.setItem("finder.pageSize", n); } catch (_) { /* storage blocked */ } },
-    // more(onChange, fixed) -> { el, sync(total, shown) }: the ONE button under a list that replaces both "Show more" and a size menu.
-    // It sits at the bottom left. Each click steps the list size up the choices (10 -> 20 -> 50 -> 100; past 100 it adds another
-    // 100) and remembers it; once everything is showing it becomes "Show fewer" and goes back to 10. It only appears when the list
-    // is longer than the smallest size. `fixed` (the small pop-up lists) turns it into a plain "Show more" that adds `fixed` rows.
-    // onChange(n) is called with the new number of rows to show; call sync(total, shown) after every redraw to update its label.
-    more(onChange, fixed) {
-      const b = el("button", { className: "tiny moreBtn" });
-      let total = 0, shown = 0;
-      b.onclick = () => {
-        const small = this.options[0];
-        let next;
-        if (fixed) next = shown + fixed;
-        else if (total <= shown) next = small;                                   // everything is showing: shrink back
-        else { next = this.options.find(n => n > shown) ?? shown + 100; if (this.options.includes(next)) this.set(next); }
-        if (!fixed && next === small) this.set(small);
-        onChange(next);
-      };
-      return { el: b, sync(t, s) {
-        total = t; shown = s;
-        const small = pageSize.options[0];
-        b.hidden = fixed ? t <= s : t <= small;
-        if (t > s) { const n = fixed ? 0 : pageSize.options.find(x => x > s); b.textContent = fixed || !n ? `Show more (${t - s} left)` : `Show ${n} rows (${t - s} more)`; }
-        else b.textContent = `Show fewer (${small} rows)`;
+    // Which buttons a list of `total` rows gets: an option appears when total is more than the option before it (10 needs more than 10).
+    visible(total) { return this.options.filter((n, i) => total > (i ? this.options[i - 1] : n)); },
+    // The highlighted size: the saved choice, or the biggest button shown when the saved one is not offered for a short list
+    // (everything already fits, so the biggest button is the true state).
+    current(total) { const v = this.visible(total), n = this.get(); return v.includes(n) ? n : v[v.length - 1]; },
+    buttons(onChange) {
+      const box = el("div", { className: "sizebtns", role: "group", title: "Rows shown" });
+      let last = 0;
+      return { el: box, sync: total => {
+        last = total;
+        const vis = pageSize.visible(total), on = pageSize.current(total);
+        box.hidden = !vis.length;
+        box.replaceChildren(...vis.map(n => el("button", {
+          type: "button", className: "tiny sizebtn" + (n === on ? " on" : ""), textContent: String(n), title: `Show ${n} rows`, "aria-pressed": n === on,
+          onclick: () => { if (n === pageSize.current(last)) return; pageSize.set(n); onChange(n); },
+        })));
       } };
+    },
+    showMore(onChange, step) {
+      const b = el("button", { className: "tiny moreBtn" });
+      let shown = 0;
+      b.onclick = () => onChange(shown + step);
+      return { el: b, sync(total, s) { shown = s; b.hidden = total <= s; b.textContent = `Show more (${total - s} left)`; } };
     },
   };
 
@@ -159,11 +164,10 @@ const Finder = (() => {
   //   onAdd(m)  the "+" button                            preview(m) the 📖 button (optional)
   //   note()    text to show while there are no rows yet  compact    a smaller version for pop-ups (fewer rows, no hint)
   function panel(cfg) {
-    // Page size: rows listed before "Show more". The pop-up version is fixed at 6; the tabs use the shared choice (pageSize above).
+    // Page size: the pop-up version shows 6 rows and a "Show more" button; the tabs use the shared 10 / 20 / 50 / 100 buttons (pageSize above).
     const size = () => (cfg.compact ? 6 : pageSize.get());
     let rows = cfg.rows || [], shown = size();
-    // The one "show more / fewer" button under the table (see pageSize.more): it changes how many rows are shown.
-    const more = pageSize.more(n => { shown = n; redraw(); }, cfg.compact ? 6 : 0);
+    const more = cfg.compact ? pageSize.showMore(n => { shown = n; redraw(); }, 6) : pageSize.buttons(n => { shown = n; redraw(); });
     const f = { q: "", filters: {}, numMin: "", numMax: "" };
     const q = el("input", { type: "search", placeholder: cfg.placeholder, autocomplete: "off", className: "grow" });
     const sug = el("div", { className: "suggest", hidden: true });

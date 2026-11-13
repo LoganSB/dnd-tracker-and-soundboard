@@ -378,6 +378,7 @@ function encounterEl(item) {
     Nodes.tools([
       { icon: "🆕", title: "Start a NEW combat with this encounter", hidden: !enc, run: () => loadEncounter(item, "replace", false) },
       { icon: "📤", title: "Add to the initiative tracker and pop it out", hidden: !enc, run: () => loadEncounter(item, "append", true) },
+      { icon: enc?.maps?.length ? `🗺${enc.maps.length}` : "🗺", title: "Maps: upload, view and download this encounter's maps", hidden: !enc, run: () => openMaps(enc) },
       { icon: "⚙", title: "Edit in the Encounters tab", cls: "gear", hidden: !enc,
         run: () => window.parent.postMessage({ type: "goto", page: "encounters", path: "/_/encounters?id=" + enc.id }, location.origin) },
       { icon: "🗑", title: "Take this card off the board (the encounter stays in the Encounters tab)", cls: "fdel", run: () => removeCard(item, "removed an encounter card") },
@@ -388,6 +389,16 @@ function encounterEl(item) {
   onCardClick(card, () => { if (enc) loadEncounter(item, "append", false); });
   return card;
 }
+
+// openMaps(enc): the encounter's maps in a pop-up (Maps.panel, maps.js: the Encounters tab shows the same one). The map count on the
+// card's 🗺 button is redrawn when it closes.
+const mapsDlg = $("#mapsDlg");
+function openMaps(enc) {
+  $("#mapsTitle").textContent = `Maps: ${enc.name}`;
+  $("#mapsHost").replaceChildren(Maps.panel(enc));
+  mapsDlg.showModal();
+}
+mapsDlg.addEventListener("close", () => render(true));
 
 // ------------------------------------------------------------ timer cards
 // A TIMER card counts down (timers.js holds everything the soundboard's timers share). When it finishes the card flashes, the Campaign tab
@@ -838,6 +849,12 @@ function lootRanges(entries) {
 
 // refreshLoots(): fetch the campaign's loot tables again (they can be changed on the Loot tab or in the pop-up below).
 async function refreshLoots() { S.loots = await api("/api/loots"); }
+// Another page (the Encounters tab: a rename, new monsters, a map uploaded) changed the shared library: fetch the encounters and loot tables again
+// and redraw so the cards (names, the 🗺 count) are current. Skipped while the maps pop-up is open (it holds one of the records).
+UI.onLibraryChanged(async () => {
+  if (mapsDlg.open) return;
+  try { [S.encounters, S.loots] = await Promise.all([api("/api/encounters"), api("/api/loots")]); render(true); } catch (_) { /* the server is restarting: next change retries */ }
+});
 
 // fillSources(): the "Rewards from" menu: own list, each loot table, and a random item of each rarity.
 function fillSources() {

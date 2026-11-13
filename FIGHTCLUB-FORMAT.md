@@ -51,7 +51,7 @@ rejects a character-only file, the next experiment is to bundle the library obje
 
 Numbers are written the way Java writes them: `65.0`, `2.0`, `1.5E7`. Tags that do not apply to a character are left out
 rather than written empty. Codes (item `type`, `damageType`, spell `school`, `weaponProperty`, `proficiency`) are numbers;
-the meanings this app knows are in `party.py` (`ITEM_TYPES`, `SCHOOLS`).
+the meanings this app knows are in `party.py` (`ITEM_TYPES`, `SCHOOLS`, `DAMAGE_TYPES`, `WEAPON_PROPS`, `HIT_DIE`) and `charcalc.py`.
 
 ## How this app uses it
 
@@ -67,3 +67,19 @@ the meanings this app knows are in `party.py` (`ITEM_TYPES`, `SCHOOLS`).
 1. That the plain `.backup` is accepted, and whether the **file name** matters.
 2. That a backup without the bundled library objects restores the characters fully.
 3. Whether the header `uid` has to be above every uid already in the app.
+
+
+## Codes worked out from real files (used by the Skills and Stats page)
+
+Found by comparing the codes in the sample characters with what the game says about them; only the ones listed are confirmed.
+
+| Where | Code | Meaning |
+|---|---|---|
+| class `hd` | 1, 2, 3, 4 | hit die d6, d8, d10, d12 (Cleric 2, Fighter and Paladin 3, Barbarian 4) |
+| item `damageType` | 1, 2, 3 | bludgeoning (a Maul), piercing (Rapier, Dagger), slashing (a Battleaxe) |
+| item `weaponProperty` | sum of bits | 1 Ammunition, 2 Finesse, 4 Heavy, 8 Light, 128 Thrown, 256 Two-Handed, 512 Versatile (a Dagger is 138 = 2 + 8 + 128). 16 Loading, 32 Reach, 64 Special are the unconfirmed low bits in the compendium's order |
+| item `mod` (with a `value`) | `type` 1 / 2 / 10 | attack bonus / damage bonus / armor class bonus (a +2 Maul has 1:+2 and 2:+2; a plate "Armor Bonus" is 10:+2). A `mod` with no `value` carries nothing |
+| class or background `proficiency` | 0-5 | a saving throw, by ability order STR..CHA (a Cleric has 4 and 5 = Wis and Cha) |
+| class or background `proficiency` | 100-117 | a skill, in alphabetical order: 100 Acrobatics, 101 Animal Handling, 102 Arcana, 103 Athletics, 104 Deception, 105 History, 106 Insight, 107 Intimidation, 108 Investigation, 109 Medicine, 110 Nature, 111 Perception, 112 Performance, 113 Persuasion, 114 Religion, 115 Sleight of Hand, 116 Stealth, 117 Survival |
+| class `autolevel` | one per level, with a `<level>` child | the class's whole level table, including EVERY subclass option (marked `optional`); the character's own `class/feat` list is already just what they have, so features come from there |
+| `monster` | `label`, `name`, `type`, `abilities`, `hd` (e.g. `1d8`) | a companion; no hit points are stored |

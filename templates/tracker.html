@@ -11,8 +11,9 @@
   and puts it inside that div. The page uses no Jinja2 substitutions.
 
   SCRIPTS:
-    1. /static/tracker.js - defines mountTracker(element), which renders the tracker into an element.
-    2. the inline <script> below - runs once the div exists (it is placed after it)
+    1. /static/ui.js and /static/vitals.js - shared tabs, and the HP / hit dice / conditions controls.
+    2. /static/tracker.js - defines mountTracker(element), which renders the tracker into an element.
+    3. the inline <script> below - runs once the div exists (it is placed after it)
        and calls mountTracker with that div, found by its id.
 
   The body class "trackerpage" lets style.css apply rules only to this page
@@ -30,6 +31,8 @@
 <!-- Empty container: tracker.js fills it. The id is how mountTracker is told where to draw. -->
 <div id="tracker" class="trackerlist"></div>
 <script src="/static/errors.js"></script>
+<script src="/static/ui.js"></script>
+<script src="/static/vitals.js"></script>
 <script src="/static/tracker.js"></script>
 <!-- Inline script: "find the element with id tracker and mount the tracker widget into it". -->
 <script>mountTracker(document.getElementById("tracker"));</script>

@@ -58,6 +58,7 @@ import xml.etree.ElementTree as ET
 from flask import Blueprint, Response, abort, jsonify, request, send_file
 
 import auth
+import charcalc
 import fcformat
 
 try:  # hardened parser if available (entity-expansion attacks), stdlib otherwise
@@ -88,6 +89,16 @@ ITEM_TYPES = {"1": "Light Armor", "2": "Medium Armor", "3": "Heavy Armor", "4": 
               "5": "Melee Weapon", "6": "Ranged Weapon", "7": "Ammunition", "8": "Rod",
               "9": "Staff", "10": "Wand", "11": "Ring", "12": "Potion", "13": "Scroll",
               "14": "Wondrous Item", "15": "Gear / Treasure"}
+# Fight Club's numeric <damageType> on a weapon. Only the three weapon damage types are confirmed from real files (Rapier and Dagger
+# 2, a Maul 1, a Battleaxe 3); an unknown code shows no type rather than a guess.
+DAMAGE_TYPES = {"1": "bludgeoning", "2": "piercing", "3": "slashing"}
+# <weaponProperty> is a sum of bits (a Dagger is 138 = Finesse + Light + Thrown; a Maul 260 = Heavy + Two-Handed; a Battleaxe 512 =
+# Versatile). Confirmed from real files: Ammunition, Finesse, Heavy, Light, Thrown, Two-Handed, Versatile. Loading, Reach and Special
+# are the remaining low bits in the compendium's order, which no file here uses yet.
+WEAPON_PROPS = [(1, "Ammunition"), (2, "Finesse"), (4, "Heavy"), (8, "Light"), (16, "Loading"), (32, "Reach"), (64, "Special"),
+                (128, "Thrown"), (256, "Two-Handed"), (512, "Versatile")]
+# A class's <hd> is a code, not the die size: 1 = d6, 2 = d8, 3 = d10, 4 = d12 (a Cleric is 2, a Fighter or Paladin 3, a Barbarian 4 in real files).
+HIT_DIE = {1: 6, 2: 8, 3: 10, 4: 12}
 # Fight Club's numeric <school> code on a <spell> -> school of magic.
 SCHOOLS = {"1": "Abjuration", "2": "Conjuration", "3": "Divination", "4": "Enchantment",
            "5": "Evocation", "6": "Illusion", "7": "Necromancy", "8": "Transmutation"}
@@ -225,21 +236,37 @@ def _item(it):
     """Convert one Fight Club <item> element into a flat dict for the page.
 
     Field meanings: type = numeric code (see ITEM_TYPES); magic = "1" means magical;
-    ac only shown if > 0; damage1H/damage2H = one-/two-handed damage dice.
+    ac only shown if > 0; damage1H/damage2H = one-/two-handed damage dice; damageType and the
+    weapon properties are decoded from their numeric codes (DAMAGE_TYPES, WEAPON_PROPS).
+    `bonus` = the item's own numbers from its <mod> children: atk and dmg (a +2 weapon) and ac
+    (a +2 armor); a name that starts "+1 " counts as +1/+1 when the item has no valued mod.
     `equipped` is derived: only armor/shield/weapon/ring/wondrous types can be worn, and
     Fight Club's <slot> is "" or "1" when the item is not in an equipment slot (so any
     other slot value means it is equipped).
     """
+    name = _t(it, "name")
+    bonus = {"atk": 0, "dmg": 0, "ac": 0}
+    for m in it.findall("mod"):
+        val = _t(m, "value")
+        key = {"1": "atk", "2": "dmg", "10": "ac"}.get(_t(m, "type"))
+        if val and key:
+            bonus[key] += int(_num(val))
+    pre = re.match(r"^\+(\d)\s", name)
+    if pre and not bonus["atk"] and not bonus["dmg"]:
+        bonus["atk"] = bonus["dmg"] = int(pre.group(1))
+    code = int(_num(_t(it, "weaponProperty")))
     return {
-        "name": _t(it, "name"), "detail": _t(it, "detail"), "text": _t(it, "text"),
+        "name": name, "detail": _t(it, "detail"), "text": _t(it, "text"),
         "type": ITEM_TYPES.get(_t(it, "type"), ""), "magic": _t(it, "magic") == "1",
         # `int(...) or 1`: a missing/zero quantity is shown as 1.
         "quantity": int(_num(_t(it, "quantity"), 1)) or 1, "weight": _num(_t(it, "weight")),
         "value": _num(_t(it, "value")),
         "ac": _t(it, "ac") if _num(_t(it, "ac"), -1) > 0 else "",
         "damage": _t(it, "damage1H"), "damage2h": _t(it, "damage2H"),
-        "damageType": _t(it, "damageType"),
-        "property": _t(it, "weaponProperty"), "range": _t(it, "weaponRange"),
+        "damageType": DAMAGE_TYPES.get(_t(it, "damageType"), ""),
+        "property": ", ".join(label for bit, label in WEAPON_PROPS if code & bit), "propCode": code,
+        "range": _t(it, "weaponRange"), "longRange": _t(it, "weaponLongRange"),
+        "bonus": bonus,
         "equipped": _t(it, "type") in ("1", "2", "3", "4", "5", "6", "11", "14")
         and _t(it, "slot") not in ("", "1"),
     }
@@ -317,6 +344,12 @@ def summary(cid, root):
         "hasImage": bool(_image_b64(cid, root)),
         "trackers": _trackers(ex),
         "conditions": ex.get("conditions", ""),
+        # hit dice per class: the die size, the class level (= the most there can be) and how many are left (all of them when the
+        # file does not say)
+        "hitDice": [{"name": _t(c, "name"), "hd": HIT_DIE.get(int(_num(_t(c, "hd"))), 0), "level": int(_num(_t(c, "level"), 1)),
+                     "left": int(_num(_t(c, "hdCurrent"), _num(_t(c, "level"), 1)))} for c in cls],
+        # companions, familiars and summons the player keeps track of (sidecar only; Fight Club has no field for them)
+        "creatures": ex.get("creatures", []),
         # death saving throws, kept in the sidecar file (Fight Club has no field for them)
         "deaths": ex.get("deaths", {"s": 0, "f": 0}),
         # <abilities> is "STR,DEX,CON,INT,WIS,CHA" scores; [:6] keeps just those six.
@@ -345,14 +378,10 @@ def detail(cid, root):
     d["background"] = {"name": _t(bg, "name"), "feats": _feats(bg)} if bg is not None else {}
     d["classes"], d["spells"] = [], []  # both set to a fresh empty list
     for c in root.findall("class"):
+        # The class's own <feat> list is exactly what Fight Club shows for this character (the features it has earned, with the one
+        # chosen subclass). Each <autolevel> block is the class's whole level table (EVERY subclass option and every level up to 20),
+        # so merging those in listed all the druid circles and features far above the character's level. Not used here.
         feats = _feats(c)
-        seen = {f["name"] for f in feats}  # set of feature names already listed
-        # <autolevel> blocks hold the features gained at each level; add any we lack.
-        for al in c.findall("autolevel"):
-            for f in _feats(al):
-                if f["name"] not in seen:
-                    seen.add(f["name"])
-                    feats.append(f)
         d["classes"].append({
             "name": _t(c, "name"), "level": _t(c, "level"),
             # hd = hit die size (e.g. 8), hdCurrent = hit dice still unspent.
@@ -372,6 +401,10 @@ def detail(cid, root):
                 "prepared": _t(s, "prepared") == "1",
                 "class": _t(s, "sclass") or _t(c, "name"),
             })
+    # Fight Club companions (<monster>: a familiar, pet or summon the player added in the app). They have no hit points in the file, only a
+    # kind, a name, six ability scores and a hit dice expression such as "1d8".
+    d["companions"] = [{"name": _t(m, "name"), "kind": _t(m, "type") or _t(m, "label"), "hd": _t(m, "hd"), "abilities": _ints(_t(m, "abilities"))[:6]}
+                       for m in root.findall("monster")]
     d["feats"] = _feats(root)
     d["notes"] = [{"name": _t(n, "name"), "text": _t(n, "text")} for n in root.findall("note")]
     d["items"] = [_item(i) for i in root.findall("item")]
@@ -387,6 +420,10 @@ def detail(cid, root):
         + sum(c["weight"] + sum(i["weight"] * i["quantity"] for i in c["items"])
               for c in d["containers"]),
         1)
+    # Proficiency codes (see charcalc): the classes' and the background's <proficiency> numbers, saves below 100 and skills from 100.
+    codes = [int(_num(p.text)) for e in [*root.findall("class"), *( [bg] if bg is not None else [] )] for p in e.findall("proficiency") if p.text]
+    d["profs"] = {"saves": sorted({c for c in codes if c < 6}), "skills": sorted({c for c in codes if c >= 100})}
+    d.update(charcalc.derive(d))
     return d
 
 
@@ -589,9 +626,11 @@ def update_member(cid):
       inspiration  int   0 or more
       money        any   stored as text
       hdCurrent    int   hit dice left on the FIRST class; 0 or more
+      hitDice      [int] hit dice left, one number per class in order; each clamped to 0..that class's level
       trackers     [{id, label, cur, max}]  the character's own counters (replaces the whole list) -> sidecar only
       deaths       {s, f}              death saves, each 0..3      -> sidecar file only
       conditions   str   free text, max 200 chars                -> sidecar file only
+      creatures    [{id, name, hp, hpMax, ac, notes}]  companions / summons (replaces the whole list, 20 at most) -> sidecar only
     Response: the updated summary() JSON. 404 if unknown id. A non-numeric value makes
     int() raise, which Flask turns into an HTTP 500 error.
     Side effects: rewrites data/party/<cid>.xml (always) and data/party_extra.json (only if
@@ -633,8 +672,14 @@ def update_member(cid):
             if e is None:
                 e = ET.SubElement(c, "hdCurrent")
             e.text = str(max(0, int(body["hdCurrent"])))
+        if "hitDice" in body:
+            for c, v in zip(root.findall("class"), body["hitDice"]):
+                e = c.find("hdCurrent")
+                if e is None:
+                    e = ET.SubElement(c, "hdCurrent")
+                e.text = str(max(0, min(int(v), int(_num(_t(c, "level"), 1)))))
         _write(cid, root)
-        if "trackers" in body or "conditions" in body or "deaths" in body:
+        if "trackers" in body or "conditions" in body or "deaths" in body or "creatures" in body:
             ex = _extra()
             m = ex.setdefault(cid, {})  # this character's sidecar record (created if absent)
             if "trackers" in body:
@@ -650,6 +695,13 @@ def update_member(cid):
                 m.pop("resource", None)
             if "conditions" in body:
                 m["conditions"] = str(body["conditions"])[:200]
+            if "creatures" in body:
+                m["creatures"] = []
+                for c in list(body["creatures"])[:20]:
+                    mx = max(0, int(c.get("hpMax", 0)))
+                    m["creatures"].append({"id": str(c.get("id") or uuid.uuid4().hex[:8])[:12], "name": str(c.get("name", "Creature"))[:40] or "Creature",
+                                           "hpMax": mx, "hp": max(0, min(int(c.get("hp", 0)), mx or 10 ** 4)),
+                                           "ac": max(0, int(c.get("ac", 0))), "notes": str(c.get("notes", ""))[:200]})
             if "deaths" in body:
                 # Death saving throws: successes and failures, each clamped to the legal range 0..3.
                 dth = body["deaths"]

@@ -13,6 +13,7 @@
 //   GET/POST /api/encounters, PUT/DELETE /api/encounters/<id>   the campaign's encounters
 //   POST /api/encounters/<id>/load {mode, again}           add it to the initiative order -> {initiative, added}
 //   POST /api/encounters/<id>/place {section}              put it on the campaign tracker -> {section, item}
+//   GET/POST/DELETE /api/encounters/<id>/maps[/<map id>]   the encounter's maps (pictures, PDFs): see maps.js
 //   GET  /api/party?active=1                               the party (levels, for the difficulty rating)
 //   GET  /api/state                                        only to list the campaign tracker's sections
 // A page can be opened on one encounter with  /_/encounters?id=<id>  (the campaign cards' edit button does this).
@@ -83,6 +84,8 @@ const config = {
   row: (l, ctx) => [ctx.num(l, "count"), l.name, crText(l.cr), ctx.num(l, "ac"), ctx.num(l, "hp"), ctx.num(l, "bonus")],
   preview: l => (l.slug ? preview(l.slug) : null),
   finder: monsterPanel,
+  // Maps (pictures and PDFs) attached to the encounter: upload, view, download, delete (maps.js, shared with the campaign tracker).
+  attach: rec => Maps.panel(rec),
   addEntry: (rec, m) => {
     const line = rec.monsters.find(l => l.slug === m.slug);
     if (line) line.count = Math.min(50, line.count + 1);

@@ -3,7 +3,7 @@
     script keeps the highlight in step as you switch tabs. `role` is "dm" (every page) or "player" (Home and
     Characters only). The brand is always "DND Tracker" and always links to the Home banner. -#}
 <a class="brand" href="/" data-page="home"><img class="brandicon" src="/static/icon.jpeg" alt=""> DND Tracker</a>
-<nav class="appnav-links">
+<nav class="appnav-links" id="appLinks">
   <a href="/" data-page="home" class="{{ 'on' if active == 'home' }}">Home</a>
   {% if role == 'dm' %}
   <a href="/sound" data-page="sound" class="{{ 'on' if active == 'sound' }}">Soundboard</a>

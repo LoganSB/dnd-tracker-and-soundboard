@@ -15,7 +15,7 @@
 // WHICH PAGES LOAD IT
 //   - The floating panel on the soundboard page.
 //   - The stand-alone /tracker window (opened from the /party page).
-//   Both pages include this file with a <script> tag and then call
+//   Both pages include this file (after ui.js and vitals.js) with a <script> tag and then call
 //   window.mountTracker(someElement) to build the widget inside that element.
 //
 // HOW IT RUNS (the 30-second mental model for a C programmer)
@@ -168,48 +168,13 @@
     // (`let a = x, b = y;` declares two variables in one statement.)
     let members = [], lastJson = "";
     // two tabs: the quick party tracker and the initiative order
-    // root = container for the Party tab; initRoot = container for Initiative.
+    // root = container for the Party tab; initRoot = container for Initiative. The tab buttons are the shared UI.tabs (ui.js), the same
+    // component the character sheet's sub-menus use; it remembers the last tab in this browser. Without the Initiative tab there is
+    // nothing to switch between, so only the party list is added.
     const root = h("div"), initRoot = h("div", { className: "init" });
-    const tabs = h("div", { className: "trtabs" });
-
-    // showTab(name) - shows one tab ("party" or "init") and hides the other.
-    //   Side effects: toggles the `hidden` flag on both containers, highlights
-    //   the active tab button (CSS class "on"), and remembers the choice in
-    //   localStorage so a page reload reopens the same tab.
-    const showTab = name => {
-      root.hidden = name !== "party"; initRoot.hidden = name !== "init";
-      // `[...tabs.children]` spreads the live child collection into a real
-      // array so forEach works. classList.toggle(cls, bool) adds or removes the
-      // class according to the boolean. dataset.tab reads the HTML attribute
-      // data-tab that we set below.
-      [...tabs.children].forEach(b => b.classList.toggle("on", b.dataset.tab === name));
-      // localStorage is a small per-site key/value store kept by the browser.
-      // It can throw (private mode, storage disabled, quota full), and the
-      // tracker must still work then, so failures are swallowed. `(_)` is the
-      // unused exception variable.
-      try { localStorage.setItem("trTab", name); } catch (_) {}
-    };
-
-    // Build one button per tab. The array of [key, label] pairs is walked with
-    // forEach; `([k, label]) =>` is "destructuring": it unpacks each 2-element
-    // array into two named variables.
-    [["party", "Party"], ["init", "Initiative"]].forEach(([k, label]) => {
-      // onclick registers a callback (event handler) run when clicked.
-      const b = h("button", { textContent: label, onclick: () => showTab(k) });
-      // data-tab attribute lets showTab() find which button is which.
-      b.dataset.tab = k; tabs.append(b);
-    });
-    // Attach everything to the page; this is when it first becomes visible.
-    // Without the Initiative tab there is nothing to switch between, so only the party list is added.
-    if (opts.initiative === false) {
-      host.append(root);
-    } else {
-      host.append(tabs, root, initRoot);
-      // Restore the last-used tab; if storage fails or is empty (`||` treats ""
-      // and null as false) default to "party".
-      let saved = "party"; try { saved = localStorage.getItem("trTab") || "party"; } catch (_) {}
-      showTab(saved);
-    }
+    if (opts.initiative === false) host.append(root);
+    else host.append(UI.tabs({ key: "tracker", first: "party", tabs: [
+      { id: "party", label: "Party", render: () => root }, { id: "init", label: "Initiative", render: () => initRoot }] }).el);
 
     // patch(m, body) - sends one edit for character `m` to the server.
     //   m    : the member object from `members` (modified in place).
@@ -234,31 +199,9 @@
       } catch (e) { alert(e.message); }
     }
 
-    // hpBar(m) - builds the HP row for character `m`: label, -5/-1 buttons, a
-    // number box, "/ max", +1/+5 buttons, and a coloured bar. Returns the row
-    // element; pure construction apart from the handlers it wires up (which
-    // call patch() later).
-    function hpBar(m) {
-      // Percentage full, clamped to 0..100; 0 if max HP is 0/unknown (avoids
-      // divide-by-zero). `cond ? a : b` is the ternary operator.
-      const pct = m.hpMax ? Math.max(0, Math.min(100, (m.hp / m.hpMax) * 100)) : 0;
-      // Green above 50%, amber above 25%, red below (nested ternary).
-      const color = pct > 50 ? "#3ecf8e" : pct > 25 ? "#f0b429" : "#ff5d6c";
-      // Template literal: a backtick string where ${...} is replaced by the
-      // value of the expression. Here it builds an inline CSS style.
-      const bar = h("div", { className: "hpbar" },
-        h("div", { className: "hpfill", style: `width:${pct}%;background:${color}` }));
-      const cur = h("input", { type: "number", className: "hpnum", value: m.hp, min: 0, title: "Current HP (Enter to set)" });
-      // onchange fires when the user finishes editing (Enter or leaving the
-      // box). Unary `+` converts the text value to a number.
-      cur.onchange = () => patch(m, { hpCurrent: +cur.value });
-      // btn(label, d): a button that adds delta d (negative to subtract) to the
-      // current HP. Sends an absolute value; the server clamps it.
-      const btn = (label, d) => h("button", { textContent: label, onclick: () => patch(m, { hpCurrent: m.hp + d }) });
-      return h("div", { className: "hprow" },
-        h("span", { className: "lbl", textContent: "HP" }),
-        btn("−5", -5), btn("−1", -1), cur, h("span", { textContent: "/ " + m.hpMax }), btn("+1", 1), btn("+5", 5), bar);
-    }
+    // hpBar(m) - the HP row for character `m`: the shared Vitals.hp (vitals.js, also used on the character sheet), with every change
+    // sent through patch().
+    const hpBar = m => Vitals.hp(m, body => patch(m, body));
 
     // slotRows(m) - builds the spell-slot rows for `m`: one row per spell level
     // that has slots, each with one clickable "pip" per slot (filled = still
@@ -437,9 +380,8 @@
         return;
       }
       shown.forEach(m => {
-        // Conditions text box; saved to the server when edited.
-        const cond = h("input", { className: "cond", placeholder: "conditions (poisoned, prone…)", value: m.conditions || "" });
-        cond.onchange = () => patch(m, { conditions: cond.value });
+        // Conditions: chips plus an Add menu (the shared Vitals.conditions); saved to the server when changed.
+        const cond = Vitals.conditions(m, body => patch(m, body));
         // One <article> card per character. `...slotRows(m)` is the spread
         // operator: it expands the returned array into separate arguments.
         root.append(h("article", { className: "pc" },

@@ -17,17 +17,24 @@ import json
 import os
 import re
 import secrets
+import shutil
 import threading
 import time
 from pathlib import Path
 
 import requests
-from flask import Blueprint, abort, jsonify, make_response, render_template, request
+from flask import Blueprint, abort, jsonify, make_response, render_template, request, send_file
 
 import auth
 import party
+import uploads
 
 ROOT = Path(os.environ.get("DND_DATA_ROOT") or Path(__file__).resolve().parent)
+# Maps (pictures and PDFs) attached to encounters live here: data/encounter_maps/<encounter id>/<map id><extension>.
+MAP_DIR = ROOT / "data" / "encounter_maps"
+MAP_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".pdf": "application/pdf"}
+MAP_MAX = 25 * 1024 * 1024   # bytes per map
+MAPS_PER_ENCOUNTER = 20
 
 bp = Blueprint("encounters", __name__)
 API = "https://api.open5e.com/v1"
@@ -374,8 +381,80 @@ def update_encounter(eid):
 
 @bp.delete("/api/encounters/<eid>")
 def delete_encounter(eid):
-    """DELETE /api/encounters/<id>. Campaign cards that pointed at it stay and show "deleted encounter"."""
-    return _delete("encounters", eid)
+    """DELETE /api/encounters/<id>. Campaign cards that pointed at it stay and show "deleted encounter". Its maps go with it."""
+    out = _delete("encounters", eid)
+    if re.fullmatch(r"[0-9a-f]+", eid):   # only ever a folder this module made
+        shutil.rmtree(MAP_DIR / eid, ignore_errors=True)
+    return out
+
+
+# ---- maps: pictures or PDFs attached to an encounter (the battle map, a handout). A record's "maps" list holds
+# {"id", "name" (the file's own name), "ext", "size"}; the file is MAP_DIR/<encounter id>/<map id><ext>. The Builder's PUT never touches
+# the list, so editing the monsters cannot lose a map. Uploads go through uploads.py like the sound library's.
+def _map_file(e, m):
+    return MAP_DIR / e["id"] / f"{m['id']}{m['ext']}"
+
+
+def _find_map(e, mid):
+    m = next((x for x in e.get("maps", []) if x["id"] == mid), None)
+    if not m:
+        abort(404)
+    return m
+
+
+@bp.post("/api/encounters/<eid>/maps")
+def upload_map(eid):
+    """POST /api/encounters/<id>/maps : multipart form, one field "file" (png, jpg, gif, webp or pdf, 25 MB at most, 20 maps per
+    encounter) -> the new map record {"id","name","ext","size"}."""
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return _fail("No file was chosen")
+    name = uploads.clean_name(f.filename)[:100]
+    ext = Path(name).suffix.lower()
+    if ext not in MAP_TYPES:
+        return _fail(f"Unsupported file type '{ext or 'none'}'. Use one of: {', '.join(MAP_TYPES)}")
+    with _ctx["lock"]:
+        e = _find("encounters", eid)
+        if len(e.get("maps", [])) >= MAPS_PER_ENCOUNTER:
+            return _fail(f"An encounter can hold {MAPS_PER_ENCOUNTER} maps; delete one first")
+        m = {"id": secrets.token_hex(4), "name": name or f"map{ext}", "ext": ext}
+        try:
+            m["size"] = uploads.save_atomic(f, _map_file(e, m), MAP_MAX)
+        except uploads.TooBig:
+            return _fail(f"That file is too big (limit {MAP_MAX // (1024 * 1024)} MB)", 413)
+        except OSError as err:
+            return _fail(f"Could not save the file: {err.strerror or err}", 500)
+        e.setdefault("maps", []).append(m)
+        _save_lib("encounters", _lib("encounters"))
+        _ctx["commit"](True)
+        return jsonify(m)
+
+
+@bp.get("/api/encounters/<eid>/maps/<mid>")
+def get_map(eid, mid):
+    """GET /api/encounters/<id>/maps/<map id> : the file, shown in the browser; add ?download=1 to save it under its own name instead."""
+    e = _find("encounters", eid)
+    m = _find_map(e, mid)
+    path = _map_file(e, m)
+    if not path.exists():
+        abort(404)
+    return send_file(path, mimetype=MAP_TYPES[m["ext"]], as_attachment=bool(request.args.get("download")), download_name=m["name"], max_age=0)
+
+
+@bp.delete("/api/encounters/<eid>/maps/<mid>")
+def delete_map(eid, mid):
+    """DELETE /api/encounters/<id>/maps/<map id> : remove the map and its file."""
+    with _ctx["lock"]:
+        e = _find("encounters", eid)
+        m = _find_map(e, mid)
+        e["maps"] = [x for x in e["maps"] if x is not m]
+        _save_lib("encounters", _lib("encounters"))
+        try:
+            _map_file(e, m).unlink()
+        except OSError:
+            pass
+        _ctx["commit"](True)
+        return jsonify(ok=True)
 
 
 def _add_card(st, want, matches, make):

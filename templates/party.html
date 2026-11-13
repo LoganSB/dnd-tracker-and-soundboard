@@ -12,9 +12,11 @@
   expansion download). The server refuses those requests from a player anyway; see auth.py.
 
   SCRIPTS (in order):
-    1. /static/tracker.js - shared tracker code. party.js reuses it (it is
-       loaded first because party.js depends on what it defines).
-    2. /static/party.js   - builds this page's UI into #partyBar and #view.
+    1. /static/ui.js, finder.js, vitals.js - shared: the tables (search, filters, row-count buttons), sub-menu tabs and the
+       HP / hit dice / conditions controls.
+    2. /static/tracker.js - the live tracker. party.js reuses it.
+    3. /static/sheet.js   - the panels of a character's sheet (Skills and Stats, Inventory, Spells, Feats...).
+    4. /static/party.js   - builds this page's UI into #partyBar and #view.
 
   The body class "partypage" lets style.css apply rules only to this page.
 -->
@@ -36,7 +38,11 @@
 <div id="view"></div>
 <script src="/static/errors.js"></script>
 <script src="/static/importer.js"></script>
+<script src="/static/ui.js"></script>
+<script src="/static/finder.js"></script>
+<script src="/static/vitals.js"></script>
 <script src="/static/tracker.js"></script>
+<script src="/static/sheet.js"></script>
 <script src="/static/party.js"></script>
 </body>
 </html>

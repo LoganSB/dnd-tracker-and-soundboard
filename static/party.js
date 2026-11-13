@@ -46,14 +46,13 @@
 //   GET    /api/party/export.zip    download link (plain <a href>, no JS)
 //   GET    /api/party/<id>/export.zip  download one character (the DM: any; a player: their own)
 //   GET    /download/collection.zip download link (plain <a href>, no JS)
-//   (Editing HP, slots, etc. is done by tracker.js, not here: this page is
-//   read-only apart from import and remove.)
+//   PATCH  /api/party/<id>          HP, hit dice, conditions, inspiration, creatures (the Skills and Stats page; tracker.js sends the same)
 //
 // HOW THE PIECES FIT
 //   boot  -> renderList()   builds the toolbar, import form and character grid
-//         -> renderDetail() fetches one character and builds the sheet from
-//                           section() cards, using fold() for expandable rows
-//                           and itemRow() for inventory entries.
+//         -> renderDetail() fetches one character and builds the sheet: a header and five sub-menu pages (UI.tabs from ui.js).
+//                           What is inside the pages comes from sheet.js (Skills and Stats, Inventory, Spells, Feats Features and
+//                           Notes) and tracker.js (the live Tracker page). Every list is UI.dataTable, like every other list in the app.
 //   Both are async functions (they wait on the network), and any error is
 //   caught at the bottom and shown as text on the page.
 //
@@ -93,35 +92,6 @@ const view = document.getElementById("view"), bar = document.getElementById("par
 // reply. `async`/`await` make this read like blocking code while the browser
 // stays responsive (a future on a single-threaded event loop).
 const get = async url => { const r = await fetch(url); if (!r.ok) throw new Error(r.statusText); return r.json(); };
-
-// sgn(n) - number with explicit sign, e.g. 3 -> "+3", -1 -> "-1". Used for
-// ability modifiers.
-const sgn = n => (n >= 0 ? "+" : "") + n;
-
-// gp(v) - formats a gold value: "—" if zero/missing, otherwise the number plus
-// " gp". Values of 1000+ use toLocaleString() for thousands separators
-// ("1,250"); smaller values print as-is. `cond ? a : b` is the ternary operator.
-const gp = v => (v ? (v >= 1000 ? v.toLocaleString() : v) + " gp" : "—");
-
-// collapsible block with a (possibly long) text body
-// fold(title, meta, body, open) - builds a click-to-expand row using the
-// browser's built-in <details>/<summary> element (no JS needed to toggle it).
-//   title : bold heading text.
-//   meta  : smaller grey text after the title (may be empty/undefined).
-//   body  : optional long text shown when expanded; if empty the row is just a
-//           heading.
-//   open  : start expanded? (default parameter `open = false`).
-// Returns the <details> element.
-const fold = (title, meta, body, open = false) => {
-  // `{ className: "fold", open }` is shorthand for `{ className: "fold", open: open }`.
-  const d = h("details", { className: "fold", open });
-  // `" " + (meta || "")` guards against undefined meta printing "undefined".
-  d.append(h("summary", {}, h("b", { textContent: title }), h("span", { className: "muted", textContent: " " + (meta || "") })));
-  // The body is set with textContent, so newlines are kept only if the CSS
-  // allows (presumably white-space: pre-wrap) and nothing is parsed as HTML.
-  if (body) d.append(h("div", { className: "body", textContent: body }));
-  return d;
-};
 
 // section(title, ...kids) - builds a titled "card": <section><h2>title</h2>
 // ...kids</section>. `...kids` collects the extra arguments into an array, and
@@ -209,44 +179,10 @@ async function renderList() {
 }
 
 // ---------------------------------------------------------- detail page
-// itemRow(i) - builds one expandable inventory row for item `i`. The heading is
-// "3× Arrow" style (quantity, name, a star if magical); the grey summary line is
-// a "·"-separated list of whichever stats exist (type, AC, damage, weight,
-// value ...); the expanded body is the item's description text. Equipped items
-// get an extra CSS class ("equipped") so they can be highlighted. Returns the
-// element; no server calls.
-function itemRow(i) {
-  // Build a list of optional pieces, then keep only the real ones. The trick:
-  // `a && b` evaluates to `a` when `a` is falsy (0, "", undefined) and to `b`
-  // otherwise, so missing fields become falsy values that filter(Boolean)
-  // discards.
-  const bits = [
-    i.type,
-    i.detail,
-    i.ac && "AC " + i.ac,
-    // Damage text, e.g. "1d8 (1d10 two-handed) slashing". The template literal
-    // nests another conditional; trim() removes a trailing space if there is no
-    // damage type.
-    i.damage && `${i.damage}${i.damage2h ? " (" + i.damage2h + " two-handed)" : ""} ${i.damageType}`.trim(),
-    i.property,
-    i.range && "range " + i.range,
-    // Total weight of the stack (weight each times quantity).
-    i.weight && i.weight * i.quantity + " lb",
-    i.value && gp(i.value)
-  ].filter(Boolean);
-  const title = (i.quantity > 1 ? `${i.quantity}× ` : "") + i.name + (i.magic ? " ✦" : "");
-  const d = fold(title, bits.join(" · "), i.text);
-  // classList.add attaches a CSS class without disturbing the others.
-  if (i.equipped) d.classList.add("equipped");
-  return d;
-}
-
-// renderDetail(id) - builds the full character sheet for character `id`
-// (taken from the URL). Async: waits for GET /api/party/<id>, then builds every
-// card in order: header, Overview (abilities, HP, XP, slots, hit dice),
-// Inventory, containers, Spells (grouped by level), Features & feats, Notes.
-// Side effects: sets the browser tab title and appends to `view`. Read-only:
-// it never changes data on the server.
+// renderDetail(id) - builds the character sheet for character `id` (taken from the URL): the header, then FIVE sub-menu pages
+// (UI.tabs, ui.js): Tracker | Skills and Stats | Inventory | Spells | Feats, Features and Notes. What is inside each page is built
+// by sheet.js (Sheet.*); the live tracker is tracker.js. This function only loads the character and connects the pieces.
+// Async: waits for GET /api/party/<id>. Side effects: sets the browser tab title and appends to `view`.
 async function renderDetail(id) {
   // The toolbar of the detail page: a way back to the list (this page lives inside a frame, so the link
   // loads the list into the same frame).
@@ -255,12 +191,9 @@ async function renderDetail(id) {
   const m = await get("/api/party/" + id);
   document.title = m.name;
   const r = m.raceInfo;
-  // "Wizard 5 / Fighter 2". `c.level || ""` covers a missing level; trim()
-  // removes the trailing space in that case. map turns each class object into a
-  // string.
+  // "Wizard 5 / Fighter 2". `c.level || ""` covers a missing level; trim() removes the trailing space in that case.
   const classLine = m.classes.map(c => `${c.name} ${c.level || ""}`.trim()).join(" / ");
-  // Header: portrait (if any), name, "race · classes · background", and a grey
-  // line of physical details (each piece appears only if present).
+  // Header: portrait (if any), name, "race · classes · background", and a grey line of physical details.
   view.append(h("div", { className: "charhead" },
     m.hasImage ? h("img", { src: `/api/party/${id}/portrait`, alt: "" }) : "",
     h("div", {},
@@ -268,89 +201,33 @@ async function renderDetail(id) {
       h("div", { textContent: [r.name, classLine, m.background.name].filter(Boolean).join(" · ") }),
       h("div", { className: "muted", textContent: [r.speed && r.speed + " ft", r.age && "age " + r.age, r.height, r.weight && r.weight + " lb", r.eyes && r.eyes + " eyes", r.skin, r.hair].filter(Boolean).join(" · ") }))));
 
-  // Live tracker card for just this character (HP, death saves, spell slots, mana, conditions),
-  // using the same widget as the popup. `only` limits it to this character; `initiative: false`
-  // leaves out the Initiative tab, which is about the whole party rather than one character.
-  const live = h("div", { className: "trackerlist" });
-  mountTracker(live, { only: id, initiative: false });
-  view.append(section("Live tracker", live));
-
-  // Ability score boxes: for each ability, its name, signed modifier (bold) and
-  // raw score.
-  const stats = h("div", { className: "stats" });
-  m.abilities.forEach(a => stats.append(h("div", { className: "stat" },
-    h("div", { className: "muted", textContent: a.name }),
-    h("b", { textContent: sgn(a.mod) }), h("div", { textContent: a.score }))));
-  // Spell slot summary "L1: 3/4   L2: 2/3": levels with no slots become null
-  // and are filtered out. `??` uses the max when no "current" value is stored
-  // (but keeps a real 0).
-  const slots = m.slots.map((max, i) => max ? `L${i + 1}: ${m.slotsCurrent[i] ?? max}/${max}` : null).filter(Boolean).join("   ");
-  view.append(section("Overview", stats,
-    // A row of small facts. Entries that are not applicable are "" or a falsy
-    // value from &&; empty ones print nothing visible.
-    h("div", { className: "kv" },
-      h("span", { textContent: `HP ${m.hp}/${m.hpMax}` }), h("span", { textContent: `XP ${m.xp || 0}` }),
-      h("span", { textContent: `Inspiration ${m.inspiration}` }), h("span", { textContent: `Money ${m.money || 0} gp` }),
-      h("span", { textContent: `Carried ${m.totalWeight} lb` }), m.unarmed && h("span", { textContent: "Unarmed " + m.unarmed }),
-      // The character's own trackers (Mana, Ki, Rage ...): only the ones this character actually has.
-      ...m.trackers.map(t => h("span", { textContent: `${t.label} ${t.cur}/${t.max}` }))),
-    slots && h("div", { textContent: "Spell slots — " + slots }),
-    // One grey line per class: hit die, hit dice remaining, and any armor /
-    // weapon / tool proficiencies. `?` is a placeholder for unknown values.
-    ...m.classes.map(c => h("div", { className: "muted", textContent: `${c.name}: hit die d${c.hd || "?"} (${c.hdCurrent ?? "?"} left)${c.armor ? " · armor: " + c.armor : ""}${c.weapons ? " · weapons: " + c.weapons : ""}${c.tools ? " · tools: " + c.tools : ""}` }))));
-
-  // inventory: equipped first
-  // `[...m.items]` makes a shallow copy (spread) so sorting does not reorder the
-  // original array. The comparator subtracts booleans (true = 1, false = 0), so
-  // equipped items (true) sort before unequipped ones.
-  const inv = [...m.items].sort((a, b) => b.equipped - a.equipped);
-  // Each item becomes a row via itemRow (passed as a callback to map).
-  view.append(section(`Inventory (${m.items.length})`, ...inv.map(itemRow)));
-  // Bags/containers each get their own card with weight, optional value, and
-  // their items.
-  m.containers.forEach(c => view.append(section(`📦 ${c.name} (${c.items.length})`,
-    h("div", { className: "muted", textContent: `${c.weight} lb${c.value ? " · " + gp(c.value) : ""}` }),
-    ...c.items.map(itemRow))));
-
-  if (m.spells.length) {
-    const sec = section(`Spells (${m.spells.length})`);
-    // Group spells by level. byLevel is a plain object used as a dictionary
-    // (hash map): keys are level numbers (as strings), values are arrays.
-    const byLevel = {};
-    // `||=` means "if byLevel[level] is unset, assign a new empty array", and
-    // the expression then yields that array so we can push onto it.
-    m.spells.forEach(s => (byLevel[s.level] ||= []).push(s));
-    // Object.keys gives the level keys as strings. The numeric comparator
-    // (a - b) coerces them to numbers so 10 sorts after 2 (plain sort() would
-    // be alphabetical).
-    Object.keys(byLevel).sort((a, b) => a - b).forEach(l => {
-      // `+l` converts the key string back to a number; level 0 = cantrips.
-      sec.append(h("h3", { textContent: +l === 0 ? "Cantrips" : "Level " + l }));
-      // Within a level: prepared spells first, then alphabetical by name
-      // (localeCompare compares strings in a language-aware way).
-      byLevel[l].sort((a, b) => b.prepared - a.prepared || a.name.localeCompare(b.name)).forEach(s => {
-        const meta = [s.prepared ? "prepared" : "", s.school, s.time, s.range, s.components, s.duration].filter(Boolean).join(" · ");
-        // Body = optional "Materials:" line, a blank line, then the spell text.
-        const d = fold(s.name, meta, (s.materials ? `Materials: ${s.materials}\n\n` : "") + s.text);
-        if (s.prepared) d.classList.add("equipped");
-        sec.append(d);
-      });
-    });
-    view.append(sec);
-  }
-
-  // Collect every feature/feat as a [feature, source label] pair so they can be
-  // shown in one list tagged with where they came from.
-  const feats = [];
-  m.raceFeats.forEach(f => feats.push([f, "Race"]));
-  // `?.` optional chaining: skip the loop quietly if the background has no
-  // `feats` list instead of crashing.
-  m.background.feats?.forEach(f => feats.push([f, "Background"]));
-  m.classes.forEach(c => c.feats.forEach(f => feats.push([f, c.name])));
-  m.feats.forEach(f => feats.push([f, "Feat"]));
-  // `([f, src]) =>` destructures each pair back into two variables.
-  if (feats.length) view.append(section(`Features & feats (${feats.length})`, ...feats.map(([f, src]) => fold(f.name, src, f.text))));
-  if (m.notes.length) view.append(section("Notes", ...m.notes.map(n => fold(n.name, "", n.text))));
+  // patch(body): save one change (HP, hit dice, conditions, inspiration, creatures), keep the answer in `m`, redraw the open panel.
+  const patch = async body => {
+    const res = await fetch("/api/party/" + id, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
+    Object.assign(m, await res.json());
+    sheet.show("stats");
+  };
+  // The Skills and Stats page is rebuilt every time it is opened (HP and conditions may have been changed in the Tracker meanwhile), so it
+  // loads the character again first.
+  const statsPanel = () => {
+    const box = h("div");
+    get("/api/party/" + id).then(fresh => { Object.assign(m, fresh); box.replaceChildren(Sheet.stats(m, patch)); })
+      .catch(e => box.append(h("p", { className: "bad", textContent: "Error: " + e.message })));
+    return box;
+  };
+  // The live tracker for just this character (HP, death saves, spell slots, trackers, conditions): `only` limits it to this character,
+  // `initiative: false` leaves out the Initiative tab, which is about the whole party.
+  const trackerPanel = () => { const live = h("div", { className: "trackerlist" }); mountTracker(live, { only: id, initiative: false }); return live; };
+  const n = Sheet.counts(m);
+  const sheet = UI.tabs({ key: "sheet", first: "tracker", tabs: [
+    { id: "tracker", label: "Tracker", render: trackerPanel },
+    { id: "stats", label: "Skills and Stats", render: statsPanel, fresh: true },
+    { id: "inv", label: `Inventory (${n.items})`, render: () => Sheet.inventory(m) },
+    { id: "spells", label: `Spells (${n.spells})`, render: () => Sheet.spells(m) },
+    { id: "feats", label: `Feats, Features and Notes (${n.features})`, render: () => Sheet.features(m) },
+  ] });
+  view.append(sheet.el);
 }
 
 // ------------------------------------------------------------------ boot

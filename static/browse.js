@@ -26,6 +26,7 @@ const Browse = (() => {
         { label: "Encounter", text: r => r.name },
         { label: "Monsters", text: r => r.monsters.map(m => `${m.count}× ${m.name} (CR ${crText(m.cr)})`).join(", ") || "(empty)" },
         { label: "XP", text: r => String(r.monsters.reduce((s, m) => s + (m.xp || 0) * m.count, 0)) },
+        { label: "Maps", text: r => String(r.maps?.length || 0) },
         campaigns,
         { label: "In this campaign", text: onTracker, filter: true },
       ],

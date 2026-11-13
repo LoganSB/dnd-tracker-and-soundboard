@@ -19,6 +19,7 @@
 //   cfg.finder(add) -> a Finder.panel whose "+" calls add(rowFromTheList)               cfg.addEntry(record, row)
 //   cfg.custom      optional { placeholder, make(name) -> entry } for adding an entry by hand
 //   cfg.summary(record, ctx) -> node (redrawn after every edit)           cfg.actions(record, ctx) -> array of buttons
+//   cfg.attach(record, ctx) -> node shown under the buttons (optional; the Encounters tab puts the map uploads here)
 //   cfg.compact     smaller layout for pop-ups                  cfg.lockId   edit only this record, no picker
 //   cfg.initialId   which record to open first                  cfg.onChange(record)  called after each saved edit, create, rename or delete
 // ctx = { num(entry, key, title), save, flush, msg, reload, select, refresh, record }
@@ -89,7 +90,7 @@ const Builder = (() => {
       editor.replaceChildren(...[top, cfg.compact ? null : notes,
         h("table", { className: "loot" }, h("thead", {}, h("tr", {}, [...cfg.head, ""].map(t => h("th", { textContent: t })))),
           h("tbody", {}, rows.length ? rows : h("tr", {}, h("td", { colSpan: cfg.head.length + 1, className: "muted", textContent: "Nothing yet: search below and press +." })))),
-        custom, summary, h("div", { className: "row" }, ...(cfg.actions?.(rec, ctx) || [])), msg].filter(Boolean));
+        custom, summary, h("div", { className: "row" }, ...(cfg.actions?.(rec, ctx) || [])), cfg.attach?.(rec, ctx), msg].filter(Boolean));
       ctx.refresh();
     }
 

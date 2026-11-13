@@ -82,6 +82,7 @@ from werkzeug.security import safe_join
 
 import auth
 import board
+import uploads
 
 # ---- paths and constants. Path objects overload "/" to join path components.
 # __file__ is this script; resolve() makes it absolute; .parent is its folder.
@@ -1082,10 +1083,8 @@ def upload_library():
     f = request.files.get("file")
     if not f or not f.filename:
         return jsonify(error="No file was chosen"), 400
-    # Browsers normally send only the bare file name, but strip any folder part just in case,
-    # then replace characters that could be troublesome in a file name.
-    name = Path(f.filename.replace("\\", "/")).name
-    name = re.sub(r"[^\w .,()\[\]&'+!-]", "_", name).strip(" .")
+    # uploads.clean_name: no folder part, no characters that could be troublesome in a file name (shared with the encounter maps).
+    name = uploads.clean_name(f.filename)
     ext = Path(name).suffix.lower()
     if ext not in AUDIO_EXT:
         return jsonify(error=f"Unsupported file type '{ext or 'none'}'. Use one of: {', '.join(AUDIO_EXT)}"), 400
