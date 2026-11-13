@@ -1,6 +1,6 @@
 "use strict";
 // encounters.js - the Encounters tab: search monsters (Open5e), build an encounter, rate its difficulty for the
-// party, then load it into the initiative tracker or put it on the campaign tracker as a tile.
+// party, then load it into the initiative tracker or put it on the campaign tracker as a card.
 //
 // The editor, the save logic and the search panel are shared with the Loot tab: builder.js (the editor) and finder.js
 // (the search). This file only says what is specific to encounters: the columns, the difficulty rating, and the buttons.
@@ -12,10 +12,10 @@
 //   GET  /api/monsters/index                               the list of all monsters {docs, xp, m:[[slug,name,type,cr,ac,hp,dex,book]]}
 //   GET/POST /api/encounters, PUT/DELETE /api/encounters/<id>   the campaign's encounters
 //   POST /api/encounters/<id>/load {mode, again}           add it to the initiative order -> {initiative, added}
-//   POST /api/encounters/<id>/tile {tile}                  put it on the campaign tracker -> {tile, item}
+//   POST /api/encounters/<id>/place {section}              put it on the campaign tracker -> {section, item}
 //   GET  /api/party?active=1                               the party (levels, for the difficulty rating)
-//   GET  /api/state                                        only to list the campaign tracker's tiles
-// A page can be opened on one encounter with  /_/encounters?id=<id>  (the campaign tiles' edit button does this).
+//   GET  /api/state                                        only to list the campaign tracker's sections
+// A page can be opened on one encounter with  /_/encounters?id=<id>  (the campaign cards' edit button does this).
 
 const { h, api, stored, store } = UI;
 const root = document.getElementById("enc");
@@ -40,7 +40,7 @@ function rate(lines, size, level) {
   return { xp, adjusted, label, thresholds: t, n };
 }
 
-let party = [], tiles = [];
+let party = [], sections = [];
 const sizeLvl = { size: stored("enc.size", null), level: stored("enc.level", null) };   // party size and level, when typed by hand
 
 function partyInfo() {
@@ -107,7 +107,7 @@ const config = {
       h("span", { className: "muted", textContent: info.fromParty ? "(from the campaign's party; change to try other sizes)" : "(no party in this campaign: set it by hand)" })), verdict);
   },
   actions: (e, ctx) => {
-    const tileSel = h("select", {}, tiles.length ? tiles.map(t => h("option", { value: t.id, textContent: t.name })) : h("option", { value: "", textContent: "(first tile)" }));
+    const secSel = h("select", {}, Nodes.options(sections).map(o => h("option", { value: o.value, textContent: o.label })));
     // Loading: the server refuses to add the same encounter twice unless told "again" (see load_encounter in encounters.py).
     const load = async (mode, again) => {
       await ctx.flush();
@@ -130,10 +130,10 @@ const config = {
       h("button", { className: "primary", textContent: "Start new combat", title: "Replace the initiative order with this encounter and the party", onclick: () => load("replace") }),
       h("button", { textContent: "Add to current combat", onclick: () => load("append") }),
       h("button", { textContent: "Load & pop out tracker", onclick: popOut }),
-      tileSel,
+      secSel,
       h("button", { textContent: "Put on campaign tracker", onclick: async () => {
         await ctx.flush();
-        const r = await api(`/api/encounters/${e.id}/tile`, "POST", { tile: tileSel.value });
+        const r = await api(`/api/encounters/${e.id}/place`, "POST", { section: secSel.value });
         // Same hop as the campaign page's 🎯 buttons use for the soundboard: show the tab and highlight the card.
         parent.postMessage({ type: "goto", page: "campaign", node: r.item }, location.origin);
         await ctx.reload();
@@ -149,13 +149,13 @@ root.replaceChildren(h("h1", { textContent: "⚔ Encounters" }), h("div", { id: 
 const browse = Browse.mount(document.getElementById("encBrowse"), "encounter", r => { mounted.select(r.id); scrollTo({ top: 0 }); });
 const mounted = Builder.mount(document.getElementById("encMount"), { ...config, initialId: new URLSearchParams(location.search).get("id"), onChange: () => browse.refresh() });
 
-// The party and the campaign's tiles are only needed for the rating and the tile menu.
+// The party and the campaign's sections are only needed for the rating and the section menu.
 async function loadContext() {
-  [party, tiles] = await Promise.all([api("/api/party?active=1"), api("/api/state").then(s => s.campaign?.tiles || [])]);
+  [party, sections] = await Promise.all([api("/api/party?active=1"), api("/api/state").then(s => s.campaign?.sections || [])]);
 }
 loadContext().then(() => mounted.reload());
 
-// Other tabs change encounters (a tile created on the campaign tracker): reload when this tab is shown again.
+// Other tabs change encounters (a card created on the campaign tracker): reload when this tab is shown again.
 addEventListener("message", ev => {
   if (ev.data?.type === "shown" && !document.querySelector("input:focus,textarea:focus")) loadContext().then(() => { mounted.reload(); browse.refresh(); });
 });

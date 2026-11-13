@@ -246,13 +246,12 @@ def adopt(st):
 def cards_of(campaign):
     """(encounter ids, loot table ids) that have a card on this campaign tracker."""
     enc, loot = set(), set()
-    for t in (campaign or {}).get("tiles", []):
-        for i in t.get("items", []):
-            if i.get("encounter"):
-                enc.add(i["encounter"])
-            src = i.get("loot", {}).get("source", "")
-            if src.startswith("table:"):
-                loot.add(src[6:])
+    for i in (campaign or {}).get("items", []):
+        if i.get("encounter"):
+            enc.add(i["encounter"])
+        src = i.get("loot", {}).get("source", "")
+        if src.startswith("table:"):
+            loot.add(src[6:])
     return enc, loot
 
 
@@ -282,18 +281,19 @@ def forget_campaign(name):
 
 
 def _on_tracker(st, field_of):
-    """For the LOADED campaign: {record id: [names of tiles holding a card for it]}."""
+    """For the LOADED campaign: {record id: [names of the sections holding a card for it]} ("(no section)" for a loose card)."""
     out = {}
-    for t in st.get("campaign", {}).get("tiles", []):
-        for i in t.get("items", []):
-            rid = field_of(i)
-            if rid:
-                out.setdefault(rid, []).append(t.get("name", ""))
+    camp = st.get("campaign", {})
+    names = {s["id"]: s.get("name", "") for s in camp.get("sections", [])}
+    for i in camp.get("items", []):
+        rid = field_of(i)
+        if rid:
+            out.setdefault(rid, []).append(names.get(i.get("section", ""), "(no section)"))
     return out
 
 
 def _listing(kind, field_of):
-    """The records of one kind, each with "onTracker": tile names in the loaded campaign (computed, not stored)."""
+    """The records of one kind, each with "onTracker": section names in the loaded campaign (computed, not stored)."""
     with _ctx["lock"]:
         held = _on_tracker(_state(), field_of)
         return jsonify([{**r, "campaigns": r.get("campaigns", []), "onTracker": held.get(r["id"], [])} for r in _lib(kind)])
@@ -343,7 +343,7 @@ def _clean_line(x):
 @bp.get("/api/encounters")
 def list_encounters():
     """GET /api/encounters -> every encounter, each with "campaigns" (saved campaigns that have it on their tracker) and
-    "onTracker" (tile names in the LOADED campaign; computed here, not stored)."""
+    "onTracker" (section names in the LOADED campaign; computed here, not stored)."""
     return _listing("encounters", _enc_ref)
 
 
@@ -374,45 +374,43 @@ def update_encounter(eid):
 
 @bp.delete("/api/encounters/<eid>")
 def delete_encounter(eid):
-    """DELETE /api/encounters/<id>. Campaign tiles that pointed at it stay and show "deleted encounter"."""
+    """DELETE /api/encounters/<id>. Campaign cards that pointed at it stay and show "deleted encounter"."""
     return _delete("encounters", eid)
 
 
 def _add_card(st, want, matches, make):
-    """Put a card on the loaded campaign's tracker (the one place encounters and loot tables share). `want` is a tile id ("" for
-    the first tile; a campaign with no tiles yet gets a section and a tile). `matches(item)` says whether a card already
-    exists (then nothing is added) and `make()` builds a new card without x, y: the campaign page finds it a free spot
-    the next time it loads the board. Returns (tile, card)."""
+    """Put a card on the loaded campaign's tracker (the one place encounters and loot tables share). `want` is the id of the section it
+    goes in ("" for none: a loose card). `matches(item)` says whether the card already exists in that section (then nothing is
+    added) and `make()` builds a new card without x, y: the campaign page finds it a free spot the next time it loads the board.
+    Returns (the section's name, the card)."""
     camp = st.setdefault("campaign", {})
     camp.setdefault("links", [])
-    if not camp.get("sections"):
-        camp["sections"] = [{"id": secrets.token_hex(4), "name": "Main story"}]
-    if not camp.get("tiles"):
-        camp["tiles"] = [{"id": secrets.token_hex(4), "name": "Chapter 1", "section": camp["sections"][0]["id"], "subs": [], "items": []}]
-    tile = next((t for t in camp["tiles"] if t["id"] == want), camp["tiles"][0])
-    tile.setdefault("items", [])
-    card = next((i for i in tile["items"] if matches(i)), None)
+    camp.setdefault("sections", [])
+    items = camp.setdefault("items", [])
+    sec = next((s for s in camp["sections"] if s["id"] == want), None)
+    where = sec["id"] if sec else ""
+    card = next((i for i in items if i.get("section", "") == where and matches(i)), None)
     if not card:
-        card = make()
-        tile["items"].append(card)
-    return tile, card
+        card = {**make(), "section": where}
+        items.append(card)
+    return (sec["name"] if sec else "(no section)"), card
 
 
-@bp.post("/api/encounters/<eid>/tile")
-def add_encounter_tile(eid):
-    """POST /api/encounters/<id>/tile {"tile": id of a campaign tracker tile, or "" for the first one} -> put this
-    encounter on the LOADED campaign's tracker as an encounter tile. Does nothing if that tile already has it.
-    Returns {"tile": its name, "item": the card's id} (the id lets the page highlight it on the campaign tracker)."""
-    want = str((request.get_json(force=True, silent=True) or {}).get("tile", ""))
+@bp.post("/api/encounters/<eid>/place")
+def add_encounter_card(eid):
+    """POST /api/encounters/<id>/place {"section": id of a campaign tracker section, or "" for none} -> put this
+    encounter on the LOADED campaign's tracker as an encounter card. Does nothing if that section already has it.
+    Returns {"section": its name, "item": the card's id} (the id lets the page highlight it on the campaign tracker)."""
+    want = str((request.get_json(force=True, silent=True) or {}).get("section", ""))
     with _ctx["lock"]:
         st = _state()
         _find("encounters", eid)
-        tile, card = _add_card(st, want, lambda i: i.get("encounter") == eid,
+        sec, card = _add_card(st, want, lambda i: i.get("encounter") == eid,
                                lambda: {"id": secrets.token_hex(4), "name": "", "encounter": eid, "checklist": [],
                                         "triggered": False, "loot": {"entries": [], "log": []}})
         reindex(st.get("campaignName", ""), st["campaign"])
         _ctx["commit"](True)
-        return jsonify(tile=tile["name"], item=card["id"])
+        return jsonify(section=sec, item=card["id"])
 
 
 # ------------------------------------------------------------------ loot tables (see "the library" above)
@@ -464,20 +462,20 @@ def delete_loot(lid):
     return _delete("loots", lid)
 
 
-@bp.post("/api/loots/<lid>/tile")
-def add_loot_tile(lid):
-    """POST /api/loots/<id>/tile {"tile"} -> put a flag on the loaded campaign's tracker that rolls on this table (like encounters).
-    Returns {"tile", "item"}."""
-    want = str((request.get_json(force=True, silent=True) or {}).get("tile", ""))
+@bp.post("/api/loots/<lid>/place")
+def add_loot_card(lid):
+    """POST /api/loots/<id>/place {"section"} -> put a flag on the loaded campaign's tracker that rolls on this table (like encounters).
+    Returns {"section", "item"}."""
+    want = str((request.get_json(force=True, silent=True) or {}).get("section", ""))
     with _ctx["lock"]:
         st = _state()
         t = _find("loots", lid)
-        tile, card = _add_card(st, want, lambda i: i.get("loot", {}).get("source") == "table:" + lid,
+        sec, card = _add_card(st, want, lambda i: i.get("loot", {}).get("source") == "table:" + lid,
                                lambda: {"id": secrets.token_hex(4), "name": t["name"], "checklist": [], "triggered": False,
                                         "loot": {"entries": [], "log": [], "source": "table:" + lid}})
         reindex(st.get("campaignName", ""), st["campaign"])
         _ctx["commit"](True)
-        return jsonify(tile=tile["name"], item=card["id"])
+        return jsonify(section=sec, item=card["id"])
 
 
 # ------------------------------------------------------------------ the initiative order

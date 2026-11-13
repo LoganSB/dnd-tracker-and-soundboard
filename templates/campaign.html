@@ -4,8 +4,8 @@
 
   SERVED AT: /campaign (linked from the soundboard's header).
 
-  WHAT IT IS: a sibling of the soundboard with the same layout (sections that hold tiles, tiles that
-  hold subsections, drag and drop everywhere), but the clickable items are "flags" instead of
+  WHAT IT IS: a sibling of the soundboard with the same layout (sections that nest inside sections and hold cards,
+  drag and drop everywhere), but the clickable items are "flags" instead of
   sounds: things the party has done or triggered. A flag can hold a checklist, a loot table, and
   (optionally) a soundboard sound that plays when you trigger it.
 
@@ -28,17 +28,17 @@
 <body class="campaignpage canvaspage">
 <header>
   <div class="bar">
-    <!-- undoBtn / redoBtn: undo or redo the last link change (keyboard: Ctrl/Cmd+Z and Ctrl/Cmd+Y) -->
-    <button id="undoBtn" title="Undo the last link change (Ctrl+Z)">↶</button>
+    <!-- undoBtn / redoBtn: undo or redo the last change (keyboard: Ctrl/Cmd+Z and Ctrl/Cmd+Y) -->
+    <button id="undoBtn" title="Undo the last change (Ctrl+Z)">↶</button>
     <button id="redoBtn" title="Redo (Ctrl+Y)">↷</button>
-    <!-- The "+" buttons: the same things the click menu on the canvas offers (see Canvas.clickMenu in campaign.js).
-         addTileBtn adds a tile to the first section; each section header also has its own "+ Tile". -->
-    <button id="addTileBtn" class="primary">+ Tile</button>
-    <button id="addSectionBtn">+ Section</button>
+    <!-- The "+" buttons: the same things the click menu on the canvas offers (createEntries in campaign.js). A section's title bar has its
+         own "+" with the same list. -->
+    <button id="addSectionBtn" class="primary">+ Section</button>
     <button id="addFlagBtn">+ Flag</button>
     <button id="addEncounterBtn">+ Encounter</button>
     <button id="addLootTableBtn">+ Loot table</button>
     <button id="addConditionBtn" title="A condition: unlocks what is linked out of it once enough of what is linked into it is done">+ Condition</button>
+    <button id="addTimerBtn" title="A timer that flashes (and can play a sound) when it finishes">+ Timer</button>
     <!-- saveState: "saved" / "saving…" text updated by campaign.js. -->
     <span id="saveState" class="muted">saved</span>
   </div>
@@ -52,7 +52,7 @@
        soundboard's: it sits inside the world so cables pan and zoom with the board; the arrow marker
        is defined once and shared by every cable; linkLayer holds the cables, tempLayer the one being dragged. -->
   <svg id="links" aria-hidden="true"><defs><marker id="arr" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="4.5" markerHeight="4.5" orient="auto"><path d="M0 0L10 5L0 10z" fill="context-stroke"/></marker></defs><g id="linkLayer"></g><g id="tempLayer"></g></svg>
-  <!-- tiles: campaign.js fills this with section frames, tiles, subsections and flag tiles. -->
+  <!-- tiles: campaign.js fills this with section frames and cards. -->
   <main id="tiles"></main>
 </div>
 </div>
@@ -64,17 +64,14 @@
   Buttons with data-close just close the dialog.
 -->
 
-<!-- flagDlg: add or edit one flag tile. Delete is hidden when adding. -->
+<!-- flagDlg: add or edit one flag. Delete is hidden when adding. -->
 <dialog id="flagDlg">
   <form method="dialog" id="flagForm">
     <h2 id="flagDlgTitle">Flag</h2>
     <label>Name <input name="name" required placeholder="e.g. Found the hidden door"></label>
+    <label>Section <select name="section"></select></label>
     <div class="row">
-      <label>Tile <select name="tile"></select></label>
-      <label>Subsection <select name="group"></select></label>
-    </div>
-    <div class="row">
-      <!-- maxWidth: how wide this tile may grow (in pixels) before its checklist text wraps onto more lines. -->
+      <!-- maxWidth: how wide this card may grow (in pixels) before its checklist text wraps onto more lines. -->
       <label>Max width (px) <input name="maxWidth" type="number" min="140" max="1200" step="10" placeholder="320"></label>
       <!-- sound: optional soundboard sound that plays when the flag is triggered (filled in by campaign.js). -->
       <label>Play sound when triggered <select name="sound"></select></label>
@@ -102,7 +99,7 @@
     <h2 id="encDlgTitle">Encounter</h2>
     <label><span id="encPickLabel">Encounter</span> <select name="enc"></select></label>
     <label>New name <input name="newName" placeholder="e.g. Goblin ambush"></label>
-    <label>Tile <select name="tile"></select></label>
+    <label>Section <select name="section"></select></label>
     <p class="muted">An encounter card adds the encounter to the initiative tracker when clicked; a loot table becomes a flag that rolls on it. A new one opens in its own tab so you can fill it in.</p>
     <menu><span class="grow"></span><button type="button" data-close>Cancel</button><button type="submit" class="primary">Add</button></menu>
   </form>
@@ -125,21 +122,6 @@
   <form method="dialog" id="condForm">
     <h2>Condition</h2>
     <div id="condBody"></div>
-    <menu><span class="grow"></span><button type="button" data-close>Cancel</button><button type="submit" class="primary">Save</button></menu>
-  </form>
-</dialog>
-
-<!-- tileDlg: rename a tile, move it to another section, and manage its subsections. -->
-<dialog id="tileDlg">
-  <form method="dialog" id="tileForm">
-    <h2>Tile settings</h2>
-    <label>Name <input name="name" required></label>
-    <label>Section <select name="section"></select></label>
-    <fieldset class="subsfield">
-      <legend>Subsections</legend>
-      <div id="subList"></div>
-      <div class="row"><input id="newSub" placeholder="New subsection name"><button type="button" id="addSubBtn">Add</button></div>
-    </fieldset>
     <menu><span class="grow"></span><button type="button" data-close>Cancel</button><button type="submit" class="primary">Save</button></menu>
   </form>
 </dialog>
@@ -176,6 +158,8 @@
 
 <script src="/static/errors.js"></script>
 <script src="/static/ui.js"></script>
+<script src="/static/nodes.js"></script>
+<script src="/static/timers.js"></script>
 <script src="/static/finder.js"></script>
 <script src="/static/builder.js"></script>
 <script src="/static/loottable.js"></script>

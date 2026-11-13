@@ -46,7 +46,7 @@
 //                               The reply is the updated character (same shape
 //                               as one element of GET /api/party).
 //   GET   /api/initiative    -> {round, active, order[]}   the LOADED CAMPAIGN's combat (each campaign has its
-//                               own; the encounter builder and campaign tiles can fill it too)
+//                               own; the encounter builder and campaign cards can fill it too)
 //   PUT   /api/initiative    -> same shape, replaces the stored state.
 //                               "active" is the id of whose turn it is (or
 //                               null). Each entry of order[] is:

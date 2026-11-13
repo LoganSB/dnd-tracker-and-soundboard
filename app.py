@@ -81,6 +81,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import safe_join
 
 import auth
+import board
 
 # ---- paths and constants. Path objects overload "/" to join path components.
 # __file__ is this script; resolve() makes it absolute; .parent is its folder.
@@ -144,25 +145,8 @@ def healthz():
 
 # ----------------------------------------------------------------- helpers
 def default_state():
-    """Return a fresh, empty soundboard: four named tiles with no sounds.
-
-    State shape (this is also exactly what is saved to data/live.json):
-      {"revision": int,                    # bumped on each save so clients can detect changes
-       "tiles": [{"id", "name", "pinned", "sounds": [ {url, name, ...}, ... ]}, ...]}
-    "Tile" = one panel of sound buttons on the page; "pinned" tiles stay visible.
-    """
-    # A nested function: just a local helper that builds one tile dict.
-    def tile(tid, name, pinned=False):
-        return {"id": tid, "name": name, "pinned": pinned, "sounds": []}
-    return {
-        "revision": 0,
-        "tiles": [
-            tile("main", "Main / Persistent", True),
-            tile("challenge-1", "Challenge 1"),
-            tile("secret-challenge", "Secret Challenge"),
-            tile("end-boss", "End Boss"),
-        ],
-    }
+    """A fresh, empty soundboard (see board.py for the shape of a board)."""
+    return board.default_state()
 
 
 def atomic_write(path: Path, obj):
@@ -225,18 +209,20 @@ def keep_campaign(new):
 def validate_state(s):
     """Check that `s` looks like a soundboard state and tidy it. Returns `s`.
 
-    Raises ValueError if it is not a dict with a "tiles" list (callers turn that into an
-    HTTP 400 or ignore it). Side effect: deletes runtime-only keys from every sound.
+    A state in the old shape (sections > tiles > subsections) is converted to the current one first (board.migrate_state).
+    Raises ValueError if it is not a dict with a "sounds" list (callers turn that into an HTTP 400 or ignore it).
+    Side effect: deletes runtime-only keys from every sound.
     """
-    if not isinstance(s, dict) or not isinstance(s.get("tiles"), list):
-        raise ValueError("state must contain a 'tiles' list")
-    for t in s["tiles"]:  # drop runtime-only fields ("_last" etc.) an older client may have saved
-        for snd in t.get("sounds", []):
-            # Keys starting with "_" are scratch values the browser uses while playing.
-            # Build the key list first (the list comprehension) so we are not deleting
-            # from the dict while iterating over it.
-            for k in [k for k in snd if k.startswith("_")]:
-                del snd[k]
+    if isinstance(s, dict):
+        board.migrate_state(s)
+    if not isinstance(s, dict) or not isinstance(s.get("sounds"), list):
+        raise ValueError("state must contain a 'sounds' list")
+    for snd in s["sounds"]:  # drop runtime-only fields ("_last" etc.) an older client may have saved
+        # Keys starting with "_" are scratch values the browser uses while playing.
+        # Build the key list first (the list comprehension) so we are not deleting
+        # from the dict while iterating over it.
+        for k in [k for k in snd if k.startswith("_")]:
+            del snd[k]
     return s
 
 
@@ -572,15 +558,14 @@ def ensure_media(url):
 def resume_media_for_state():
     """After a preset load or restart, make sure every referenced sound is cached.
 
-    Walks every tile/sound in `state` and calls ensure_media for its URL, which restarts any
+    Walks every sound in `state` and calls ensure_media for its URL, which restarts any
     missing or interrupted downloads. Unusable URLs are skipped silently.
     """
-    for t in state.get("tiles", []):
-        for s in t.get("sounds", []):
-            try:
-                ensure_media(s.get("url", ""))
-            except Exception:
-                pass
+    for s in state.get("sounds", []):
+        try:
+            ensure_media(s.get("url", ""))
+        except Exception:
+            pass
 
 
 # ------------------------------------------------------------- MP3 library
@@ -782,7 +767,7 @@ def get_state():
 def put_state():
     """PUT /api/state : replace the whole soundboard state (the page calls this on every edit).
 
-    Request body: the full state JSON ({"tiles": [...]}).
+    Request body: the full state JSON ({"sections": [...], "sounds": [...], ...}).
     Response: {"revision": N} (200) or {"error": "..."} (400 if the body is not valid).
     Side effects: swaps the in-memory `state`, bumps `revision` (server-assigned, so the
     client cannot forge it) and autosaves to data/live.json.
@@ -811,7 +796,7 @@ def put_state():
 def put_campaign():
     """PUT /api/campaign : replace just the campaign-tracker part of the state.
 
-    Request body: {"campaign": {"sections": [...], "tiles": [...]}}. Response: {"revision": N}, or
+    Request body: {"campaign": {"sections": [...], "items": [...], "links": [...]}}. Response: {"revision": N}, or
     {"error": "..."} (400) if the shape is wrong. The campaign lives INSIDE the same `state` as the
     sounds, so it is saved in live.json and in every preset and version snapshot together with them.
     Only this key is replaced; the sounds are left exactly as they are, which is why the campaign
@@ -820,8 +805,10 @@ def put_campaign():
     global state
     body = request.get_json(force=True) or {}
     camp = body.get("campaign")
-    if not isinstance(camp, dict) or not isinstance(camp.get("tiles"), list) or not isinstance(camp.get("sections"), list):
-        return jsonify(error="campaign must contain 'sections' and 'tiles' lists"), 400
+    if isinstance(camp, dict):
+        board.migrate_campaign(camp)   # an old page may still send tiles: convert them
+    if not isinstance(camp, dict) or not isinstance(camp.get("items"), list) or not isinstance(camp.get("sections"), list):
+        return jsonify(error="campaign must contain 'sections' and 'items' lists"), 400
     with lock:
         state["campaign"] = camp
         encounters.reindex(state.get("campaignName", ""), camp)  # the cards on the tracker may have changed

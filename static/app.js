@@ -6,7 +6,7 @@
 // WHAT THIS PROGRAM IS
 //   A web page (served by a small Flask server written in Python) that lets a
 //   game master trigger sound effects and background music during a tabletop
-//   session. Sounds live on "tiles"; tiles live in "sections". Sounds can be
+//   session. Sounds and timers live in "sections", and sections nest inside each other. Sounds can be
 //   wired together with on-screen "cables" into chains, so that when one sound
 //   ends (or is told to advance) the next one crossfades in.
 //
@@ -40,35 +40,37 @@
 //     HTML element. The browser draws whatever the tree currently describes.
 //     Changing an object's properties changes what is on screen.
 //
-// THE DATA MODEL  (everything the user can save lives in one object, `S`)
+// THE DATA MODEL  (everything the user can save lives in one object, `S`; see board.py)
 //
 //   S = {
-//     sections: [ { id, name, collapsed? } ],        // named groups of tiles, e.g. "Act 2"
-//     tiles: [ {                                      // one flat list; each tile points at its section
-//        id, name, section,                           //   section = the id of the owning section
-//        x, y, w,                                     //   position and width on the canvas, in world pixels (see canvas.js)
-//        pinned,                                      //   pinned tiles cannot be deleted (and stay visible on mobile)
-//        volume,                                      //   0..1, the tile's volume bus
+//     sections: [ {                                   // a TREE of sections: a section's parent is another section or "" (none)
+//        id, name, parent,                            //   parent = the id of the section it sits in ("" = top level)
+//        collapsed?,                                  //   hides everything inside it
+//        x, y,                                        //   where its frame sits while it is empty (otherwise the frame wraps its contents)
+//        pinned,                                      //   pinned sections cannot be deleted
+//        volume,                                      //   0..1, the section's volume bus (buses nest: inside a section inside a section ...)
 //        fade: { on, secs },                          //   fade-out when stopping a sound by hand
 //        linkFade,                                    //   crossfade seconds when a chain advances
-//        subs: [ { id, name } ],                      //   optional named subsections inside the tile
-//        sounds: [ {                                  //   the sounds on this tile
-//           id, name, url,                            //   url = where to fetch it from (e.g. a YouTube/myinstants link)
-//           type,                                     //   "music" | "instant" | "clip"
-//           key,                                      //   optional keyboard shortcut (one lowercase letter)
-//           group,                                    //   id of the subsection it is in (absent = top of tile)
-//           volume,                                   //   0..1 per-sound volume (the slider on the card)
-//           amp,                                      //   optional 1..4: a boost for quiet recordings (set in the sound's settings)
-//           start, end,                               //   optional trim points in seconds
-//           loop, restart,                            //   loop forever / always restart instead of resuming
-//           repeatDelay,                              //   optional timer: seconds to wait after it finishes, then
+//     } ],
+//     sounds: [ {                                     // every sound, in one flat list
+//        id, name, url,                               //   url = where to fetch it from (e.g. a YouTube/myinstants link)
+//        section,                                     //   the id of the section it sits in ("" = none)
+//        x, y,                                        //   position of the card on the canvas, in world pixels (see canvas.js)
+//        type,                                        //   "music" | "instant" | "clip"
+//        key,                                         //   optional keyboard shortcut (one lowercase letter)
+//        volume,                                      //   0..1 per-sound volume (the slider on the card)
+//        amp,                                         //   optional 1..4: a boost for quiet recordings (set in the sound's settings)
+//        start, end,                                  //   optional trim points in seconds
+//        loop, restart,                               //   loop forever / always restart instead of resuming
+//        repeatDelay,                                 //   optional timer: seconds to wait after it finishes, then
 //                                                     //   play it again (e.g. 600 = a bell every 10 minutes)
-//           next, nextAt,                             //   chain link: id of the sound that plays next, and the
+//        next, nextAt,                                //   chain link: id of the sound that plays next, and the
 //                                                     //   Date.now() timestamp of when the link was made
-//           autoName                                  //   true while the name should be filled in from the media title
-//        } ]
-//     } ]
+//        autoName                                     //   true while the name should be filled in from the media title
+//     } ],
+//     timers: [ { id, name, section, x, y, timer: { secs, endsAt?, left?, done?, doneAt? }, sound? } ]   // timer cards (see timers.js)
 //   }
+//   Every object has a parent but depends on none: deleting a section hands its sections, sounds and timers to its own parent.
 //
 //   Chains: a sound has at most ONE output (`next`) but can have MANY inputs
 //   (any number of other sounds may point their `next` at it). So a chain is
@@ -80,19 +82,19 @@
 //   A Map is a hash table with arbitrary keys; here the keys are id strings.
 //
 // HOW THE PIECES FIT TOGETHER
-//   1. STATE -> SCREEN.  render() throws away the tile/section DOM and rebuilds
+//   1. STATE -> SCREEN.  render() throws away the section/card DOM and rebuilds
 //      it from S every time something changes. (Simple and robust; the page is
 //      small enough that rebuilding is fast.) The builder functions
-//      groupEl / tileEl / soundEl create the DOM elements. Tiles are boxes placed at their own x, y on
+//      sectionFrame / soundEl / timerEl create the DOM elements. Cards are placed at their own x, y on
 //      an infinite pan-and-zoom canvas (canvas.js, ComfyUI style); each section is drawn as a frame
-//      around its tiles.
+//      around its cards and child sections.
 //   2. SCREEN -> STATE.  Event handlers attached while building the DOM modify
 //      S (or call the audio engine), then call save() and/or render().
 //   3. SAVING.  save() sends all of S to the Flask server (PUT /api/state),
 //      debounced so a burst of changes becomes one request.
 //   4. AUDIO.  Sounds are downloaded/decoded by loadSound(), played by
 //      startSound() and stopped by stopSound(). The audio signal path is
-//          sound source -> per-sound GainNode -> per-tile bus -> master -> speakers
+//          sound source -> per-sound GainNode -> section bus (nested) -> master -> speakers
 //      where each GainNode is a volume knob in the browser's Web Audio graph.
 //   5. CHAINS.  advance() crossfades from a sound to its `next`; activePath()
 //      computes the highlighted chain around whatever is playing; chainInfo()
@@ -101,7 +103,7 @@
 //      ended up on screen and draws SVG lines between linked cards.
 //      cables.js (shared with the campaign tracker) routes them around cards
 //      in side-by-side lanes. startLink() handles dragging a new cable.
-//   7. DIALOGS.  Add/edit-sound, tile settings and presets use HTML <dialog>
+//   7. DIALOGS.  Add/edit-sound, timer and section settings (nodes.js) and presets use HTML <dialog>
 //      elements defined in the HTML page (which this file looks up by id).
 //
 // ORDER OF EXECUTION AT PAGE LOAD
@@ -171,11 +173,7 @@ const api = async (url, method = "GET", body) => {
 
 // S is the whole saved state (see the data model in the file header). It starts
 // empty and is replaced with the server's copy by the boot block at the bottom.
-let S = { sections: [], tiles: [] };
-
-// The server renders a different HTML page for phones; it marks <body> with class "mobile".
-// MOBILE changes layout rules below (no cables, tabbed tiles).
-const MOBILE = document.body.classList.contains("mobile");
+let S = { sections: [], sounds: [], timers: [] };
 
 // pref(key, default): read a true/false setting from localStorage (a tiny
 // key/value store the browser keeps per site, like a settings file). Values
@@ -204,27 +202,17 @@ $("#toggleBtn").onclick = () => {
 };
 syncToggles();
 
-// activeTile: on mobile only, the id of the tile currently shown (remembered across visits).
-// `(() => { ... })()` defines an anonymous function and calls it immediately, a
-// way to run several statements in a place where only an expression is allowed.
-let activeTile = (() => { try { return localStorage.getItem("mTile"); } catch (_) { return null; } })();
-
 // ---------------------------------------------------------- state helpers
 // Tiny queries over S, plus normalize() which upgrades old saved data.
 
-// allSounds(): every sound on every tile as one flat array.
-// flatMap maps each tile to its sounds array and then concatenates all those arrays.
-const allSounds = () => S.tiles.flatMap(t => t.sounds);
+// allSounds(): every sound as one flat array.
+const allSounds = () => S.sounds;
 
-// locate(id): find a sound by id. Returns { tile, snd, i } (the owning tile, the
-// sound object itself, and its index within tile.sounds), or null if it does not exist.
-// `{ tile, snd: ..., i }` is object-literal shorthand: `tile` means `tile: tile`.
+// locate(id): find a sound by id. Returns { snd, i, section } (the sound object itself, its index within S.sounds, and the section object
+// it sits in, or null if it has none), or null if it does not exist.
 function locate(id) {
-  for (const tile of S.tiles) {   // for...of walks the values of an array
-    const i = tile.sounds.findIndex(s => s.id === id);   // index of the first match, or -1
-    if (i >= 0) return { tile, snd: tile.sounds[i], i };
-  }
-  return null;
+  const i = S.sounds.findIndex(s => s.id === id);   // index of the first match, or -1
+  return i < 0 ? null : { snd: S.sounds[i], i, section: Nodes.byId(S.sections, S.sounds[i].section) || null };
 }
 
 // byId(id): the sound object with that id, or undefined if id is empty/unknown.
@@ -235,51 +223,53 @@ const byId = id => (id ? locate(id)?.snd : undefined);
 // prevOf(snd): some sound whose output points at snd (first one found), or undefined. (find = first match)
 const prevOf = snd => allSounds().find(s => s.next === snd.id);
 
-// stopSecs(tile): how many seconds a manual stop should fade out on this tile.
-// If fading is on: tile.fade.secs (default 1). If fading is off: a very short 0.05 s fade
+// stopSecs(sec): how many seconds a manual stop should fade out in this section (null = a sound with no section: the defaults).
+// If fading is on: sec.fade.secs (default 1). If fading is off: a very short 0.05 s fade
 // that just avoids an audible click.
 //   `x ?? y` ("nullish coalescing") means y only when x is null/undefined (unlike `||`, a 0 survives).
-const stopSecs = tile => ((tile.fade?.on ?? true) ? tile.fade?.secs ?? 1 : 0.05);
+const stopSecs = sec => ((sec?.fade?.on ?? true) ? sec?.fade?.secs ?? 1 : 0.05);
 
-// linkSecs(tile): crossfade length (seconds) when a chain advances to the next sound.
-const linkSecs = tile => tile.linkFade ?? 2;
+// linkSecs(sec): crossfade length (seconds) when a chain advances to the next sound.
+const linkSecs = sec => sec?.linkFade ?? 2;
 
-// normalize(): bring freshly loaded state up to the current format.
-// Older saves had only a flat list of tiles (some "pinned"); this invents
-// sections for them, and fills in default values for any per-tile setting that
-// older saves lack. Safe to call repeatedly. Mutates S in place.
-// Older saves are flat tiles; add sections and per-tile defaults.
+// ---- the model: a tree of sections holding cards (see board.py; the tree helpers are in nodes.js)
+// S.sections nest (a section's `parent` is another section's id or "" for none); every sound and timer has a `section` (the section it sits in,
+// or "" for none). Everything stands on its own: deleting a section hands its contents to its own parent (Nodes.remove).
+// sectionOptions(opts): the sections as drop-down choices, indented by depth ("(no section)" first).
+const sectionOptions = opts => Nodes.options(S.sections, opts);
+// firstSection(): the default home for something created from the toolbar: the first top-level section (or none).
+const firstSection = () => Nodes.roots(S.sections)[0]?.id || "";
+// cards(): every card on the board that can sit in a section and be dragged: the sounds and the timers.
+const cards = () => [...S.sounds, ...S.timers];
+
+// normalize(): bring freshly loaded state up to the current format: parent links, per-section defaults and positions. (An old save with tiles
+// is converted by the server before it gets here, see board.py.) Safe to call repeatedly. Mutates S in place.
 function normalize() {
-  S.tiles ||= [];   // `a ||= b` means: if a is empty/falsy, assign b
-  if (!Array.isArray(S.sections) || !S.sections.length) {
-    const pinned = S.tiles.some(t => t.pinned);   // some = true if any element passes the test
-    S.sections = pinned
-      ? [{ id: "persistent", name: "Persistent" }, { id: "encounters", name: "Encounters" }]
-      : [{ id: "all", name: "Soundboard" }];
-    // Assign every tile to a section: pinned ones to "persistent", the rest to
-    // "encounters" (or "all" when nothing was pinned). The extra parentheses
-    // make the arrow function return the assignment's value.
-    S.tiles.forEach(t => (t.section = t.pinned ? "persistent" : pinned ? "encounters" : "all"));
-  }
-  S.tiles.forEach(t => {
-    // A tile pointing at a section that no longer exists is moved to the first section.
-    if (!S.sections.some(s => s.id === t.section)) t.section = S.sections[0].id;
-    t.volume ??= 1;                          // `a ??= b`: assign b only if a is null/undefined
-    t.fade ||= { on: true, secs: 1 };
-    t.linkFade ??= 2;
-    t.subs ||= [];
-    t.w ||= 400;                             // width on the canvas (px); height follows the content
+  S.sections ||= [];
+  S.sounds ||= [];
+  S.timers ||= [];
+  Nodes.fix(S.sections);
+  S.sections.forEach(sec => {
+    sec.volume ??= 1;                          // `a ??= b`: assign b only if a is null/undefined
+    sec.fade ||= { on: true, secs: 1 };
+    sec.linkFade ??= 2;
   });
-  // Tiles from older saves have no canvas position yet: lay them out in a spiral around the middle.
-  Canvas.layoutMissing(S.tiles, S.sections);
-  // Sounds from older saves have no position of their own (they sat in a grid inside their tile): put them
-  // in a tidy grid where their tile used to be, loose ones first, then each subsection's, so nothing moves
-  // much and the frames simply appear around them. A sound that already has x, y is never touched.
-  S.tiles.forEach(t => {
-    if (!t.sounds.some(s => !Number.isFinite(s.x) || !Number.isFinite(s.y))) return;
-    const subIds = new Set(t.subs.map(x => x.id));
-    const groups = [t.sounds.filter(s => !s.group || !subIds.has(s.group)), ...t.subs.map(x => t.sounds.filter(s => s.group === x.id))];
-    Canvas.arrangeInGrid(t, groups, Canvas.CARD_W, 175);   // 175 = room for a card whose name wraps to three lines
+  cards().forEach(c => { if (!c.section || !Nodes.byId(S.sections, c.section)) c.section = ""; });   // its section is gone: it simply has no parent
+  // Sections with no canvas position yet are placed around the middle of the canvas.
+  Canvas.layoutMissing(S.sections);
+  // Cards with no position of their own (older saves): a section whose cards ALL lack positions gets them in a tidy grid where it is;
+  // otherwise each gets the nearest free spot next to the other cards of its section. A card that already has x, y is never touched.
+  const has = c => Number.isFinite(c.x) && Number.isFinite(c.y);
+  const bySection = new Map();
+  cards().forEach(c => { if (!bySection.has(c.section)) bySection.set(c.section, []); bySection.get(c.section).push(c); });
+  bySection.forEach((list, id) => {
+    const missing = list.filter(c => !has(c));
+    if (!missing.length) return;
+    const origin = Nodes.byId(S.sections, id);
+    if (missing.length === list.length && origin) { Canvas.arrangeInGrid(origin, [list], Canvas.CARD_W, 175); return; }   // 175 = room for a card whose name wraps to three lines
+    const box = c => ({ l: c.x, t: c.y, r: c.x + Canvas.CARD_W, b: c.y + 175 });
+    const placed = cards().filter(has);
+    missing.forEach(c => { Object.assign(c, Canvas.freeSpot(placed.map(box), Canvas.CARD_W, 175, list.filter(has).map(box))); placed.push(c); });
   });
 }
 
@@ -296,6 +286,7 @@ let saveTimer = null;
 // label next to the button shows the progress.
 // Side effects: network request; updates the #saveState label. Does NOT re-render.
 function save() {
+  edits.commit();   // register this change as an undoable command (undo.js); a no-op while an undo or redo is restoring
   $("#saveState").textContent = "saving…";
   clearTimeout(saveTimer);
   // setTimeout(fn, ms): ask the browser to call fn once after ms milliseconds, without blocking.
@@ -310,7 +301,7 @@ function save() {
 // nodes (sources, volume knobs, ...) that the browser mixes on its own audio
 // thread. We build the graph; the browser pushes samples to the speakers.
 //
-//   [sound source] -> [per-sound gain] -> [tile bus gain] -> [master gain] -> speakers
+//   [sound source] -> [per-sound gain] -> [section bus gain, nested] -> [master gain] -> speakers
 //
 // A GainNode is just a multiply-by-a-number node (a volume knob).
 
@@ -328,21 +319,21 @@ master.gain.value = +$("#master").value;   // unary + converts the slider's text
 // oninput fires continuously while a slider is dragged. `e.target` is the element that fired the event.
 $("#master").oninput = e => (master.gain.value = +e.target.value);
 
-// one volume bus per tile
-// buses: Map from tile id -> that tile's GainNode.
+// one volume bus per section. Buses nest like sections: a section's bus feeds its parent section's bus, and a top-level (or section-less)
+// sound feeds master directly, so the volume of a section scales everything in it, including the sections inside it.
+// buses: Map from section id -> that section's GainNode.
 const buses = new Map();
 
-// busFor(tile): get (creating on first use) the tile's volume bus and make sure
-// its gain matches tile.volume. Sounds on the tile connect to this node, which
-// feeds master. Called whenever a sound starts and whenever the tile slider moves.
-function busFor(tile) {
-  let b = buses.get(tile.id);
-  if (!b) {
-    b = ctx.createGain();
-    b.connect(master);
-    buses.set(tile.id, b);
-  }
-  b.gain.value = tile.volume ?? 1;
+// busFor(sec): get (creating on first use) the section's volume bus, make sure its gain matches sec.volume and that it feeds the right parent
+// (the section's parent's bus, or master), then return it. A sound with no section (sec = null) goes straight to master. Called whenever a sound
+// starts, when a section slider moves, and after sections are moved or restored.
+function busFor(sec) {
+  if (!sec) return master;
+  const up = busFor(Nodes.byId(S.sections, sec.parent) || null);
+  let b = buses.get(sec.id);
+  if (!b) { b = ctx.createGain(); buses.set(sec.id, b); }
+  if (b.up !== up) { b.disconnect(); b.connect(up); b.up = up; }   // (re)connect when the section was created or moved
+  b.gain.value = sec.volume ?? 1;
   return b;
 }
 
@@ -404,6 +395,7 @@ async function loadSound(snd) {
       snd.name = info.title;       // fill in the display name from the media's own title
       delete snd.autoName;         // `delete` removes a field from an object
       save();
+      edits.reset();               // (not something the user did: it becomes part of the baseline instead of an undo step)
     }
     // Long files are streamed, not decoded (an hour of audio needs >1 GB of RAM); short ones are decoded
     // so playback is instant.
@@ -481,14 +473,14 @@ function fade(g, to, secs) {
   g.gain.linearRampToValueAtTime(to, t + secs);
 }
 
-// startBuffer(snd, e, tile, from, fadeIn): play a decoded (in-memory) sound.
+// startBuffer(snd, e, sec, from, fadeIn): play a decoded (in-memory) sound.
 //   from   - position in the file (seconds) to start at
 //   fadeIn - seconds of fade-in (0 = start at full volume immediately)
 // A BufferSource node plays a buffer ONCE and cannot be restarted, so every
-// play creates a fresh one (cheap). Graph built here: src -> g -> tile bus.
+// play creates a fresh one (cheap). Graph built here: src -> g -> section bus.
 // Also arms a timer that starts the chain's next sound early so the two overlap.
 // Side effects: adds to e.sources, sets e.playing, calls render().
-function startBuffer(snd, e, tile, from, fadeIn) {
+function startBuffer(snd, e, sec, from, fadeIn) {
   const src = ctx.createBufferSource();
   src.buffer = e.buffer;
   // `const a = 1, b = 2` declares several constants in one statement.
@@ -498,7 +490,7 @@ function startBuffer(snd, e, tile, from, fadeIn) {
   g.gain.setValueAtTime(fadeIn > 0 ? 0 : vol, now);
   if (fadeIn > 0) g.gain.linearRampToValueAtTime(vol, now + fadeIn);
   src.connect(g);
-  g.connect(busFor(tile));
+  g.connect(busFor(sec));
   const start = startOf(snd),
     end = endOf(snd, e);
   // Invalid or out-of-range resume point -> fall back to the trim start.
@@ -511,12 +503,12 @@ function startBuffer(snd, e, tile, from, fadeIn) {
     src.start(0, from);   // start(when=now, offset into buffer)
   }
   else src.start(0, from, end - from);   // start(when, offset, duration): play just that slice
-  // A custom end time would cut the sound off abruptly, so follow the tile's fade-out setting:
+  // A custom end time would cut the sound off abruptly, so follow the section's fade-out setting:
   // hold full volume, then ramp down so the sound reaches silence exactly at the end time.
   // Not done for loops, chained sounds (they crossfade instead), or when the sound simply
   // plays to the natural end of the file.
   if (!snd.loop && !snd.next && +snd.end > start) {
-    const fadeLen = Math.min(stopSecs(tile), end - from),   // never longer than the time that is left
+    const fadeLen = Math.min(stopSecs(sec), end - from),   // never longer than the time that is left
       endAt = now + (end - from);                            // audio-clock time the slice finishes
     if (fadeLen > 0.1) {   // "fade off" means a tiny 0.05 s value; not worth scheduling
       g.gain.setValueAtTime(vol, endAt - fadeLen);   // stay at full volume until the fade begins
@@ -545,25 +537,25 @@ function startBuffer(snd, e, tile, from, fadeIn) {
   if (snd.next && !snd.loop) // start the next link early so the two crossfade
     e.advTimer = setTimeout(
       () => advance(snd, "auto"),
-      Math.max(0, end - from - linkSecs(tile)) * 1000   // delay in milliseconds, never negative
+      Math.max(0, end - from - linkSecs(sec)) * 1000   // delay in milliseconds, never negative
     );
   e.playing = true;
   render();
 }
 
-// startStream(snd, e, tile, from, fadeIn): play a streamed (<audio> element) sound.
+// startStream(snd, e, sec, from, fadeIn): play a streamed (<audio> element) sound.
 // Same job as startBuffer, but the <audio> element can be seeked and looped by
 // the browser, and there is no "ended" callback until the file's real end, so a
 // 100 ms polling timer (endTimer) watches the playback position to implement
 // custom end points, looping within a trimmed range, and early crossfades.
-// Graph: audio element -> e.gain -> tile bus (the gain node is re-attached each play).
-function startStream(snd, e, tile, from, fadeIn) {
+// Graph: audio element -> e.gain -> section bus (the gain node is re-attached each play).
+function startStream(snd, e, sec, from, fadeIn) {
   const a = e.audio,
     start = startOf(snd);
   a.loop = !!snd.loop;   // `!!x` forces any value to a true/false boolean
   try { a.currentTime = from; } catch (_) {}   // seeking can throw if not ready; ignore it
-  e.gain.disconnect();                         // detach from any previous tile bus
-  e.gain.connect(busFor(tile));
+  e.gain.disconnect();                         // detach from any previous section bus
+  e.gain.connect(busFor(sec));
   fade(e.gain, level(snd), fadeIn ?? 0.8);
   // play() returns a Promise that may be rejected (e.g. blocked by autoplay policy); log instead of crashing.
   a.play().catch(err => console.error("play failed", err));
@@ -581,13 +573,13 @@ function startStream(snd, e, tile, from, fadeIn) {
     }
     if (snd.next) {
       // Reached the crossfade point: hand over to the next sound.
-      if (a.currentTime >= end - linkSecs(tile)) {
+      if (a.currentTime >= end - linkSecs(sec)) {
         clearInterval(e.endTimer);
         advance(snd, "auto");
       }
     }
-    else if (hasEnd && a.currentTime >= snd.end - stopSecs(tile)) {
-      // Custom end point approaching: stopSound fades out over the tile's fade length, so start it
+    else if (hasEnd && a.currentTime >= snd.end - stopSecs(sec)) {
+      // Custom end point approaching: stopSound fades out over the section's fade length, so start it
       // that much early and the sound reaches silence at the end time instead of after it.
       stopSound(snd, false, { reset: true });
       scheduleRepeat(snd, e);                   // stopSound cancels repeats, so arm the timer afterwards
@@ -618,26 +610,26 @@ function startSound(snd, { from = null, fadeIn, background = false } = {}) {
   if (!background) lastStarted = snd.id;
   e.startedAt = performance.now();   // when it began (used to pick the newest playing sound of a chain, see activeChains)
   const f = from ?? startOf(snd);
-  if (e.audio) startStream(snd, e, loc.tile, f, fadeIn);
-  else startBuffer(snd, e, loc.tile, f, fadeIn ?? 0);
+  if (e.audio) startStream(snd, e, loc.section, f, fadeIn);
+  else startBuffer(snd, e, loc.section, f, fadeIn ?? 0);
 }
 
 // stopSound(snd, fast, options): stop a sound, usually with a fade-out, and remember where it
 // stopped so a later press can resume.
 //   fast           - true = near-instant stop (50 ms)
-//   options.secs   - explicit fade length (overrides the tile's setting)
+//   options.secs   - explicit fade length (overrides the section's setting)
 //   options.reset  - true = forget the resume position (next start is from the beginning)
 // Gotcha: the stream is paused only AFTER the fade has finished (timer), and only
 // if nothing restarted it in the meantime.
 // Also cancels a pending repeat timer, even when the sound is silent right now and only
-// waiting for its next repeat (so "Stop all" and tile stop buttons disarm waiting timers too).
+// waiting for its next repeat (so "Stop all" and the section stop buttons disarm waiting timers too).
 // Side effects: clears timers, sets e.playing = false, e.resumeAt, calls render().
 function stopSound(snd, fast = false, { secs, reset = false } = {}) {
   cancelRepeat(snd);   // any manual stop ends the repeating, whether or not it is playing right now
   const e = engines.get(snd.id),
     loc = locate(snd.id);
   if (!e || !e.playing) return;
-  secs ??= fast || !loc ? 0.05 : stopSecs(loc.tile);   // only fill in secs if the caller did not pass one
+  secs ??= fast || !loc ? 0.05 : stopSecs(loc.section);   // only fill in secs if the caller did not pass one
   clearTimeout(e.advTimer);
   clearInterval(e.endTimer);
   if (e.audio) {
@@ -689,7 +681,7 @@ function applyVolume(snd) {
 // A sound with a repeat delay (snd.repeatDelay, in seconds) plays when you press it. Once it has
 // finished BY ITSELF it waits that many seconds and plays again, over and over, until you stop it.
 //   - Pressing it again, while it plays OR while it waits for the next repeat, cancels the timer.
-//     ("Stop all" and the tile stop buttons cancel it too.)
+//     ("Stop all" and the section stop buttons cancel it too.)
 //   - The wait is stored as a deadline (engines entry .repeatAt = a Date.now() time in milliseconds,
 //     0 = nothing pending). A deadline stays correct even if the browser runs our code late.
 //   - A sound that loops, or that has a chain link (`next`), never repeats: a loop never ends, and a
@@ -834,7 +826,7 @@ function cycleFocus(dir) {
 // TWO OR MORE chains are playing. One chip per active chain shows its colour, the name of the sound
 // playing in it and a stop button. The chip of the chain in focus is outlined. Clicking a chip moves the
 // focus there (and pans the canvas to it if it is off screen) without touching the audio; the ■ on a chip
-// stops that sound (with the tile's fade) without changing the focus. This is the quick, explicit way back
+// stops that sound (with the section's fade) without changing the focus. This is the quick, explicit way back
 // to a chain that is playing in the background; a click on a playing sound itself still just stops it.
 function drawDock(info) {
   const dock = $("#nowplaying");
@@ -860,7 +852,7 @@ function drawDock(info) {
       setFocus(snd);
       // If the sound's card is off screen, pan the canvas to it (zoom unchanged).
       const card = document.querySelector(`.snd[data-id="${snd.id}"]`);
-      if (card && !MOBILE) {
+      if (card) {
         const p = Canvas.posIn(card),
           v = Canvas.view,
           st = $("#stage"),
@@ -924,7 +916,7 @@ function activePath() {
 // advance(snd, mode, target): crossfade from `snd` to another sound. Returns true if it moved.
 //   mode "auto"/"next" -> follow snd.next;  mode "prev" -> go back to backPred(snd);
 //   target (optional)  -> go to this exact sound instead.
-// snd fades out over the tile's link time while the new sound fades in over the same time.
+// snd fades out over the section's link time while the new sound fades in over the same time.
 // Side effects: updates cameFrom, stops/starts sounds (which call render()).
 // Crossfade from snd to target (default: its next / chosen previous).
 function advance(snd, mode = "auto", target = null) {
@@ -934,7 +926,7 @@ function advance(snd, mode = "auto", target = null) {
   const nxt = target || (mode === "prev" ? backPred(snd) : byId(snd.next));
   if (!nxt || !loc) return false;
   if (mode !== "prev") cameFrom.set(nxt.id, snd.id); // entering nxt from snd selects that path; going back never changes it
-  const secs = linkSecs(loc.tile);
+  const secs = linkSecs(loc.section);
   stopSound(snd, false, { secs: Math.max(secs, 0.05), reset: true });
   const ne = engines.get(nxt.id);
   if (ne?.status === "ready") {
@@ -993,7 +985,7 @@ const lastPress = new Map(); // not stored on the sound: it would be saved and b
 //   - if it is waiting for a repeat timer: cancels the timer ("press to stop" on) or plays it now (off);
 //   - if already playing: stops it ("press to stop" on) or restarts it (off);
 //   - otherwise starts it, resuming where it stopped unless it is an "instant" sound or has
-//     "restart" set. For "music" sounds, other music on the same tile is stopped first.
+//     "restart" set. For "music" sounds, other music in the same section is stopped first.
 // `async`: it may have to wait for the audio context / loading, without blocking the page.
 async function trigger(snd) {
   // guard against key auto-repeat / double events creating stacked or flip-flopping playback
@@ -1015,8 +1007,8 @@ async function trigger(snd) {
     clearPathMemory(snd);
     return startSound(snd);
   }
-  if (e.audio && snd.type === "music") // one soundtrack at a time per tile
-    loc.tile.sounds.filter(o => o.id !== snd.id && o.type === "music").forEach(o => stopSound(o));
+  if (e.audio && snd.type === "music") // one soundtrack at a time per section
+    S.sounds.filter(o => o.id !== snd.id && o.type === "music" && (o.section || "") === (snd.section || "")).forEach(o => stopSound(o));
   // "fresh" = start from the beginning rather than resuming a stopped position.
   const fresh = snd.type === "instant" || snd.restart || e.resumeAt == null;
   clearPathMemory(snd);   // a manual press begins a new path selection (for this chain only)
@@ -1157,7 +1149,7 @@ function setTint(node, hue) {
 }
 
 // cleanLinks(): remove chain links that point at sounds that no longer exist (e.g. after
-// deleting a sound or tile). Mutates S; the caller decides whether to save().
+// deleting a sound). Mutates S; the caller decides whether to save().
 function cleanLinks() {
   allSounds().forEach(s => {
     if (s.next && !byId(s.next)) {
@@ -1174,11 +1166,10 @@ function cleanLinks() {
 // for paths (routed together, with fallbacks), then Cables.pair() creates the SVG <path>s for each link.
 // Coordinates are WORLD coordinates (see canvas.js): every position is measured with Canvas.posIn,
 // which is independent of pan and zoom. The SVG overlay sits inside the same #world element as the
-// tiles, so when you pan or zoom the cables move with the tiles and need no redrawing; they are only
-// redrawn when a tile moves, resizes or changes.
+// cards, so when you pan or zoom the cables move with the cards and need no redrawing; they are only
+// redrawn when a card moves, resizes or changes.
 function drawLinks() {
   const layer = $("#linkLayer");
-  if (MOBILE) return;
   const W = Canvas.WORLD,
     H = Canvas.WORLD;
   layer.textContent = "";   // empties the layer (removes all old cables)
@@ -1228,7 +1219,7 @@ function drawLinks() {
         stroke: tint(info.get(l.s.id)?.hue, on ? 70 : 62),
         title: `${l.s.name} → ${byId(l.s.next)?.name ?? "?"}  (click to remove)`,
         onRemove: () => {
-          linkHistory.record("removed a chain link");
+          edits.record("removed a chain link");
           delete l.s.next;
           delete l.s.nextAt;
           save();
@@ -1273,38 +1264,55 @@ function scheduleDraw() {
   requestAnimationFrame(drawLinks);
 }
 // (Resizing the browser window does not move anything in world coordinates, so unlike before no
-// window-resize listener is needed. Tile size changes are watched by tileObserver, see render().)
+// window-resize listener is needed. Card size changes are watched by cardObserver, see render().)
 // Fonts load asynchronously and change text widths, and therefore card heights.
 document.fonts?.ready.then(scheduleDraw);
 
-// ------------------------------------------------------- undo / redo for chains
-// Every change to the chain links (making, removing or re-routing one) can be undone and redone, with
-// Ctrl+Z / Ctrl+Y (Cmd on a Mac) or the ↶ ↷ buttons in the toolbar. undo.js keeps the history; here we only
-// say how to take a snapshot of the links and how to put one back.
-//   snapshot: for every sound that has a link, its target and its link timestamp, as JSON text.
-//   restore:  set every sound's link from that snapshot (sounds not in it lose their link), then save and
-//             redraw. A link to a sound that has since been deleted is dropped by cleanLinks() during render.
-// Deleting a sound (which also removes its links) is not part of this history.
-const linkHistory = Undo.create({
-  snapshot: () => JSON.stringify(Object.fromEntries(allSounds().filter(s => s.next).map(s => [s.id, [s.next, s.nextAt || 0]]))),
+// ------------------------------------------------------- undo / redo for everything
+// EVERY change can be undone and redone, with Ctrl+Z / Ctrl+Y (Cmd on a Mac) or the ↶ ↷ buttons in the toolbar: creating or deleting a
+// section, sound or timer, renaming, moving, editing a sound's settings, volume and amp, making or removing a chain link ...
+// undo.js keeps the command stack (see its header). save() reports every change to it (edits.commit()), so nothing needs its own undo
+// code; the code that makes a change may name it first with edits.record("deleted a section") to get a good message.
+//   snapshot: the sections, sounds and timers as JSON text. Scratch fields that start with "_" are left out.
+//   restore:  put that state back. The sound objects that still exist are kept (the audio engines point at them) and updated in place;
+//             then every engine is brought in step with the restored sounds: a sound that vanished is stopped, a brought-back or
+//             changed one is loaded, and volumes are re-applied. Then save and redraw. (A chain link to a vanished sound is
+//             dropped by cleanLinks() during render.)
+const edits = Undo.create({
+  snapshot: () => JSON.stringify({ sections: S.sections, sounds: S.sounds, timers: S.timers }, (k, v) => (k.startsWith("_") ? undefined : v)),
   restore: text => {
-    const saved = JSON.parse(text);
-    allSounds().forEach(s => {
-      if (saved[s.id]) { s.next = saved[s.id][0]; s.nextAt = saved[s.id][1]; }
-      else { delete s.next; delete s.nextAt; }
+    const saved = JSON.parse(text), old = new Map(allSounds().map(x => [x.id, x]));
+    saved.sounds = saved.sounds.map(ns => {
+      const o = old.get(ns.id);
+      if (!o) return ns;                                              // a sound that was deleted: brought back as it was
+      Object.keys(o).forEach(k => { if (!(k in ns) && !k.startsWith("_")) delete o[k]; });
+      return Object.assign(o, ns);                                    // the same object, with the saved values
     });
-    save();
+    const gone = [...old.values()].filter(x => !saved.sounds.includes(x));
+    gone.forEach(x => { stopSound(x, true); engines.delete(x.id); });
+    S.sections = saved.sections;
+    S.sounds = saved.sounds;
+    S.timers = saved.timers;
+    allSounds().forEach(x => {
+      const e = engines.get(x.id);
+      if (e && e.url !== x.url) { stopSound(x, true); engines.delete(x.id); }   // its link was changed: the old audio is wrong
+      if (!engines.has(x.id)) loadSound(x);
+      applyVolume(x);
+    });
+    S.sections.forEach(sec => { if (buses.has(sec.id)) busFor(sec); });   // section volumes and nesting may have changed
+    normalize();
+    save();          // (edits ignores the commit this makes while it is restoring)
     render(true);
   },
   onChange: () => {   // grey out the toolbar buttons when there is nothing to undo / redo
-    $("#undoBtn").disabled = !linkHistory.canUndo();
-    $("#redoBtn").disabled = !linkHistory.canRedo();
+    $("#undoBtn").disabled = !edits.canUndo();
+    $("#redoBtn").disabled = !edits.canRedo();
   }
 });
-$("#undoBtn").onclick = () => Undo.toast(linkHistory.undo() ? "Undid the last chain change" : "Nothing to undo");
-$("#redoBtn").onclick = () => Undo.toast(linkHistory.redo() ? "Redid the chain change" : "Nothing to redo");
+$("#undoBtn").onclick = () => { const l = edits.undo(); Undo.toast(l ? "Undid: " + l : "Nothing to undo"); };
+$("#redoBtn").onclick = () => { const l = edits.redo(); Undo.toast(l ? "Redid: " + l : "Nothing to redo"); };
 $("#undoBtn").disabled = $("#redoBtn").disabled = true;   // an empty history to start with
-Undo.bindKeys(linkHistory);
+Undo.bindKeys(edits);
 
 // ------------------------------------------------------- dragging a connector
 // drag a connector from a sound's output circle (or an existing input square, to re-route it) onto a sound
@@ -1365,12 +1373,12 @@ function startLink(ev, snd) {
     clear();
     document.body.classList.remove("linking");
     if (moved && t && t.dataset.id !== snd.id) {
-      linkHistory.record(snd.next ? "re-routed a chain link" : "made a chain link");   // remember the state first, so it can be undone
+      edits.record(snd.next ? "re-routed a chain link" : "made a chain link");   // remember the state first, so it can be undone
       snd.next = t.dataset.id;
       snd.nextAt = Date.now();   // timestamp: orders this link after older ones feeding the same target
     } // inputs are unlimited, output is one
     else if (!moved && !cancelled && snd.next) {
-      linkHistory.record("removed a chain link");
+      edits.record("removed a chain link");
       delete snd.next;
       delete snd.nextAt;
     } // plain click removes the link
@@ -1393,52 +1401,24 @@ function startLink(ev, snd) {
 // while it is set, because rebuilding the page would destroy the element being dragged.
 let drag = null;
 
-// moveTile(id, sectionId): put a tile into a section (used by the Tile settings dialog and when a
-// tile is dropped inside another section's frame). Only the `section` field changes; the frames
-// follow the cards.
-function moveTile(id, sectionId) {
-  const t = S.tiles.find(x => x.id === id);
-  if (t) t.section = sectionId;
-}
-
 // ---------------------------------------------------------------- render
-// Building the visible page from S. The movable things are the sound CARDS: each has its own x, y on
-// the canvas. Sections, tiles and subsections are FRAMES drawn behind them, sized to fit the cards
-// that belong to them (canvas.js, layoutFrames), so a frame stretches and shrinks as you move its cards.
-// render() creates all frames first (so they sit behind), then all cards, then fits the frames.
+// Building the visible page from S. The movable things are the CARDS (sounds and timers): each has its own x, y on the canvas.
+// Sections are FRAMES drawn behind them, sized to fit the cards and the sections that belong to them (canvas.js, layoutFrames), so a
+// frame stretches and shrinks as you move its cards. render() creates all frames first (outer ones first, so they sit behind), then
+// all cards, then fits the frames.
 
-// frames: the latest rectangles of all frames ({ frameId: { l, t, r, b } }, world coordinates).
+// frames: the latest rectangles of all frames ({ "sec:<id>": { l, t, r, b } }, world coordinates).
 let frames = {};
 
-// frameModel(exceptSoundId, exceptTileId): describes the nesting for Canvas.layoutFrames: sections
-// containing tiles containing cards and subsections. The optional arguments leave one card (or one whole
-// tile) out, to answer "where would the frames be without it?" when something is dropped.
-function frameModel(exceptSound = null, exceptTile = null) {
-  const cards = (t, test) => t.sounds.filter(s => s.id !== exceptSound && test(s));
-  return {
-    sections: S.sections.map(sec => ({
-      id: sec.id,
-      obj: sec,
-      collapsed: !!sec.collapsed,
-      tiles: S.tiles.filter(t => t.section === sec.id && t.id !== exceptTile).map(t => {
-        const subIds = new Set(t.subs.map(x => x.id));   // a card whose group is missing/unknown counts as "loose"
-        return {
-          id: t.id,
-          obj: t,
-          items: cards(t, s => !s.group || !subIds.has(s.group)),
-          subs: t.subs.map(x => ({ id: x.id, obj: x, items: cards(t, s => s.group === x.id) }))
-        };
-      })
-    }))
-  };
-}
+// frameModel(exceptCard, exceptSection): the nested description Canvas.layoutFrames wants (Nodes.model); the optional arguments leave one card
+// (or one whole section) out, to answer "where would the frames be without it?" when something is dropped.
+const frameModel = (exceptCard = null, exceptSection = null) => Nodes.model(S.sections, cards(), { exceptCard, exceptSection });
 // relayout(): re-fit every frame around its cards (cheap; called after any move or size change).
 function relayout() { frames = Canvas.layoutFrames(frameModel()); }
 
-// cardEl(snd): the page element of a sound card (null if not drawn).
-const cardEl = snd => document.querySelector(`.snd[data-iid="${snd.id}"]`);
-// tileSounds / sectionSounds: all the sounds a tile / a section contains (for moving a frame with its cards).
-const sectionSounds = sec => S.tiles.filter(t => t.section === sec.id).flatMap(t => t.sounds);
+// cardEl(card): the page element of a card (a sound or a timer).  cardsOf(list): the { obj, el } list Canvas.dragItems wants.
+const cardEl = card => document.querySelector(`[data-iid="${card.id}"]`);
+const cardsOf = list => list.map(c => ({ obj: c, el: cardEl(c) }));
 
 // dragHooks(after): the hooks passed to Canvas.dragItems for every drag on this page. While dragging,
 // `drag` blocks render(), and the frames and cables are re-fitted on every step. When the drag ends,
@@ -1449,72 +1429,53 @@ function dragHooks(after) {
     onMove: () => { relayout(); scheduleDraw(); },
     onEnd: moved => {
       drag = null;
-      if (moved) { after?.(); save(); }
+      if (moved) { edits.record("moved something"); after?.(); save(); }
       render(true);
     }
   };
 }
 
-// adoptSound(snd): after a card is dropped, decide which tile (and subsection) it belongs to NOW.
-// The frames are computed WITHOUT this card (otherwise its own frame would have stretched to cover it
-// wherever it was dropped); if the centre of the card lies inside another tile's or subsection's frame, the
-// card joins that tile / subsection. Dropped inside its own tile but outside any subsection frame, it becomes a
-// "loose" card of the tile (no subsection). Dropped in empty space, it stays where it was (membership unchanged).
-function adoptSound(snd) {
-  const loc = locate(snd.id),
-    card = cardEl(snd);
-  if (!loc || !card) return;
-  const rects = Canvas.layoutFrames(frameModel(snd.id), true),   // true = just compute, change nothing
-    fid = Canvas.frameAt(rects, snd.x + card.offsetWidth / 2, snd.y + card.offsetHeight / 2);
-  if (!fid || fid.startsWith("sec:")) return;
-  const [kind, tileId, subId] = fid.split(":");   // "sub:TILE:SUB" or "tile:TILE"
-  const dest = S.tiles.find(t => t.id === tileId);
-  if (!dest) return;
-  if (dest !== loc.tile) {
-    loc.tile.sounds.splice(loc.i, 1);
-    dest.sounds.push(snd);
-  }
-  snd.group = kind === "sub" ? subId : undefined;
+// adoptCard(card): after a card is dropped, decide which section it belongs to NOW. The frames are computed WITHOUT this card (otherwise its own
+// frame would have stretched to cover it wherever it was dropped); if the card's centre is inside a frame it joins the innermost one. Dropped in
+// empty space it stays where it was (membership unchanged).
+function adoptCard(card) {
+  const node = cardEl(card);
+  if (!node) return;
+  const rects = Canvas.layoutFrames(frameModel(card.id), true),   // true = just compute, change nothing
+    fid = Canvas.frameAt(rects, card.x + node.offsetWidth / 2, card.y + node.offsetHeight / 2);
+  if (fid) card.section = fid.slice(4);
 }
-
-// adoptTile(tile): after a tile's frame is dragged, if its centre is now inside ANOTHER section's frame,
-// the tile joins that section (frames computed without this tile, as in adoptSound).
-function adoptTile(tile) {
-  const mine = frames[`tile:${tile.id}`];
+// adoptSection(sec): after a section's frame is dragged, if its centre is inside ANOTHER section's frame (not one of its own descendants) it joins that section.
+function adoptSection(sec) {
+  const mine = frames[`sec:${sec.id}`];
   if (!mine) return;
-  const rects = Canvas.layoutFrames(frameModel(null, tile.id), true),
-    cx = (mine.l + mine.r) / 2,
-    cy = (mine.t + mine.b) / 2;
-  for (const sec of S.sections) {
-    const r = rects[`sec:${sec.id}`];
-    if (sec.id !== tile.section && r && cx > r.l && cx < r.r && cy > r.t && cy < r.b) { tile.section = sec.id; return; }
-  }
+  const rects = Canvas.layoutFrames(frameModel(null, sec.id), true),
+    fid = Canvas.frameAt(rects, (mine.l + mine.r) / 2, (mine.t + mine.b) / 2);
+  if (fid) { Nodes.reparent(S.sections, sec.id, fid.slice(4)); busFor(sec); }
 }
 
-// placeSound(snd, tile): choose a free canvas position for a sound that is being added to `tile`: the
-// nearest free spot to that tile's other cards (or to the tile's empty frame). Cards of OTHER tiles
-// are treated as bigger obstacles so the new card stays clear of their frames.
-function placeSound(snd, tile) {
-  const mine = new Set(tile.sounds.filter(s => s !== snd).map(s => s.id)),
-    rects = Canvas.itemRects(new Set([snd.id])),
+// placeCard(card, secId): choose a free canvas position for a card being added to section `secId`: the nearest free spot to that section's
+// other cards (or to its empty frame); cards of other sections are bigger obstacles, and so are other frames.
+function placeCard(card, secId) {
+  const mine = new Set(cards().filter(c => c !== card && (c.section || "") === (secId || "")).map(c => c.id)),
+    rects = Canvas.itemRects(new Set([card.id])),
     grow = (r, m) => ({ l: r.l - m, t: r.t - m, r: r.r + m, b: r.b + m });
   const obstacles = rects.map(r => (mine.has(r.id) ? r : grow(r, 70)));
-  // Other tiles' frames count too (important for tiles that are still empty).
-  Object.entries(frames).forEach(([fid, r]) => { if (fid.startsWith("tile:") && fid !== `tile:${tile.id}`) obstacles.push(grow(r, 20)); });
+  Object.entries(frames).forEach(([fid, r]) => { const id = fid.slice(4); if (id !== secId && !Nodes.inside(S.sections, secId, id)) obstacles.push(grow(r, 20)); });
   const near = rects.filter(r => mine.has(r.id)),
-    own = frames[`tile:${tile.id}`];
-  Object.assign(snd, Canvas.freeSpot(obstacles, Canvas.CARD_W, Canvas.CARD_H, near.length ? near : own ? [own] : []));
+    own = secId ? frames[`sec:${secId}`] : null;
+  Object.assign(card, Canvas.freeSpot(obstacles, Canvas.CARD_W, Canvas.CARD_H, near.length ? near : own ? [own] : []));
 }
 
-// soundEl(snd, tile, info, path): build the clickable card for one sound.
-//   snd/tile - the sound and its tile
+// soundEl(snd, info, path): build the clickable card for one sound.
+//   snd      - the sound
 //   info     - result of chainInfo() (colours/badges/inputs), shared by all cards in this render
 //   path     - result of activePath() (or null), to mark the highlighted chain
 // Returns the new DOM element (the caller inserts it into the page).
 // Contains: a drag bar along the top (grab it to move the card), name, type label, gear button (edit),
 // chain badge, input squares (one per incoming cable plus a free one), output port, volume slider,
 // hotkey label. The card sits at its own x, y on the canvas.
-function soundEl(snd, tile, info, path) {
+function soundEl(snd, info, path) {
   const e = engines.get(snd.id),
     ci = info.get(snd.id);   // ci = chain info for this sound (undefined if not chained)
   // CSS classes for the card; falsy entries ("" / undefined) are filtered out below.
@@ -1533,21 +1494,18 @@ function soundEl(snd, tile, info, path) {
   const b = el("div", { className: cls.filter(Boolean).join(" "), role: "button", tabIndex: 0, title: e?.status === "error" ? e.error : snd.url });
   b.dataset.id = snd.id;    // becomes the HTML attribute data-id="..."; drawLinks() finds cards with it
   b.dataset.iid = snd.id;   // the canvas code finds cards by this attribute
-  // Which section / tile / subsection the card belongs to (used by the "snap only to the same ..." option).
-  b.dataset.sec = tile.section;
-  b.dataset.tile = tile.id;
-  b.dataset.sub = tile.id + ":" + (snd.group || "");
+  b.dataset.sec = snd.section || "";   // which section the card is in (used by the "snap only to the same section" option)
   // Place the card on the canvas (world coordinates); hidden while its section is collapsed.
   b.style.left = snd.x + "px";
   b.style.top = snd.y + "px";
-  if (S.sections.find(x => x.id === tile.section)?.collapsed) b.style.display = "none";
+  if (Nodes.hidden(S.sections, snd.section)) b.style.display = "none";
   if (ci) setTint(b, ci.hue);
   // The drag bar: pressing here and moving drags the card (a plain press on the rest of the card plays it).
   const bar = el("div", { className: "dragbar", textContent: "⠿⠿⠿", title: "Drag to move this sound" });
   bar.addEventListener("pointerdown", ev => {
     if (ev.button !== 0) return;
-    // After the drop the card may now belong to another tile or subsection (see adoptSound).
-    Canvas.dragItems(ev, [{ obj: snd, el: b }], dragHooks(() => adoptSound(snd)));
+    // After the drop the card may now belong to another section (see adoptCard).
+    Canvas.dragItems(ev, [{ obj: snd, el: b }], dragHooks(() => adoptCard(snd)));
   });
   b.append(
     bar,
@@ -1567,7 +1525,7 @@ function soundEl(snd, tile, info, path) {
                 : "clip"
     }),
     // Gear button: opens the edit dialog. stopPropagation so the click does not also count as a card press.
-    el("span", { className: "gear", textContent: "⚙", onclick: ev => { ev.stopPropagation(); openSoundDlg(snd, tile.id); } })
+    el("span", { className: "gear", textContent: "⚙", onclick: ev => { ev.stopPropagation(); openSoundDlg(snd, snd.section); } })
   );
   if (ci) {
     // The corner badge shows the sound's position in its chain. On a sound that is PLAYING in a chain that is
@@ -1600,6 +1558,7 @@ function soundEl(snd, tile, info, path) {
   const vol = el("input", { type: "range", min: 0, max: 1, step: 0.01, value: snd.volume ?? 1, className: "svol", title: snd.amp > 1 ? `Sound volume (amplified ×${snd.amp}, about +${(20 * Math.log10(snd.amp)).toFixed(0)} dB, set in the sound's settings)` : "Sound volume" });
   // Slider moved: store it, apply to any playing audio right away, and schedule a save.
   vol.oninput = () => {
+    edits.record("changed a volume");   // a slider drag is merged into one step
     snd.volume = +vol.value;
     applyVolume(snd);
     save();
@@ -1622,9 +1581,8 @@ function soundEl(snd, tile, info, path) {
   return b;
 }
 
-// frameEl(level, fid, title color hue...): builds the shell of a frame: a <div class="frame f-LEVEL"> with
-// its id and a header holding `head` elements. Dragging the header moves all the cards inside (or the
-// empty frame itself): `getItems()` returns the { obj, el } list to move, `after` runs on drop.
+// frameEl(level, fid, hue, head, getItems, after): builds the shell of a frame: a <div class="frame f-LEVEL"> with its id and a header holding
+// the `head` elements. Dragging the header moves everything inside: `getItems()` returns the { obj, el } list, `after` runs on drop.
 function frameEl(level, fid, hue, head, getItems, after) {
   const frame = el("div", { className: `frame f-${level}` });
   frame.dataset.fid = fid;
@@ -1637,117 +1595,169 @@ function frameEl(level, fid, hue, head, getItems, after) {
   });
   return frame;
 }
-// cardsOf(sounds): the { obj, el } list Canvas.dragItems wants for a list of sounds.
-const cardsOf = sounds => sounds.map(s => ({ obj: s, el: cardEl(s) }));
 
-// sectionFrame(sec): the outermost frame, drawn around a section's tiles: title bar with collapse
-// arrow, name and tools (add tile, rename, delete). Dragging its title bar moves the whole section.
-function sectionFrame(sec) {
-  const tiles = S.tiles.filter(t => t.section === sec.id);
-  const hue = (S.sections.indexOf(sec) * 137.5 + 260) % 360;   // golden-angle steps give each section its own colour
-  const head = [
-    el("button", { className: "tiny", textContent: sec.collapsed ? "▸" : "▾", title: "Collapse / expand",
-      onclick: () => { sec.collapsed = !sec.collapsed; save(); render(); } }),
-    el("h2", { textContent: sec.name }),
-    el("span", { className: "tools" },
-      el("button", { textContent: "+ Tile", onclick: () => addTile(sec.id) }),
-      el("button", { textContent: "✎", title: "Rename section", onclick: () => {
-        const n = prompt("Section name", sec.name);
-        if (n) { sec.name = n; save(); render(); }
-      } }),
-      el("button", { textContent: "🗑", title: "Delete section", onclick: () => {
-        if (S.sections.length < 2) return alert("Keep at least one section.");
-        const dest = S.sections.find(s => s !== sec);   // the tiles of a deleted section move to another one
-        if (tiles.length && !confirm(`Delete section "${sec.name}"? Its ${tiles.length} tile(s) move to "${dest.name}".`)) return;
-        tiles.forEach(t => (t.section = dest.id));
-        S.sections = S.sections.filter(s => s !== sec);
-        save();
-        render();
-      } }))
+// ---- the create menu. ONE list of "new ..." entries serves the click menu on empty canvas, a section's + button and the toolbar buttons:
+// createEntries(secId, at) -> [[label, function]]. `secId` is the section the new thing goes in ("" = none), `at` the world position it should
+// appear at (null = a free spot).
+function createEntries(secId, at) {
+  return [
+    ["New section", () => addSection(secId, at)],
+    ["New sound", () => { openSoundDlg(null, secId); newSoundAt = at; }],
+    ["New timer", () => newTimer(at, secId)],
   ];
-  return frameEl("sec", `sec:${sec.id}`, hue, head,
-    () => (sectionSounds(sec).length ? cardsOf(sectionSounds(sec)) : [{ obj: sec, el: document.querySelector(`.frame[data-fid="sec:${sec.id}"]`) }]));
 }
 
-// tileFrame(tile): the frame around one tile's cards (and subsections): title bar with the tile's name,
-// volume slider, fade button and tools (stop all, add sound, settings, delete). Dragging the title bar moves
-// the tile's cards; dropping it inside another section's frame moves the tile to that section.
-function tileFrame(tile) {
-  const fadeOn = tile.fade?.on ?? true;
-  const tools = el("span", { className: "tools" },
-    el("button", { textContent: "■", title: "Stop this tile", onclick: () => tile.sounds.forEach(s => stopSound(s)) }),
-    el("button", { textContent: "+", title: "Add sound here", onclick: () => openSoundDlg(null, tile.id) }),
-    el("button", { textContent: "⚙", title: "Tile settings (rename, subsections, fades)", onclick: () => openTileDlg(tile) }));
-  // Pinned tiles cannot be deleted. confirm() shows the browser's blocking OK/Cancel box.
-  if (!tile.pinned) tools.append(el("button", {
-    textContent: "🗑",
-    title: "Delete tile",
-    onclick: () => {
-      if (confirm(`Delete tile "${tile.name}" and its ${tile.sounds.length} sounds?`)) {
-        tile.sounds.forEach(s => stopSound(s, true));   // silence everything first
-        S.tiles = S.tiles.filter(t => t !== tile);      // keep every tile except this one
-        cleanLinks();                                   // drop chain links that pointed at its sounds
-        save();
-        render();
-      }
-    }
-  }));
-  const vol = el("input", { type: "range", min: 0, max: 1, step: 0.01, value: tile.volume ?? 1, className: "tvol", title: "Tile volume" });
+// addSection(parentId, at): ask for a name and add an empty section inside `parentId` (or at the top level). Its (empty) frame goes where the canvas
+// was clicked (`at`), or in the free spot nearest to its siblings.
+function addSection(parentId, at) {
+  const name = prompt(parentId ? "New section name (it goes inside this one)" : "New section name (e.g. 'Boss Phase 2')");
+  if (!name) return;
+  const sec = { id: uid(), name, parent: parentId || "", volume: 1, fade: { on: true, secs: 1 }, linkFade: 2 };
+  const grow = (r, m) => ({ l: r.l - m, t: r.t - m, r: r.r + m, b: r.b + m });
+  const obstacles = Object.values(frames).map(r => grow(r, 24));
+  const near = S.sections.filter(x => x.parent === sec.parent).map(x => frames[`sec:${x.id}`]).filter(Boolean);
+  Object.assign(sec, at ? { x: Math.round(at.x), y: Math.round(at.y) } : Canvas.freeSpot(obstacles, 340, 120, near));
+  edits.record("added a section");
+  S.sections.push(sec);
+  save();
+  render();
+}
+
+// deleteSection(sec): delete a section WITHOUT deleting anything in it: its child sections, sounds and timers move up to its own parent.
+function deleteSection(sec) {
+  const kids = Nodes.kids(S.sections, sec.id).length, inside = cards().filter(c => c.section === sec.id).length;
+  const up = Nodes.byId(S.sections, sec.parent)?.name;
+  if ((kids || inside) && !confirm(`Delete section "${sec.name}"? Its ${[kids && kids + " section(s)", inside && inside + " sound(s) and timer(s)"].filter(Boolean).join(" and ")} stay on the board${up ? `, inside "${up}"` : ", without a section"}.`)) return;
+  edits.record("deleted a section");
+  S.sections = Nodes.remove(S.sections, cards(), sec.id);
+  buses.delete(sec.id);   // (anything still playing through it keeps its level until it next starts)
+  S.sections.forEach(x => { if (buses.has(x.id)) busFor(x); });   // children of the deleted section now feed its parent's bus
+  save();
+  render();
+}
+
+// openSectionDlg(sec): the section's settings (the shared Nodes.form dialog): name, the section it sits in, and the fade lengths.
+function openSectionDlg(sec) {
+  Nodes.form({
+    title: "Section settings",
+    fields: [
+      { key: "name", label: "Name", value: sec.name },
+      { key: "parent", label: "Inside", type: "select", value: sec.parent || "", options: sectionOptions({ except: sec.id }), hint: "(a section can sit inside another)" },
+      { key: "fadeOn", label: "Fade out when stopping a sound here", type: "checkbox", value: sec.fade?.on ?? true },
+      { key: "fadeSecs", label: "Fade-out seconds", type: "number", min: 0.1, step: 0.1, value: sec.fade?.secs ?? 1 },
+      { key: "linkSecs", label: "Crossfade seconds when a chain moves on", type: "number", min: 0, step: 0.1, value: sec.linkFade ?? 2 },
+    ],
+    save: v => {
+      edits.record("edited a section");
+      sec.name = v.name.trim() || sec.name;
+      sec.fade = { on: v.fadeOn, secs: Math.max(0.1, v.fadeSecs || 1) };
+      sec.linkFade = Math.max(0, v.linkSecs ?? 2);
+      Nodes.reparent(S.sections, sec.id, v.parent);
+      if (buses.has(sec.id)) busFor(sec);
+      save();
+      render(true);
+    },
+  });
+}
+
+// stopSection(sec): stop every sound in the section and in the sections inside it.
+function stopSection(sec) {
+  allSounds().filter(x => Nodes.inside(S.sections, x.section, sec.id)).forEach(x => stopSound(x));
+}
+
+// sectionFrame(sec): the frame around everything in one section (its sounds, timers and child sections): title bar with a collapse arrow, the
+// name, a volume slider, the fade button and tools (■ stop, + add something here, ⚙ settings, 🗑 delete). Dragging the title bar moves
+// everything inside; dropping it inside another section's frame moves the section into that one. (Pinned sections cannot be deleted.)
+function sectionFrame(sec) {
+  const fadeOn = sec.fade?.on ?? true, d = Nodes.depth(S.sections, sec.id), hue = Nodes.hue(S.sections, sec.id) ?? 260;
+  const below = cards().filter(c => Nodes.inside(S.sections, c.section, sec.id));   // every card in this section or any section inside it
+  const vol = el("input", { type: "range", min: 0, max: 1, step: 0.01, value: sec.volume ?? 1, className: "tvol", title: "Section volume (scales everything inside it)" });
   vol.oninput = () => {
-    tile.volume = +vol.value;
-    busFor(tile);   // busFor() re-applies tile.volume to the tile's GainNode
+    edits.record("changed a section volume");
+    sec.volume = +vol.value;
+    if (buses.has(sec.id)) busFor(sec);   // re-applies sec.volume to the section's GainNode
     save();
   };
   const fadeBtn = el("button", {
     className: "tiny fadebtn" + (fadeOn ? " on-state" : ""),
-    textContent: fadeOn ? `Fade ${tile.fade.secs}s` : "Fade off",
-    title: "Fade out when stopping sounds in this tile (click to toggle, ⚙ to change length)",
-    onclick: () => { tile.fade.on = !fadeOn; save(); render(); }
+    textContent: fadeOn ? `Fade ${sec.fade.secs}s` : "Fade off",
+    title: "Fade out when stopping sounds in this section (click to toggle, ⚙ to change length)",
+    onclick: () => { edits.record("toggled fade"); sec.fade = { on: !fadeOn, secs: sec.fade?.secs ?? 1 }; save(); render(); }
   });
-  const hue = (S.sections.findIndex(x => x.id === tile.section) * 137.5 + 260) % 360;
-  return frameEl("tile", `tile:${tile.id}`, hue, [el("h2", { textContent: tile.name }), vol, fadeBtn, tools],
-    () => (tile.sounds.length ? cardsOf(tile.sounds) : [{ obj: tile, el: document.querySelector(`.frame[data-fid="tile:${tile.id}"]`) }]),
-    () => adoptTile(tile));
-}
-
-// subFrame(tile, sub): the frame around one subsection's cards: its name and tools (add sound, rename,
-// delete). Dragging its title bar moves the subsection's cards.
-function subFrame(tile, sub) {
-  const mine = tile.sounds.filter(s => s.group === sub.id);
   const head = [
-    el("h3", { textContent: sub.name }),
-    el("span", { className: "tools" },
-      el("button", { textContent: "+", title: "Add sound to subsection", onclick: () => openSoundDlg(null, tile.id, sub.id) }),
-      el("button", { textContent: "✎", title: "Rename", onclick: () => {
-        const n = prompt("Subsection name", sub.name);
-        if (n) { sub.name = n; save(); render(); }
-      } }),
-      el("button", { textContent: "🗑", title: "Delete subsection (sounds stay in the tile)", onclick: () => {
-        tile.subs = tile.subs.filter(x => x !== sub);
-        tile.sounds.forEach(s => { if (s.group === sub.id) delete s.group; });
-        save();
-        render();
-      } }))
+    el("button", { className: "tiny", textContent: sec.collapsed ? "▸" : "▾", title: "Collapse / expand",
+      onclick: () => { edits.record(sec.collapsed ? "expanded a section" : "collapsed a section"); sec.collapsed = !sec.collapsed; save(); render(); } }),
+    el(d < 2 ? "h2" : "h3", { textContent: sec.name }),
+    vol, fadeBtn,
+    Nodes.tools([
+      { icon: "■", title: "Stop everything in this section", run: () => stopSection(sec) },
+      { icon: "+", title: "Add a section, sound or timer here", run: ev => Canvas.popupMenu(createEntries(sec.id, null), ev.clientX, ev.clientY) },
+      { icon: "⚙", title: "Section settings (rename, move inside another section, fades)", run: () => openSectionDlg(sec) },
+      { icon: "🗑", title: "Delete section (what is inside stays on the board)", hidden: !!sec.pinned, run: () => deleteSection(sec) },
+    ]),
   ];
-  return frameEl("sub", `sub:${tile.id}:${sub.id}`, 260, head,
-    () => (mine.length ? cardsOf(mine) : [{ obj: sub, el: document.querySelector(`.frame[data-fid="sub:${tile.id}:${sub.id}"]`) }]));
+  // What dragging the title bar moves: every card below, plus the empty sections below (they have no cards to carry their frame along).
+  const moveSet = () => {
+    const out = cardsOf(below);
+    [sec.id, ...Nodes.descendants(S.sections, sec.id)].forEach(id => {
+      if (!cards().some(c => Nodes.inside(S.sections, c.section, id))) out.push({ obj: Nodes.byId(S.sections, id), el: document.querySelector(`.frame[data-fid="sec:${id}"]`) });
+    });
+    return out;
+  };
+  return frameEl(["sec", "tile", "sub"][Math.min(d, 2)], `sec:${sec.id}`, hue, head, moveSet, () => adoptSection(sec));
 }
 
-// addTile(sectionId, at): ask for a name and add a new empty tile to that section (or the first section if
-// sectionId is null). Its (empty) frame goes where the canvas was clicked (`at`, world coordinates, from the click menu), or
-// else in the free spot nearest to that section's other frames.
-function addTile(sectionId, at) {
-  const name = prompt("New tile name (e.g. 'Boss Phase 2')");
-  if (!name) return;
-  const sec = sectionId || S.sections[0].id;
-  const tile = { id: uid(), name, pinned: false, section: sec, sounds: [], subs: [], volume: 1, fade: { on: true, secs: 1 }, linkFade: 2 };
-  const grow = (r, m) => ({ l: r.l - m, t: r.t - m, r: r.r + m, b: r.b + m });
-  const obstacles = Object.entries(frames).filter(([fid]) => fid.startsWith("tile:")).map(([, r]) => grow(r, 24));
-  const near = S.tiles.filter(t => t.section === sec).map(t => frames[`tile:${t.id}`]).filter(Boolean);
-  Object.assign(tile, at ? { x: Math.round(at.x), y: Math.round(at.y) } : Canvas.freeSpot(obstacles, 320, 100, near));
-  S.tiles.push(tile);
+// ------------------------------------------------------------ timer cards
+// A TIMER card counts down (timers.js holds everything the campaign tracker's timers share). When it finishes the card flashes, the Soundboard tab
+// flashes in the top bar until it is opened, and its linked sound (if there is one) plays right away.
+function timerEl(t) {
+  const b = el("div", { className: "tmr " + Timers.state(t.timer) + (Timers.alarming(t) ? " alarm" : ""), title: "A timer. Start, pause or reset it with the buttons." });
+  b.dataset.id = t.id;
+  b.dataset.iid = t.id;   // the canvas code finds cards by this attribute
+  b.dataset.sec = t.section || "";
+  b.style.left = t.x + "px";
+  b.style.top = t.y + "px";
+  if (Nodes.hidden(S.sections, t.section)) b.style.display = "none";
+  const bar = el("div", { className: "dragbar", textContent: "⠿⠿⠿", title: "Drag to move this timer" });
+  bar.addEventListener("pointerdown", ev => { if (ev.button === 0) Canvas.dragItems(ev, [{ obj: t, el: b }], dragHooks(() => adoptCard(t))); });
+  b.append(bar, el("div", { className: "ftitle" },
+    el("span", { className: "fmark", textContent: "⏱" }),
+    el("span", { className: "fname", textContent: t.name }),
+    Nodes.tools([
+      { icon: "⚙", title: "Timer settings", cls: "gear", run: () => openTimerDlg(t) },
+      { icon: "🗑", title: "Delete this timer", run: () => { if (confirm(`Delete timer "${t.name}"?`)) { edits.record("deleted a timer"); S.timers = S.timers.filter(x => x !== t); save(); render(); } } },
+    ], "ftools")));
+  b.append(...Timers.body(t, () => { edits.record("changed a timer"); save(); render(); }));
+  return b;
+}
+// timerDone(card, late): called by Timers.watch when a timer finishes: save it, redraw (the card flashes), flash this page's tab in the top bar and
+// play the linked sound (not when it finished while the page was closed: that would be long after the fact).
+function timerDone(card, late) {
+  edits.record("a timer finished");
   save();
-  render();
+  render(true);
+  Timers.flashTab("sound");
+  const snd = !late && card.sound ? byId(card.sound) : null;
+  if (snd) trigger(snd).catch(err => console.error("play failed", err));
+}
+function openTimerDlg(t) {
+  Nodes.form({
+    title: "Timer",
+    fields: Timers.fields(t, { sounds: allSounds().map(s => ({ value: s.id, label: (s.section ? Nodes.path(S.sections, s.section) + " › " : "") + s.name })), sections: sectionOptions() }),
+    save: v => { edits.record("edited a timer"); Timers.apply(t, v); save(); render(true); },
+  });
+}
+// newTimer(at, secId): ask for a name, add a timer card (five minutes to start from) in that section and open its settings.
+function newTimer(at, secId) {
+  const name = prompt("Timer name (e.g. 'The ritual completes')");
+  if (!name) return;
+  const t = { id: uid(), name, section: secId || "", timer: { secs: 300 } };
+  if (at) { t.x = Math.round(at.x - 120); t.y = Math.round(at.y - 40); } else placeCard(t, secId);
+  edits.record("added a timer");
+  S.timers.push(t);
+  save();
+  render(true);
+  openTimerDlg(t);
 }
 
 // render(force): rebuild the whole page from S. The central "state -> screen" function.
@@ -1760,21 +1770,20 @@ function render(force = false) {
   if (!force && (drag || linking)) { pendingRender = true; return; } // don't rebuild the DOM mid-drag
   pendingRender = false;
   cleanLinks();
-  const root = $("#tiles");
+  const root = $("#tiles");   // (the element's id is a leftover: it holds all the frames and cards)
   root.textContent = "";   // removes all children: wipes the old UI
   const path = activePath(),
     info = chainInfo(path);
   document.body.classList.toggle("haspath", !!path);   // a CSS class lets the stylesheet dim non-path cards
-  // Frames first (so they sit behind the cards): sections, then tiles, then subsections; then every card.
-  S.sections.forEach(sec => root.append(sectionFrame(sec)));
-  S.tiles.forEach(t => root.append(tileFrame(t)));
-  S.tiles.forEach(t => t.subs.forEach(sub => root.append(subFrame(t, sub))));
-  S.tiles.forEach(t => t.sounds.forEach(s => root.append(soundEl(s, t, info, path))));
+  // Frames first (behind), outer ones before the ones inside them; then every card.
+  [...S.sections].sort((a, b) => Nodes.depth(S.sections, a.id) - Nodes.depth(S.sections, b.id)).forEach(sec => root.append(sectionFrame(sec)));
+  S.sounds.forEach(s => root.append(soundEl(s, info, path)));
+  S.timers.forEach(t => root.append(timerEl(t)));
   relayout();   // fit each frame around its cards
   // Watch the size of every card: when one grows or shrinks (its name wrapped, the font loaded) the frames
   // and cables must follow. disconnect() forgets the old elements; observe() watches the new ones.
   cardObserver.disconnect();
-  document.querySelectorAll(".snd").forEach(n => cardObserver.observe(n));
+  document.querySelectorAll(".snd,.tmr").forEach(n => cardObserver.observe(n));
   drawDock(info);   // the "chains playing" bar (only shown while two or more chains are playing)
   scheduleDraw();
 }
@@ -1828,31 +1837,16 @@ let editing = null;
 // Any element with a data-close attribute is a Cancel/close button. (`(b.onclick = ...)` in parentheses returns the assigned function.)
 document.querySelectorAll("[data-close]").forEach(b => (b.onclick = () => b.closest("dialog").close()));
 
-// fillGroups(tileId, selected): fill the dialog's "subsection" dropdown with the subsections of
-// the chosen tile (plus "(none)") and select `selected`.
-function fillGroups(tileId, selected) {
-  const tile = S.tiles.find(t => t.id === tileId);
-  form.group.textContent = "";
-  form.group.append(el("option", { value: "", textContent: "(none)" }));
-  (tile?.subs || []).forEach(s => form.group.append(el("option", { value: s.id, textContent: s.name })));
-  form.group.value = selected || "";
-}
-// When the user picks a different tile in the dialog, the subsection list must change too.
-form.tile.addEventListener("change", () => fillGroups(form.tile.value, ""));
-
-// openSoundDlg(snd, tileId, groupId): open the dialog to edit `snd`, or to add a new sound
-// (snd = null) pre-selecting a tile and optionally a subsection.
-function openSoundDlg(snd, tileId, groupId) {
+// openSoundDlg(snd, secId): open the dialog to edit `snd`, or to add a new sound (snd = null) pre-selecting a section.
+function openSoundDlg(snd, secId) {
   editing = snd;
-  const sel = form.tile;
-  sel.textContent = "";
-  S.tiles.forEach(t => sel.append(el("option", { value: t.id, textContent: t.name })));
+  const sel = form.section;
+  sel.replaceChildren(...sectionOptions().map(o => el("option", { value: o.value, textContent: o.label })));
   form.reset();   // clear any text left over from last time
   $("#soundDlgTitle").textContent = snd ? "Edit sound" : "Add sound";
   $("#deleteSound").hidden = !snd;   // hide the Delete button when adding
   $("#soundMsg").textContent = "";
-  form.tile.value = tileId || S.tiles[0].id;
-  fillGroups(form.tile.value, snd ? snd.group : groupId);
+  form.section.value = secId ?? firstSection();
   if (snd) {
     // Copy the sound's fields into the form controls. An auto-filled name is shown as blank so it can keep tracking the media title.
     form.url.value = snd.url;
@@ -1880,7 +1874,7 @@ function showAmp() {
   form.querySelector(".ampout").textContent = a > 1 ? `×${a.toFixed(1)} (+${(20 * Math.log10(a)).toFixed(0)} dB)` : "off";
 }
 form.amp.addEventListener("input", showAmp);
-$("#addSoundBtn").onclick = () => openSoundDlg(null, null);
+$("#addSoundBtn").onclick = () => openSoundDlg(null, firstSection());
 // Convenience: pasting a myinstants.com link switches the type to "instant" automatically. (/.../i is a regular expression literal; i = case-insensitive.)
 form.url.addEventListener("input", () => {
   if (/myinstants\.com/i.test(form.url.value)) form.type.value = "instant";
@@ -1961,13 +1955,14 @@ $("#libSelect").addEventListener("change", () => {
   if (name) form.url.value = LIBRARY_PREFIX + name;
 });
 
-// Delete button in the dialog: stop the sound, free its engine, remove it from its tile, tidy chain links.
+// Delete button in the dialog: stop the sound, free its engine, remove it from the board, tidy chain links.
 // engines.delete drops our reference; the garbage collector reclaims the audio data.
 $("#deleteSound").onclick = () => {
+  edits.record("deleted a sound");
   const loc = locate(editing.id);
   stopSound(editing, true);
   engines.delete(editing.id);
-  loc.tile.sounds.splice(loc.i, 1);
+  S.sounds.splice(loc.i, 1);
   cleanLinks();
   dlg.close();
   save();
@@ -1978,6 +1973,7 @@ $("#deleteSound").onclick = () => {
 // closes the dialog and saves. preventDefault() stops the browser's default form submission (a page reload).
 form.addEventListener("submit", ev => {
   ev.preventDefault();
+  edits.record(editing ? "edited a sound" : "added a sound");
   // num(v): empty box -> undefined (field not set), otherwise a number.
   const f = form,
     num = v => (v === "" ? undefined : +v);
@@ -1995,35 +1991,30 @@ form.addEventListener("submit", ev => {
     restart: f.restart.checked,
     // Blank, zero or negative means "no repeat" (undefined fields are left out when saving).
     repeatDelay: num(f.repeatDelay.value) > 0 ? num(f.repeatDelay.value) : undefined,
-    group: f.group.value || undefined,
+    section: f.section.value,
   };
   // A link must be http(s):// or "library:<file>" (a file in the server's MP3 folder; see the section below).
   if (!/^https?:\/\//i.test(data.url) && !data.url.startsWith(LIBRARY_PREFIX)) {
     $("#soundMsg").textContent = "Enter a full http(s) link, or use Browse / pick a file from the MP3 folder.";
     return;
   }
-  const dest = S.tiles.find(t => t.id === f.tile.value);
   if (editing) {
-    const old = locate(editing.id).tile;
+    const moved = (editing.section || "") !== data.section;
     // A changed URL or type means the old audio is no longer valid: stop it and discard its engine so loadSound() starts over.
     if (editing.url !== data.url || editing.type !== data.type) { stopSound(editing, true); engines.delete(editing.id); }
     cancelRepeat(editing);          // changed settings: any pending repeat timer starts over from the next play
     Object.assign(editing, data);   // copy all the form fields onto the existing sound object
     applyVolume(editing);           // a sound that is playing right now takes the new amp at once
     if (!data.name) editing.autoName = true; else delete editing.autoName;
-    if (old !== dest) {
-      old.sounds.splice(old.sounds.indexOf(editing), 1);
-      placeSound(editing, dest);   // moved to another tile in the dialog: put the card next to that tile's cards
-      dest.sounds.push(editing);
-    }
+    if (moved) placeCard(editing, data.section);   // moved to another section in the dialog: put the card next to that section's cards
     loadSound(editing);   // returns a Promise; we do not wait. It will call render() when ready
   } else {
     // `...data` (spread) copies every field of data into the new object literal.
     const snd = { id: uid(), ...data, autoName: !data.name };
     if (!data.name) snd.name = "Loading…";
     if (newSoundAt) { snd.x = Math.round(newSoundAt.x - 100); snd.y = Math.round(newSoundAt.y - 40); }   // where the canvas was clicked
-    else placeSound(snd, dest);   // a free spot next to the tile's other cards
-    dest.sounds.push(snd);
+    else placeCard(snd, data.section);   // a free spot next to the section's other cards
+    S.sounds.push(snd);
     loadSound(snd);
   }
   dlg.close();
@@ -2031,118 +2022,17 @@ form.addEventListener("submit", ev => {
   render(true);
 });
 
-// Toolbar buttons for adding tiles and sections.
-$("#addTileBtn").onclick = () => addTile(null);
-$("#addSectionBtn").onclick = () => {
-  const name = prompt("New section name (e.g. 'Act 2')");
-  if (name) {
-    S.sections.push({ id: uid(), name });
-    save();
-    render();
-  }
-};
+// Toolbar buttons for adding sections and timers (the sound button is above).
+$("#addSectionBtn").onclick = () => addSection("", null);
+$("#addTimerBtn").onclick = () => newTimer(null, firstSection());
 
 // ---------------------------------------------------------- click menu
-// A plain click on empty canvas opens a small menu at that spot (Canvas.clickMenu in canvas.js, the same menu the campaign
-// tracker uses): new section, tile or sound, created where you clicked and, for a tile or sound, inside the section or tile
-// the click landed in. newSoundAt remembers the spot for the sound dialog (null = a free spot next to the tile's other cards).
+// A plain click on empty canvas opens a small menu at that spot (Canvas.clickMenu in canvas.js, the same menu the campaign tracker uses; the entries
+// are the one createEntries list): new section, sound or timer, created where you clicked and inside the section the click landed in.
+// newSoundAt remembers the spot for the sound dialog (null = a free spot next to the section's other cards).
 let newSoundAt = null;
 dlg.addEventListener("close", () => { newSoundAt = null; });
-// soundMenu(at, here): the entries. `at` is the canvas position of the click and `here` the frame it landed inside, so the new
-// thing goes into the right section or tile and at that spot.
-function soundMenu(at, here) {
-  const tile = (here.kind === "tile" || here.kind === "sub" ? S.tiles.find(t => t.id === here.id) : null) || S.tiles[0];
-  const sec = here.kind === "sec" ? S.sections.find(x => x.id === here.id) : S.sections.find(x => x.id === tile.section);
-  return [
-    ["New section", () => {
-      const name = prompt("New section name (e.g. 'Act 2')");
-      if (!name) return;
-      S.sections.push({ id: uid(), name, x: Math.round(at.x), y: Math.round(at.y) });
-      save(); render(true);
-    }],
-    ["New tile", () => addTile((sec || S.sections[0]).id, at)],
-    ["New sound", () => { openSoundDlg(null, tile.id, here.kind === "sub" ? here.sub : undefined); newSoundAt = at; }],
-  ];
-}
-if (!MOBILE) Canvas.clickMenu($("#stage"), () => frames, soundMenu);
-
-// ---------------------------------------------------------- tile settings
-// The tile settings dialog (rename, move to another section, fade lengths, subsections).
-// Subsection edits are made on a COPY (draftSubs) and only applied to the tile when OK is
-// pressed, so Cancel discards them.
-const tdlg = $("#tileDlg"),
-  tform = $("#tileForm");
-// editingTile: the tile whose settings are open. draftSubs: working copy of its subsections ({ id, name, del? }).
-let editingTile = null,
-  draftSubs = [];
-
-// drawSubList(): redraw the subsection list inside the tile dialog from draftSubs.
-// Entries marked `del` are hidden (they are deleted for real only on submit).
-function drawSubList() {
-  const box = $("#subList");
-  box.textContent = "";
-  draftSubs.filter(x => !x.del).forEach(x => {
-    const inp = el("input", { value: x.name });
-    inp.oninput = () => (x.name = inp.value);   // closure: edits the draft entry `x` as the user types
-    box.append(el("div", { className: "row subrow" }, inp, el("button", {
-      type: "button",   // type "button" so it does not submit the form
-      className: "danger tiny",
-      textContent: "Delete",
-      title: "Sounds stay in the tile",
-      onclick: () => {
-        x.del = true;
-        drawSubList();
-      }
-    })));
-  });
-  if (!box.children.length) box.append(el("span", { className: "muted", textContent: "No subsections yet." }));
-}
-
-// addDraftSub(): add the name typed in the "new subsection" box to draftSubs (ignored if blank).
-function addDraftSub() {
-  const inp = $("#newSub"),
-    name = inp.value.trim();
-  if (!name) return;
-  draftSubs.push({ id: uid(), name });
-  inp.value = "";
-  drawSubList();
-}
-$("#addSubBtn").onclick = addDraftSub;
-// Pressing Enter in that box adds the subsection instead of submitting the whole dialog.
-$("#newSub").addEventListener("keydown", ev => { if (ev.key === "Enter") { ev.preventDefault(); addDraftSub(); } });
-
-// openTileDlg(tile): fill the tile dialog with the tile's current settings and show it.
-// `{ ...x }` copies each subsection object so edits do not touch the real ones until submit.
-function openTileDlg(tile) {
-  editingTile = tile;
-  tform.section.textContent = "";
-  S.sections.forEach(s => tform.section.append(el("option", { value: s.id, textContent: s.name })));
-  tform.name.value = tile.name;
-  tform.section.value = tile.section;
-  tform.fadeOn.checked = tile.fade?.on ?? true;
-  tform.fadeSecs.value = tile.fade?.secs ?? 1;
-  tform.linkSecs.value = tile.linkFade ?? 2;
-  draftSubs = tile.subs.map(x => ({ ...x }));
-  drawSubList();
-  tdlg.showModal();
-}
-// Dialog OK: copy the form values (clamped to sane minimums) onto the tile, apply the subsection
-// edits (deleted subsections leave their sounds in the tile, i.e. their `group` is cleared),
-// move the tile if a different section was chosen, then save and rebuild.
-tform.addEventListener("submit", ev => {
-  ev.preventDefault();
-  const t = editingTile;
-  addDraftSub(); // a typed-but-not-added name still counts
-  t.name = tform.name.value.trim() || t.name;
-  t.fade = { on: tform.fadeOn.checked, secs: Math.max(0.1, +tform.fadeSecs.value || 1) };
-  t.linkFade = Math.max(0, +tform.linkSecs.value || 0);
-  draftSubs.filter(x => x.del).forEach(x => t.sounds.forEach(s => { if (s.group === x.id) delete s.group; }));
-  t.subs = draftSubs.filter(x => !x.del).map(x => ({ id: x.id, name: x.name.trim() || "Subsection" }));
-  if (t.section !== tform.section.value) moveTile(t.id, tform.section.value, null);
-  tdlg.close();
-  save();
-  render(true);
-});
+Canvas.clickMenu($("#stage"), () => frames, (at, here) => createEntries(here.kind === "sec" ? here.id : "", at));
 
 // --------------------------------------------------- campaigns & versions
 // (The element ids and function names still say "preset": the feature was renamed Campaigns, only the wording and URLs changed.)
@@ -2190,6 +2080,7 @@ async function applyState(p) {
   S = await p;
   normalize();
   engines.clear();
+  edits.clear();   // a different campaign or version: the old history no longer applies
   pdlg.close();
   render();
   loadAll();
@@ -2237,7 +2128,7 @@ try {
 // { type: "shown" } and we redraw the cables. (window.postMessage is how pages in different frames
 // talk to each other; the receiving page gets a "message" event.)
 addEventListener("message", ev => {
-  if (ev.data?.type === "shown" && !MOBILE) scheduleDraw();
+  if (ev.data?.type === "shown") scheduleDraw();
   if (ev.data?.type === "focusSound") revealSound(ev.data.id);
 });
 
@@ -2247,9 +2138,9 @@ addEventListener("message", ev => {
 function revealSound(id) {
   const loc = locate(id);
   if (!loc) return;
-  const sec = S.sections.find(x => x.id === loc.tile.section);
-  if (sec?.collapsed) {   // a collapsed section hides its cards: open it first
-    sec.collapsed = false;
+  const shut = Nodes.chain(S.sections, loc.snd.section).filter(x => x.collapsed);
+  if (shut.length) {   // a collapsed section (or one above it) hides its cards: open them first
+    shut.forEach(x => (x.collapsed = false));
     save();
     render(true);
   }
@@ -2270,13 +2161,15 @@ function loadAll() { allSounds().forEach(s => loadSound(s)); }
 // (cards appear, showing "loading…") -> kick off loading of all sounds in the background.
 (async () => {
   // Turn #stage / #world into the pan-and-zoom canvas (not on phones, which use the plain page).
-  // If there is no saved view from an earlier visit, frame all the tiles once they are drawn.
-  const restored = MOBILE ? true : Canvas.mount($("#stage"), $("#world"), "soundboard");
+  // If there is no saved view from an earlier visit, frame everything once they are drawn.
+  const restored = Canvas.mount($("#stage"), $("#world"), "soundboard");
   S = await api("/api/state");
   normalize();
+  edits.reset();   // the loaded state is where the history starts
   render();
-  if (!restored) Canvas.fit();   // first visit: zoom/pan so every tile is in view
+  if (!restored) Canvas.fit();   // first visit: zoom/pan so everything is in view
   loadAll(); // preload + decode everything up front so playback is instant
+  Timers.watch({ cards: () => S.timers, onComplete: timerDone, redraw: () => render() });   // the clock for the timer cards
   startRepeatClock();   // begin the once-a-second heartbeat that fires repeat timers
   pollLibrary();        // fill the MP3-folder list now...
   setInterval(pollLibrary, 3000);   // ...and keep it current (also retries library sounds that had failed)

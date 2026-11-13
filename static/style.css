@@ -2303,7 +2303,8 @@ body.canvaspage #tiles > .snd {
 .f-sec > header h2 {
   font-size: 1.05rem;
 }
-/* Tile frames: slightly inset look, with room for the volume slider and fade button. */
+/* Section frames one level inside a top-level section (class f-tile is kept from before tiles became sections): slightly inset look,
+   with room for the volume slider and fade button. */
 .f-tile {
   border-radius: 14px;
   background: hsl(var(--gh, 260) 35% 30% / .14);
@@ -2315,7 +2316,7 @@ body.canvaspage #tiles > .snd {
 .f-tile > header h2 {
   font-size: .95rem;
 }
-/* Subsection frames: dashed, with a small title. */
+/* Section frames two or more levels deep (class f-sub): dashed, with a small title. */
 .f-sub {
   border-radius: 10px;
   border: 2px dashed hsl(var(--gh, 260) 35% 55% / .5);
@@ -2697,3 +2698,39 @@ h1 .brandicon { width: 1.15em; height: 1.15em; margin-right: .35rem; }
 .link.flash { animation: wireflash .5s ease-in-out 4; }
 @keyframes wireflash { 50% { stroke-width: 7px; filter: drop-shadow(0 0 8px #ff4fd8); } }
 #condDlg .subrow .inum { flex: 0 0 5rem; width: 5rem; }
+
+/* ---- TIMER cards (timers.js; on the campaign tracker a timer is a .flag.timer, on the soundboard a .tmr). */
+.flag.timer, .tmr { border-left-color: #e0b341; min-width: 200px; }
+.tmr {
+  position: absolute;
+  width: max-content;
+  max-width: 320px;
+  background: var(--panel2);
+  border: 1px solid #3a3450;
+  border-left: 4px solid #e0b341;
+  border-radius: 10px;
+  padding: .6rem .75rem .5rem;
+  user-select: none;
+}
+.tmr:hover { border-color: var(--accent); }
+.tcount {
+  font-size: 1.9rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  margin: .35rem 0 .25rem;
+}
+.tcount.paused { color: var(--muted); }
+.tcount.done { color: var(--ok); }
+.tbtns { display: flex; gap: .3rem; justify-content: center; }
+/* A timer that just finished: the card pulses for a few seconds (timers.js decides how long, the page re-renders when it is over). */
+.flag.timer.alarm, .tmr.alarm { animation: timeralarm .6s ease-in-out infinite; border-color: #ffd34d; }
+@keyframes timeralarm {
+  50% { box-shadow: 0 0 0 4px #ffd34d, 0 0 26px 8px #ff8a3d; background: #4a3a14; }
+}
+.flag.timer.done, .tmr.done { background: #223a31; border-left-color: var(--ok); }
+/* The tab link of a page whose timer finished flashes in the top bar until that tab is opened (shell.html). */
+.appnav-links a.flash { animation: tabflash .7s ease-in-out infinite; color: #fff; }
+@keyframes tabflash {
+  50% { background: #ffd34d; color: #000; border-color: #ffd34d; }
+}

@@ -11,7 +11,7 @@
     API between this outline and the code. Renaming one breaks the script.
   - A class="foo" attribute is a label that can be shared by many elements; CSS
     (static/style.css) and the scripts use classes to style or select groups.
-  - Most of the visible board (tabs, sections, tiles, sound buttons, chain
+  - Most of the visible board (tabs, sections, sound and timer cards, chain
     cables) is NOT written here. app.js builds it at runtime and inserts it into
     the empty containers below (nav#tabs, svg#links, main#tiles, and the
     empty <select>/<div>/<ul> elements inside the dialogs).
@@ -20,7 +20,7 @@
   phone layout at the moment; the earlier /m page was removed.
 
   SCRIPTS (loaded at the bottom, in this order):
-    1. /static/canvas.js, /static/cables.js - the shared canvas and cable-drawing code.
+    1. /static/canvas.js, cables.js, undo.js, nodes.js, timers.js - code shared with the campaign page (canvas, cables, undo, sections, timers).
     2. /static/app.js     - the soundboard itself. It runs after those are
        loaded because it uses their functions, and after the whole outline
        above exists, because it looks elements up by id as soon as it starts.
@@ -50,8 +50,8 @@
     <!-- upBtn / downBtn: when a sound links to several next sounds, pick which branch (keyboard: up/down arrows) -->
     <button id="upBtn" title="Previous path option (↑)">▲</button>
     <button id="downBtn" title="Next path option (↓)">▼</button>
-    <!-- undoBtn / redoBtn: undo or redo the last chain-link change (keyboard: Ctrl/Cmd+Z and Ctrl/Cmd+Y) -->
-    <button id="undoBtn" title="Undo the last chain change (Ctrl+Z)">↶</button>
+    <!-- undoBtn / redoBtn: undo or redo the last change (keyboard: Ctrl/Cmd+Z and Ctrl/Cmd+Y) -->
+    <button id="undoBtn" title="Undo the last change (Ctrl+Z)">↶</button>
     <button id="redoBtn" title="Redo (Ctrl+Y)">↷</button>
     <!-- toggleBtn: its label is filled in by app.js; flips whether pressing a playing sound stops it or restarts it -->
     <button id="toggleBtn" title="Pressing a playing sound stops it (off = restarts it)"></button>
@@ -60,10 +60,10 @@
     <!-- Editing buttons. Class "desk" = desktop only (hidden on the mobile page). -->
     <!-- addSoundBtn opens the sound editor dialog (soundDlg below) -->
     <button id="addSoundBtn" class="primary desk">+ Add sound</button>
-    <!-- addTileBtn creates a new tile (a card that holds sounds) -->
-    <button id="addTileBtn" class="desk">+ Tile</button>
-    <!-- addSectionBtn creates a new section (a group of tiles) -->
+    <!-- addSectionBtn creates a new section (sections nest inside each other) -->
     <button id="addSectionBtn" class="desk">+ Section</button>
+    <!-- addTimerBtn creates a timer card (it flashes this tab and can play a sound when it finishes) -->
+    <button id="addTimerBtn" class="desk">+ Timer</button>
     <!-- presetsBtn opens the presets dialog (presetDlg below) -->
     <button id="presetsBtn" class="desk">Campaigns &amp; versions</button>
     <!-- saveState: app.js writes "saving..."/"saved" here as edits autosave -->
@@ -96,12 +96,12 @@
 -->
 <!-- stage: the visible window onto the canvas (it fills the space under the header and clips what is outside it).
      world: one big element (20000 x 20000 px) that holds everything. canvas.js pans and zooms the board by
-     putting a single CSS transform on #world, so the cable overlay (the svg) and the tiles inside it move
+     putting a single CSS transform on #world, so the cable overlay (the svg) and the cards inside it move
      together. On phones none of this applies and the page scrolls normally (see style.css). -->
 <div id="stage">
 <div id="world">
 <svg id="links" aria-hidden="true"><defs><marker id="arr" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="4.5" markerHeight="4.5" orient="auto"><path d="M0 0L10 5L0 10z" fill="context-stroke"/></marker></defs><g id="linkLayer"></g><g id="tempLayer"></g></svg>
-<!-- tiles: the board. app.js fills it with section frames and tiles, each tile placed at its own position. -->
+<!-- tiles: the board (the id is a leftover). app.js fills it with the section frames and the sound and timer cards, each card at its own position. -->
 <main id="tiles"></main>
 </div>
 </div>
@@ -141,9 +141,8 @@
           <option value="instant">MyInstants (one-shot)</option>
         </select>
       </label>
-      <!-- The Tile and Subsection menus start empty; app.js fills them from the current layout. -->
-      <label>Tile <select name="tile"></select></label>
-      <label>Subsection <select name="group"></select></label>
+      <!-- The Section menu starts empty; app.js fills it with the sections (indented by nesting). -->
+      <label>Section <select name="section"></select></label>
     </div>
     <div class="row">
       <label>Start (s) <input name="start" type="number" min="0" step="0.1" placeholder="0"></label>
@@ -168,25 +167,6 @@
       <button type="button" data-close>Cancel</button>
       <button type="submit" class="primary" id="soundSubmit">Save</button>
     </menu>
-  </form>
-</dialog>
-
-<!-- tile settings -->
-<!-- tileDlg: per-tile options (name, parent section, fade-out, crossfade, subsections). -->
-<dialog id="tileDlg">
-  <form method="dialog" id="tileForm">
-    <h2>Tile settings</h2>
-    <label>Name <input name="name" required></label>
-    <label>Section <select name="section"></select></label>
-    <label class="check"><input name="fadeOn" type="checkbox"> Fade out when stopping</label>
-    <label>Fade-out length (seconds) <input name="fadeSecs" type="number" min="0.1" max="30" step="0.1"></label>
-    <label>Linked-audio crossfade (seconds; how early the next sound in a chain starts and the current one fades) <input name="linkSecs" type="number" min="0" max="30" step="0.1"></label>
-    <!-- Subsections are named groups inside a tile. subList is filled by app.js; newSub + addSubBtn add one. -->
-    <fieldset class="subsfield"><legend>Subsections</legend>
-      <div id="subList"></div>
-      <div class="row"><input id="newSub" placeholder="New subsection name"><button type="button" id="addSubBtn">Add</button></div>
-    </fieldset>
-    <menu><span class="grow"></span><button type="button" data-close>Cancel</button><button type="submit" class="primary">Save</button></menu>
   </form>
 </dialog>
 
@@ -232,6 +212,8 @@
 <script src="/static/canvas.js"></script>
 <script src="/static/cables.js"></script>
 <script src="/static/undo.js"></script>
+<script src="/static/nodes.js"></script>
+<script src="/static/timers.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

@@ -30,7 +30,7 @@ Each row: the thing that changes, the components linked to it, and what must be 
 | When this changes | Linked components | Update |
 |---|---|---|
 | A new kind of card on the campaign tracker (flag, encounter, loot flag, condition, ...) | `Canvas.clickMenu` entries in `static/campaign.js`; the `LIB` table and `#encDlg` there; toolbar buttons in `templates/campaign.html`; `frameModel` / `locate`; link keys (`lookup`, `isDone`, `pruneLinks`); `cards_of()` and `reindex()` in `encounters.py`; Browse "Campaigns" column | add a menu entry, a toolbar button if the others have one, link handling, and the card scan |
-| A new kind of item on the soundboard (sound, tile, section, ...) | click-menu build function in `static/app.js`; toolbar buttons in `templates/index.html`; `frameModel`; `placeSound`; cable/link code | add a menu entry and toolbar button; place it where the canvas was clicked |
+| A new kind of card on the soundboard (sound, timer, ...) | `createEntries` in `static/app.js` (feeds the click menu, a section's **+** and the toolbar); toolbar buttons in `templates/index.html`; `cards()`, `normalize`, `placeCard`, `render`, the undo `snapshot` / `restore`, `adoptCard`; cable/link code if it can be chained | add the entry and toolbar button; keep it in the undo snapshot; place it where the canvas was clicked |
 | The click menu on either canvas | `Canvas.clickMenu` in `static/canvas.js` (shared); the build functions in `static/app.js` and `static/campaign.js` | change the shared function once; keep both build functions' entries in step |
 | A field on an encounter or loot table | `_clean_line` / `_clean_entry` and `_create` in `encounters.py`; the Builder config in `static/encounters.js` / `static/loottable.js`; `static/browse.js` columns; card rendering (`encounterEl`, `lootEntries`) in `static/campaign.js`; `test_enc.py` | add the field to each |
 | A new library-style record type (like encounters / loot) | `LIB_FILES`, `adopt`, `reindex`, `forget_campaign` in `encounters.py`; `LIB` in `static/campaign.js`; a Browse kind; a Builder config; `put_state` key list in `app.py` | give it its own file, campaign usage tracking, Browse list and editor |
@@ -49,12 +49,16 @@ Each row: the thing that changes, the components linked to it, and what must be 
 | A new per-sound setting (volume, amp, ...) | the sound dialog in `templates/index.html`; `openSoundDlg` (fill) and the submit handler (read) in `static/app.js`; the card (`soundEl`); `level()` / `applyVolume` if it changes the gain; the data-model comment at the top of `app.js`; README | add the field to every one of these |
 | The app icon or name in the banner | `static/icon.jpeg`; the `<link rel="icon">` in every full page template; the `.brand` markup in `_nav.html`, `login.html`, `invite.html`, `landing.html`; `/favicon.ico` in `app.py`; the page headings in `landing.html` and `static/home.js` | change all of them together |
 | What a link means (a new link field or rule on the campaign tracker, like a condition's group / tier) | `linkSatisfied`, `isDone`, `markLinked`, `drawLinks` (wire style and unlock flash), `trackUnlocks`, `addLink`, the re-route code in `startLink`, `pruneLinks`, and the condition dialog in `static/campaign.js`; README | change them together; a link's satisfaction is only decided in `linkSatisfied` |
+| Any new way to change the board (soundboard or campaign tracker) | it must end in `save()` (which registers the undo command through `edits.commit()`); name it with `edits.record("...")`; if it adds new state outside `S` / `S.campaign`, add it to that page's `snapshot` and `restore`; `static/undo.js` | call `save()`, add a label, extend snapshot/restore for new state |
+| A new parent/child relationship (an object that sits inside another) | the delete handlers for the parent (`deleteSection` in `static/app.js` and `static/campaign.js`, which call `Nodes.remove`): the child must survive; `normalize()` (no forced parent); `Nodes.model` / `frameModel`; the dialogs' "(no section)" option; `board.py` migration | keep children standing when the parent is deleted |
+| A change to timers (fields, states, what happens when one finishes) | `static/timers.js` (shared); `timerEl`, `timerDone`, `openTimerDlg`, `newTimer` in both `static/app.js` and `static/campaign.js`; the `flashTab` message in `templates/shell.html`; `.tmr` / `.flag.timer` / `.alarm` styles in `static/style.css`; `board.py` (`timers` list on the soundboard); README | change the shared module once; keep both pages' card and settings code in step |
+| A change to the section settings or any other settings dialog | `Nodes.form` in `static/nodes.js` (one dialog for all of them); `openSectionDlg` and `openTimerDlg` in both pages | change the shared form once |
 | A new postMessage type between frames | header comment of `templates/shell.html`; receiving page's message handler | document it and handle it |
 
 ## Notes
 
-- The phone layout (`MOBILE`, body class `mobile` in `static/app.js`) is dormant: no server code sets that class any more, so every device
-  gets the canvas layout and a tap works like a click. Do not build phone-only features unless the user brings the phone layout back.
+- There is no phone layout any more (the `MOBILE` flag is gone from `static/app.js`; the old `.mobile` rules in `static/style.css` are dead): every
+  device gets the canvas layout and a tap works like a click. Do not build phone-only features unless the user brings the phone layout back.
 
 ## Open candidates (raised only when a later request touches the area)
 
@@ -62,4 +66,4 @@ Each row: the thing that changes, the components linked to it, and what must be 
 
 ## Declined
 
-- (none yet)
+- 2026-11-12: undo for the Encounters and Loot editors (their records live in their own files, outside the board's undo). Not offered again unless asked.

@@ -25,6 +25,8 @@
                                load that address in its frame (used by the tracker's character links)
                                { type: "reloadPages" }  reload the Soundboard and Campaign pages (Home sends
                                it after loading a different campaign)
+                               { type: "flashTab", page: "sound" | "campaign" }  make that tab's link flash until the tab is
+                               opened (a timer finished there; timers.js sends it). Ignored if that tab is already showing.
     from the shell to a page:  { type: "shown" }  sent when a tab becomes visible, so a page can redraw
                                anything it could not measure while hidden (the soundboard's cables)
                                { type: "focusSound", id }  sent to the soundboard to centre on a sound
@@ -102,7 +104,7 @@
   function show(page, push) {
     current = page;
     for (const [name, f] of Object.entries(frames)) f.classList.toggle("active", name === page);
-    document.querySelectorAll(".appnav-links a").forEach(a => a.classList.toggle("on", a.dataset.page === page));
+    document.querySelectorAll(".appnav-links a").forEach(a => { a.classList.toggle("on", a.dataset.page === page); if (a.dataset.page === page) a.classList.remove("flash"); });
     if (push) history.pushState({ page }, "", urls[page]);
     const w = frames[page].contentWindow;
     w.focus();
@@ -141,6 +143,10 @@
     if (ev.origin !== location.origin) return;
     if (ev.data?.type === "reloadPages") {
       for (const name of ["sound", "campaign", "encounters", "loot"]) frames[name]?.contentWindow.location.reload();
+    } else if (ev.data?.type === "flashTab") {
+      // A timer finished on a page: flash its tab link, unless that tab is the one being looked at.
+      const a = document.querySelector(`.appnav-links a[data-page="${CSS.escape(String(ev.data.page))}"]`);
+      if (a && ev.data.page !== current) a.classList.add("flash");
     } else if (ev.data?.type === "goto") {
       goto(ev.data.page, ev.data.path, ev.data.sound, ev.data.node);
     }

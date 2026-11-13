@@ -7,7 +7,7 @@
 // once from the server, which keeps it on disk and rebuilds it from Open5e at most monthly, so searching makes no API calls.
 //
 // LootTables.items()                promise of { rows, d } the prepared item list (downloaded once, then remembered)
-// LootTables.config(opts)           the Builder configuration: opts.tiles() -> campaign tiles (for "Put on campaign tracker"),
+// LootTables.config(opts)           the Builder configuration: opts.sections() -> campaign sections (for "Put on campaign tracker"),
 //                                   opts.compact, opts.lockId, opts.onChange, opts.extraActions(record, ctx)
 // LootTables.pick(entries)          weighted random choice: { entry, roll, total }
 // LootTables.pickRarity(rows, r)    random item of that rarity (every item equally likely)
@@ -84,12 +84,11 @@ const LootTables = (() => {
         return box;
       },
       actions: (rec, ctx) => [
-        ...(opts.tiles ? (() => {
-          const tiles = opts.tiles();
-          const sel = h("select", {}, tiles.length ? tiles.map(t => h("option", { value: t.id, textContent: t.name })) : h("option", { value: "", textContent: "(first tile)" }));
+        ...(opts.sections ? (() => {
+          const sel = h("select", {}, Nodes.options(opts.sections()).map(o => h("option", { value: o.value, textContent: o.label })));
           return [sel, h("button", { textContent: "Put on campaign tracker", onclick: async () => {
             await ctx.flush();
-            const r = await api(`/api/loots/${rec.id}/tile`, "POST", { tile: sel.value });
+            const r = await api(`/api/loots/${rec.id}/place`, "POST", { section: sel.value });
             parent.postMessage({ type: "goto", page: "campaign", node: r.item }, location.origin);
             await ctx.reload();
           } }), rec.onTracker?.length ? h("span", { className: "ok", textContent: "On this campaign's tracker: " + rec.onTracker.join(", ") }) : h("span", { className: "muted", textContent: "Not on this campaign's tracker" }),

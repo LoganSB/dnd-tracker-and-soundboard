@@ -5,45 +5,40 @@
 //
 // WHAT THIS PROGRAM IS
 //   A board for tracking what the party has achieved or triggered in a campaign. It is laid out
-//   exactly like the soundboard (sections that hold tiles, tiles that hold optional subsections),
+//   exactly like the soundboard (sections that nest inside sections, holding cards),
 //   but the clickable items are "flags" instead of sounds. Like app.js, this file runs inside the
 //   browser: it registers callbacks and the browser calls them on clicks, drags and timers.
 //   (See the header of app.js for a primer on the JavaScript constructs used here.)
 //   Like the soundboard it lives on an infinite pan-and-zoom canvas (canvas.js), and it uses the same
-//   layout code: the FLAGS are free-floating cards, each at its own x, y; tiles, subsections and sections are
-//   FRAMES drawn around the cards that belong to them (they stretch and shrink as you move cards).
+//   layout code: the cards are free-floating, each at its own x, y; SECTIONS are FRAMES drawn around the
+//   cards (and child sections) that belong to them (they stretch and shrink as you move cards).
 //
-// THE DATA MODEL  (all of it lives in S.campaign, saved with the sounds)
+// THE DATA MODEL  (all of it lives in S.campaign, saved with the sounds; see board.py)
 //
 //   S.campaign = {
-//     sections: [ { id, name, collapsed? } ],
-//     tiles: [ {
-//        id, name, section,                       // section = id of the section that holds this tile
-//        x, y,                                    // only used while the tile has no flags (the place of its empty frame)
-//        subs: [ { id, name } ],                  // optional named subsections inside the tile
-//        items: [ {                               // the flags on this tile
-//           id, name,
-//           group,                                // id of the subsection it is in (absent = top of the tile)
-//           x, y,                                 // position of the card on the canvas (world pixels)
-//           triggered, triggeredAt,               // the flag itself: has the party done/triggered this? (+ when)
-//           maxWidth,                             // the tile may grow this wide (px) before its text wraps
-//           sound,                                // optional id of a SOUNDBOARD sound played when triggered
-//           notes,                                // free text, shown when you hover the tile
-//           checklist: [ { id, text, done } ],    // optional checklist; the tile grows to fit it
-//           loot: { entries: [ { id, name, weight, note } ],   // the flag's own reward list (weighted)
-//                   source,                                    // optional: "table:<id>" (a loot table) or "rarity:<r>" (random item)
-//                   log: [ { text, at } ] }                    // history of rolls, newest first
-//           encounter,                            // set instead of the above on an ENCOUNTER card: the encounter's id
-//        } ]
-//     } ]
+//     sections: [ { id, name, parent, collapsed?, x?, y? } ],  // a TREE: parent = another section's id, "" = top level
+//     items: [ {                                // the cards: flags, encounter cards, loot flags, conditions, timers
+//        id, name,
+//        section,                               // the id of the section it sits in ("" = none)
+//        x, y,                                  // position of the card on the canvas (world pixels)
+//        triggered, triggeredAt,                // the flag itself: has the party done/triggered this? (+ when)
+//        maxWidth,                              // the card may grow this wide (px) before its text wraps
+//        sound,                                 // optional id of a SOUNDBOARD sound played when triggered (or when a timer ends)
+//        notes,                                 // free text, shown when you hover the card
+//        checklist: [ { id, text, done } ],     // optional checklist; the card grows to fit it
+//        loot: { entries: [ { id, name, weight, note } ],   // the flag's own reward list (weighted)
+//                source,                                    // optional: "table:<id>" (a loot table) or "rarity:<r>" (random item)
+//                log: [ { text, at } ] }                    // history of rolls, newest first
+//        encounter,                             // set on an ENCOUNTER card: the encounter's id
+//        condition,                             // set on a CONDITION card: { groups: [ { id, name, tiers: [ { id, need, label } ] } ] }
+//        timer,                                 // set on a TIMER card: { secs, endsAt?, left?, done?, doneAt? } (see timers.js)
+//     } ],
+//     links: [ { id, from, to, group?, when? } ]   // cables between ANY two things (see "campaign links" below)
 //   }
+//   A link's `from` and `to` are keys: "sec:<id>" (a section), "flag:<id>" (any card), or "chk:<id>" (one checklist entry).
+//   An item can have any number of links in and out.
 //
-//   S.campaign.links = [ { id, from, to } ]    // cables between ANY two items (see "campaign links" below).
-//     `from` and `to` are item keys: "sec:<id>" (a section), "tile:<id>", "sub:<tileId>:<id>" (a
-//     subsection), "flag:<id>", or "chk:<id>" (one checklist entry).
-//     An item can have any number of links in and out.
-//
-//   S as a whole is the same state object the soundboard uses ({ tiles: [...sounds...], campaign }).
+//   S as a whole is the same state object the soundboard uses ({ sections, sounds, campaign }).
 //   We load all of it (we need the sound names for the "play sound" menu) but only ever SAVE the
 //   campaign part, through PUT /api/campaign, so this page can never overwrite the sounds.
 //
@@ -86,74 +81,75 @@ const api = async (url, method = "GET", body) => {
 // ----------------------------------------------------------------- state
 // S: everything the server has (sounds + campaign). myRevision: the server's revision number as of
 // our last load/save; if the server reports a different one, someone else changed the state.
-let S = { tiles: [], campaign: null },
+let S = { sounds: [], campaign: null },
   myRevision = -1;
 
 // C(): shorthand for the campaign data, S.campaign.
 const C = () => S.campaign;
 
-// normalize(): make sure S.campaign exists and every object has the fields the code expects. Older
-// saves (or a brand-new install) have no campaign at all, so we start with one section and one tile.
+// ---- the model: a tree of sections holding cards (see board.py; the tree helpers are in nodes.js)
+// S.campaign = { sections: [ { id, name, parent, collapsed?, x?, y? } ], items: [ cards ], links: [ ... ] }. A section's `parent` is another
+// section's id or "" for none; a card's `section` is the id of the section it sits in or "" for none. Sections nest to any depth and
+// every object stands on its own: deleting a section hands its contents to its own parent (Nodes.remove).
+// secs(): the section list. sectionOptions(opts): the sections as drop-down choices, indented by depth ("(no section)" first).
+const secs = () => C().sections;
+const sectionOptions = opts => Nodes.options(C().sections, opts);
+// firstSection(): the default home for something created from the toolbar: the first top-level section (or none).
+const firstSection = () => Nodes.roots(C().sections)[0]?.id || "";
+
+// normalize(): make sure S.campaign exists and every object has the fields the code expects: sound parent links, positions and defaults.
 function normalize() {
-  S.tiles ||= [];
+  S.sounds ||= [];
   S.campaign ||= {};
   const c = S.campaign;
   c.sections ||= [];
-  c.tiles ||= [];
+  c.items ||= [];
   c.links ||= [];
-  if (!c.sections.length) c.sections.push({ id: uid(), name: "Main story" });
-  if (!c.tiles.length) c.tiles.push({ id: uid(), name: "Chapter 1", section: c.sections[0].id, subs: [], items: [] });
-  c.tiles.forEach(t => {
-    if (!c.sections.some(s => s.id === t.section)) t.section = c.sections[0].id;   // orphaned tile -> first section
-    t.subs ||= [];
-    t.items ||= [];
-    t.w ||= 400;   // (older saves: the tile's old width, used only to convert its flags to free positions)
-    t.items.forEach(i => {
-      if (i.condition) {   // a condition card: make sure every group and tier has an id
-        i.condition.groups ||= [];
-        i.condition.groups.forEach(g => { g.id ||= uid(); g.tiers ||= []; g.tiers.forEach(x => (x.id ||= uid())); });
-      }
-      i.checklist ||= [];
-      i.loot ||= { entries: [], log: [] };
-      i.loot.entries ||= [];
-      i.loot.log ||= [];
-    });
-  });
-  // Tiles with no canvas position yet are laid out in a spiral around the middle of the canvas.
-  Canvas.layoutMissing(c.tiles, c.sections);
-  // Flags from older saves have no position of their own (they sat in rows inside their tile): put them in a
-  // tidy grid where their tile used to be, loose ones first, then each subsection's. Flags that already have
-  // x, y are never touched.
-  c.tiles.forEach(t => {
-    const missing = t.items.filter(i => !Number.isFinite(i.x) || !Number.isFinite(i.y));
-    if (!missing.length) return;
-    // Some cards already have places (a card was added from outside this page, for example an encounter put on the
-    // tracker from the Encounters tab): give only the new ones a free spot next to their tile's other cards.
-    if (missing.length < t.items.length) {
-      const box = i => ({ l: i.x, t: i.y, r: i.x + 260, b: i.y + 150 });
-      const placed = c.tiles.flatMap(o => o.items).filter(i => Number.isFinite(i.x) && Number.isFinite(i.y));
-      missing.forEach(i => {
-        const near = t.items.filter(o => Number.isFinite(o.x) && Number.isFinite(o.y)).map(box);
-        Object.assign(i, Canvas.freeSpot(placed.map(box), 240, 130, near));
-        placed.push(i);
-      });
-      return;
+  // A brand-new campaign starts with one section holding one section. After that nothing forces any of them to exist.
+  if (!c.sections.length && !c.items.length) {
+    const main = { id: uid(), name: "Main story", parent: "" };
+    c.sections.push(main, { id: uid(), name: "Chapter 1", parent: main.id });
+  }
+  Nodes.fix(c.sections);
+  c.items.forEach(i => {
+    if (!i.section || !Nodes.byId(c.sections, i.section)) i.section = "";   // its section is gone: it simply has no parent
+    if (i.condition) {   // a condition card: make sure every group and tier has an id
+      i.condition.groups ||= [];
+      i.condition.groups.forEach(g => { g.id ||= uid(); g.tiers ||= []; g.tiers.forEach(x => (x.id ||= uid())); });
     }
-    const subIds = new Set(t.subs.map(x => x.id));
-    const groups = [t.items.filter(i => !i.group || !subIds.has(i.group)), ...t.subs.map(x => t.items.filter(i => i.group === x.id))];
-    Canvas.arrangeInGrid(t, groups, 250, 150);
+    i.checklist ||= [];
+    i.loot ||= { entries: [], log: [] };
+    i.loot.entries ||= [];
+    i.loot.log ||= [];
+  });
+  // Sections with no canvas position yet are placed around the middle of the canvas.
+  Canvas.layoutMissing(c.sections);
+  // Cards with no position of their own (a card added from outside this page, for example an encounter put on the tracker from the
+  // Encounters tab, or an older save): a section whose cards ALL lack positions gets them in a tidy grid where it is; otherwise each gets
+  // the nearest free spot next to the other cards of its section. Cards that already have x, y are never touched.
+  const has = i => Number.isFinite(i.x) && Number.isFinite(i.y);
+  const bySection = new Map();
+  c.items.forEach(i => { if (!bySection.has(i.section)) bySection.set(i.section, []); bySection.get(i.section).push(i); });
+  bySection.forEach((list, id) => {
+    const missing = list.filter(i => !has(i));
+    if (!missing.length) return;
+    const origin = Nodes.byId(c.sections, id);
+    if (missing.length === list.length && origin) { Canvas.arrangeInGrid(origin, [list], 250, 150); return; }
+    const box = i => ({ l: i.x, t: i.y, r: i.x + 260, b: i.y + 150 });
+    const placed = c.items.filter(has);
+    missing.forEach(i => {
+      Object.assign(i, Canvas.freeSpot(placed.map(box), 240, 130, list.filter(has).map(box)));
+      placed.push(i);
+    });
   });
 }
 
-// allItems(): every flag on every tile as one flat array (flatMap = map, then flatten one level).
-const allItems = () => C().tiles.flatMap(t => t.items);
-// locate(id): find a flag by id. Returns { tile, item, i } (i = its index in the tile) or null.
+// allItems(): every card as one flat array.
+const allItems = () => C().items;
+// locate(id): find a card by id. Returns { item, i, section } (i = its index in C().items, section = the section object it sits in, or null) or null.
 function locate(id) {
-  for (const tile of C().tiles) {
-    const i = tile.items.findIndex(x => x.id === id);
-    if (i >= 0) return { tile, item: tile.items[i], i };
-  }
-  return null;
+  const i = C().items.findIndex(x => x.id === id);
+  return i < 0 ? null : { item: C().items[i], i, section: Nodes.byId(C().sections, C().items[i].section) || null };
 }
 
 // ------------------------------------------------------------ persistence
@@ -163,6 +159,7 @@ let saveTimer = null;
 // a burst of edits (ticking several boxes) becomes one request. The server's reply carries the new
 // revision number, which we remember so pollState does not mistake our own save for an outside change.
 function save() {
+  edits.commit();   // register this change as an undoable command (undo.js); a no-op while an undo or redo is restoring
   $("#saveState").textContent = "saving…";
   clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
@@ -190,6 +187,7 @@ async function pollState() {
     S = st;
     myRevision = st.revision;
     normalize();
+    edits.reset();   // the page changed from outside: this is the new baseline, not a command
     render();
   } catch (_) { /* server restarting: try again next time */ }
 }
@@ -216,11 +214,11 @@ function jumpToSound(soundId) {
 function playLinked(item) {
   if (item.sound && channel) channel.postMessage({ type: "play", id: item.sound });
 }
-// soundChoices(): the soundboard's sounds as { id, label } pairs for the menu ("Tile › Sound name").
-const soundChoices = () => S.tiles.flatMap(t => t.sounds.map(s => ({ id: s.id, label: `${t.name} › ${s.name}` })));
+// soundChoices(): the soundboard's sounds as { id, label } pairs for the menu ("Section › Sound name").
+const soundChoices = () => S.sounds.map(s => ({ id: s.id, label: (s.section ? Nodes.path(S.sections || [], s.section) + " › " : "") + s.name }));
 
 // ----------------------------------------------------------- moving things
-// Flags and frames are moved with the pointer by canvas.js (Canvas.dragItems), the same code the
+// Cards and frames are moved with the pointer by canvas.js (Canvas.dragItems), the same code the
 // soundboard uses. There is no HTML5 drag-and-drop here any more.
 
 // drag: non-null while a card, a frame or a new link is being dragged ({ kind }). render() is postponed
@@ -229,68 +227,75 @@ const soundChoices = () => S.tiles.flatMap(t => t.sounds.map(s => ({ id: s.id, l
 let drag = null,
   pendingRender = false;
 
-// moveTile(id, sectionId): put a tile into a section (used by the Tile settings dialog and when a tile's
-// frame is dropped inside another section's frame). Only the `section` field changes; frames follow the cards.
-function moveTile(id, sectionId) {
-  const t = C().tiles.find(x => x.id === id);
-  if (t) t.section = sectionId;
-}
-
-// ---------------------------------------------------------------- render
-// Frames (sectionFrame, tileFrame, subFrame) are drawn behind the flag cards (flagEl); see canvas.js.
+// ---------------------------------------------------------------- cards
+// Every kind of card (flag, encounter, condition, timer) is built on cardShell and removed with removeCard, so they all sit, hide,
+// drag and delete the same way. The row of small buttons on a card is Nodes.tools (nodes.js), the same code as a section's title bar.
 
 // timeText(ms): "Mar 3, 8:15 PM" style text for a timestamp (toLocaleString formats for the user's locale).
 const timeText = ms => new Date(ms).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 
-// flagEl(item, tile): build the card for one flag.
+// cardShell(item, className, dragTitle): the bare card: its position, its section (data-sec, used by the "snap only to the same section"
+// option), hidden while its section or one above it is collapsed, the width limit, and the drag bar along the top. The caller adds the rest.
+function cardShell(item, className, dragTitle = "Drag to move this card") {
+  const card = el("div", { className: "flag " + className, role: "button", tabIndex: 0 });
+  card.dataset.id = item.id;
+  card.dataset.iid = item.id;   // the canvas code finds cards by this attribute
+  card.dataset.sec = item.section || "";
+  card.style.left = item.x + "px";
+  card.style.top = item.y + "px";
+  if (Nodes.hidden(C().sections, item.section)) card.style.display = "none";
+  card.style.setProperty("--maxw", (item.maxWidth || 320) + "px");   // read by the .flag CSS rule
+  const bar = el("div", { className: "dragbar", textContent: "⠿⠿⠿", title: dragTitle });
+  bar.addEventListener("pointerdown", ev => {
+    if (ev.button !== 0) return;
+    Canvas.dragItems(ev, [{ obj: item, el: card }], dragHooks(() => adoptCard(item)));   // after the drop it may belong to another section
+  });
+  card.prepend(bar);
+  return card;
+}
+// removeCard(item, label): delete a card (links to it go with it, see pruneLinks), as one undoable step.
+function removeCard(item, label) {
+  edits.record(label);
+  const loc = locate(item.id);
+  if (loc) C().items.splice(loc.i, 1);
+  save();
+  render();
+}
+// playOnClick: a card's click handler that ignores clicks which began on its small controls (their own handlers ran).
+const onCardClick = (card, fn) => {
+  card.addEventListener("click", ev => { if (!ev.target.closest(".ftools,.dragbar,.checks,.lp,.tbtns")) fn(ev); });
+  card.addEventListener("keydown", ev => { if (ev.key === "Enter" && ev.target === card) card.click(); });
+};
+
+// flagEl(item): build the card for one flag (or hand over to the encounter / condition / timer builders).
 //   - Click anywhere on it (except the small controls) to trigger / un-trigger the flag. Triggering
 //     stamps the time and plays the linked sound, if there is one.
 //   - Its checklist is shown inside; ticking a box saves immediately. The card is as narrow as its
 //     content allows and grows (up to its own max width) as checklist text gets longer; past that the
 //     text wraps and the card grows taller instead. The width limit is the --maxw CSS variable.
-//   - Buttons: 🔊 plays the linked sound again, 🎁 opens the reward popup, ⚙ edits the flag.
-function flagEl(item, tile) {
-  if (item.encounter) return encounterEl(item, tile);
-  if (item.condition) return condEl(item, tile);
+//   - Buttons: 🎯 jumps to the linked sound, 🎁 opens the reward popup, ⚙ edits the flag.
+function flagEl(item) {
+  if (item.encounter) return encounterEl(item);
+  if (item.condition) return condEl(item);
+  if (item.timer) return timerEl(item);
   const total = item.checklist.length,
     ticked = item.checklist.filter(c => c.done).length;
-  const cls = ["flag", item.triggered ? "done" : "", total && ticked === total ? "complete" : ""];
-  const card = el("div", { className: cls.filter(Boolean).join(" "), role: "button", tabIndex: 0 });
-  card.dataset.id = item.id;
-  card.dataset.iid = item.id;   // the canvas code finds cards by this attribute
-  // Which section / tile / subsection the card belongs to (used by the "snap only to the same ..." option).
-  card.dataset.sec = tile.section;
-  card.dataset.tile = tile.id;
-  card.dataset.sub = tile.id + ":" + (item.group || "");
-  // Place the card on the canvas (world coordinates); hidden while its section is collapsed.
-  card.style.left = item.x + "px";
-  card.style.top = item.y + "px";
-  if (C().sections.find(x => x.id === tile.section)?.collapsed) card.style.display = "none";
-  card.style.setProperty("--maxw", (item.maxWidth || 320) + "px");   // read by the .flag CSS rule
+  const card = cardShell(item, ["", item.triggered ? "done" : "", total && ticked === total ? "complete" : ""].filter(Boolean).join(" "), "Drag to move this flag");
   card.title = [item.notes, item.triggered ? "Triggered " + timeText(item.triggeredAt || Date.now()) : "Not triggered yet. Click to trigger."]
     .filter(Boolean).join("\n");
 
   // Title row: a status mark, the name, and the small buttons.
   const lootCount = lootEntries(item).length;
-  const title = el("div", { className: "ftitle" },
+  card.append(el("div", { className: "ftitle" },
     el("span", { className: "fmark", textContent: item.triggered ? "✔" : "○" }),
     el("span", { className: "fname", textContent: item.name }),
-    el("span", { className: "ftools" },
-      // 🎯: jump to the linked sound on the soundboard (switches to that tab and centres the canvas on it).
-      item.sound ? el("button", { className: "tiny", textContent: "🎯", title: "Jump to the linked sound on the soundboard", onclick: ev => { ev.stopPropagation(); jumpToSound(item.sound); } }) : "",
-      el("button", { className: "tiny", textContent: "🎁" + (lootCount ? " " + lootCount : ""), title: "Rewards / loot table",
-        onclick: ev => { ev.stopPropagation(); openLoot(item); } }),
-      el("button", { className: "tiny gear", textContent: "⚙", title: "Edit flag", onclick: ev => { ev.stopPropagation(); openFlagDlg(item, tile.id); } }),
+    Nodes.tools([
+      { icon: "🎯", title: "Jump to the linked sound on the soundboard", hidden: !item.sound, run: () => jumpToSound(item.sound) },
+      { icon: "🎁" + (lootCount ? " " + lootCount : ""), title: "Rewards / loot table", run: () => openLoot(item) },
+      { icon: "⚙", title: "Edit flag", cls: "gear", run: () => openFlagDlg(item) },
       // Delete this flag (asks first). Links to it and to its checklist entries are removed by pruneLinks().
-      el("button", { className: "tiny fdel", textContent: "🗑", title: "Delete this flag", onclick: ev => {
-        ev.stopPropagation();
-        if (!confirm(`Delete flag "${item.name}"?`)) return;
-        const loc = locate(item.id);
-        if (loc) loc.tile.items.splice(loc.i, 1);
-        save();
-        render();
-      } })));
-  card.append(title);
+      { icon: "🗑", title: "Delete this flag", cls: "fdel", run: () => { if (confirm(`Delete flag "${item.name}"?`)) removeCard(item, "deleted a flag"); } },
+    ], "ftools")));
   addPorts(card, "flag:" + item.id);
 
   // Checklist: one row per entry, a real checkbox plus its text. The label wraps long text.
@@ -300,7 +305,7 @@ function flagEl(item, tile) {
       const box = el("input", { type: "checkbox", checked: !!c.done });
       // change: fires when the box is toggled. stopPropagation (on click too) so it does not also trigger the flag.
       // Ticking an entry that has a linked sound plays it (the same as triggering a flag that has one).
-      box.onchange = () => { c.done = box.checked; if (c.done) playLinked(c); save(); render(); };
+      box.onchange = () => { edits.record(box.checked ? "ticked a checklist item" : "unticked a checklist item"); c.done = box.checked; if (c.done) playLinked(c); save(); render(); };
       box.onclick = ev => ev.stopPropagation();
       const label = el("label", { className: c.done ? "ckdone" : "" }, box, el("span", { textContent: c.text }));
       label.onclick = ev => ev.stopPropagation();
@@ -313,32 +318,22 @@ function flagEl(item, tile) {
     });
     // A thin progress bar under the list: width = fraction ticked.
     card.append(list, el("div", { className: "fprog" }, el("div", { style: `width:${(ticked / total) * 100}%` })));
+    card.append(el("div", { className: "ffoot" }, el("span", { className: "muted", textContent: `${ticked}/${total}` })));
   }
 
-  // The drag bar along the top (same as on the soundboard's cards): press and move to drag the card.
-  const bar = el("div", { className: "dragbar", textContent: "⠿⠿⠿", title: "Drag to move this flag" });
-  bar.addEventListener("pointerdown", ev => {
-    if (ev.button !== 0) return;
-    Canvas.dragItems(ev, [{ obj: item, el: card }], dragHooks(() => adoptFlag(item)));   // after the drop it may belong to another tile / subsection
-  });
-  card.prepend(bar);
-  if (total) card.append(el("div", { className: "ffoot" }, el("span", { className: "muted", textContent: `${ticked}/${total}` })));
-
-  // Click = toggle the flag. Ignore clicks that began on the small controls (their own handlers ran).
-  card.addEventListener("click", ev => {
-    if (ev.target.closest(".ftools,.dragbar,.checks,.lp")) return;
+  // Click = toggle the flag.
+  onCardClick(card, () => {
+    edits.record(item.triggered ? "reset a flag" : "triggered a flag");
     item.triggered = !item.triggered;
     item.triggeredAt = item.triggered ? Date.now() : undefined;
     if (item.triggered) playLinked(item);
     save();
     render();
   });
-  card.addEventListener("keydown", ev => { if (ev.key === "Enter" && ev.target === card) card.click(); });
   return card;
 }
 
-
-// ------------------------------------------------------------ encounter tiles
+// ------------------------------------------------------------ encounter cards
 // An ENCOUNTER card is a flag-like card that points at an encounter from the Encounters tab (item.encounter = its id;
 // the encounter itself lives in S.encounters, the shared library fetched by addLibrary: it belongs to no campaign). Clicking the card ADDS the encounter to the
 // initiative tracker (monsters rolled, party added if missing). Buttons: 🆕 start a new combat with it instead,
@@ -369,86 +364,88 @@ async function loadEncounter(item, mode, popout) {
   } finally { loadingNow.delete(item.id); }
 }
 
-function encounterEl(item, tile) {
+function encounterEl(item) {
   const enc = encounterOf(item);
   if (enc) item.name = enc.name;   // keep the name the links and menus use in step (saved with the next save)
-  const card = el("div", { className: "flag encounter" + (item.triggered ? " done" : ""), role: "button", tabIndex: 0 });
-  card.dataset.id = item.id;
-  card.dataset.iid = item.id;
-  card.dataset.sec = tile.section;
-  card.dataset.tile = tile.id;
-  card.dataset.sub = tile.id + ":" + (item.group || "");
-  card.style.left = item.x + "px";
-  card.style.top = item.y + "px";
-  if (C().sections.find(x => x.id === tile.section)?.collapsed) card.style.display = "none";
-  card.style.setProperty("--maxw", (item.maxWidth || 320) + "px");
+  const card = cardShell(item, "encounter" + (item.triggered ? " done" : ""));
   card.title = enc ? "Click to add this encounter to the initiative tracker" : "This encounter was deleted from the Encounters tab";
   const lines = enc ? enc.monsters.map(m => `${m.count}× ${m.name}`) : [];
   const xp = enc ? enc.monsters.reduce((s, m) => s + (m.xp || 0) * m.count, 0) : 0;
-  const title = el("div", { className: "ftitle" },
+  card.append(el("div", { className: "ftitle" },
     el("span", { className: "fmark", textContent: "⚔" }),
     el("span", { className: "fname", textContent: enc ? enc.name : "(deleted encounter)" }),
-    el("span", { className: "ftools" },
-      enc ? el("button", { className: "tiny", textContent: "🆕", title: "Start a NEW combat with this encounter", onclick: ev => { ev.stopPropagation(); loadEncounter(item, "replace", false); } }) : "",
-      enc ? el("button", { className: "tiny", textContent: "📤", title: "Add to the initiative tracker and pop it out", onclick: ev => { ev.stopPropagation(); loadEncounter(item, "append", true); } }) : "",
-      enc ? el("button", { className: "tiny gear", textContent: "⚙", title: "Edit in the Encounters tab", onclick: ev => {
-        ev.stopPropagation();
-        window.parent.postMessage({ type: "goto", page: "encounters", path: "/_/encounters?id=" + enc.id }, location.origin);
-      } }) : "",
-      el("button", { className: "tiny fdel", textContent: "🗑", title: "Take this card off the board (the encounter stays in the Encounters tab)", onclick: ev => {
-        ev.stopPropagation();
-        const loc = locate(item.id);
-        if (loc) loc.tile.items.splice(loc.i, 1);
-        save();
-        render();
-      } })));
-  card.append(title);
+    Nodes.tools([
+      { icon: "🆕", title: "Start a NEW combat with this encounter", hidden: !enc, run: () => loadEncounter(item, "replace", false) },
+      { icon: "📤", title: "Add to the initiative tracker and pop it out", hidden: !enc, run: () => loadEncounter(item, "append", true) },
+      { icon: "⚙", title: "Edit in the Encounters tab", cls: "gear", hidden: !enc,
+        run: () => window.parent.postMessage({ type: "goto", page: "encounters", path: "/_/encounters?id=" + enc.id }, location.origin) },
+      { icon: "🗑", title: "Take this card off the board (the encounter stays in the Encounters tab)", cls: "fdel", run: () => removeCard(item, "removed an encounter card") },
+    ], "ftools")));
   addPorts(card, "flag:" + item.id);
   card.append(el("ul", { className: "emons" }, ...(lines.length ? lines.map(t => el("li", { textContent: t })) : [el("li", { className: "muted", textContent: enc ? "No monsters yet" : "" })])),
     el("div", { className: "ffoot" }, el("span", { className: "muted", textContent: [enc ? `${xp.toLocaleString()} XP` : "", tempNote.get(item.id) || (item.triggered ? "Loaded " + timeText(item.triggeredAt || Date.now()) : "")].filter(Boolean).join(" · ") })));
-  const bar = el("div", { className: "dragbar", textContent: "⠿⠿⠿", title: "Drag to move this card" });
-  bar.addEventListener("pointerdown", ev => {
-    if (ev.button !== 0) return;
-    Canvas.dragItems(ev, [{ obj: item, el: card }], dragHooks(() => adoptFlag(item)));
-  });
-  card.prepend(bar);
-  card.addEventListener("click", ev => {
-    if (ev.target.closest(".ftools,.dragbar,.lp") || !enc) return;
-    loadEncounter(item, "append", false);
-  });
-  card.addEventListener("keydown", ev => { if (ev.key === "Enter" && ev.target === card) card.click(); });
+  onCardClick(card, () => { if (enc) loadEncounter(item, "append", false); });
   return card;
 }
 
-// frames: the latest rectangles of all frames ({ frameId: { l, t, r, b } }, world coordinates).
+// ------------------------------------------------------------ timer cards
+// A TIMER card counts down (timers.js holds everything the soundboard's timers share). When it finishes the card flashes, the Campaign tab
+// flashes in the top bar until it is opened, and its linked sound (if any) is played through the soundboard, the same way a flag's is.
+// The card counts as done for the links: a finished timer can feed a condition or unlock another card.
+function timerEl(item) {
+  const card = cardShell(item, "timer " + Timers.state(item.timer) + (Timers.alarming(item) ? " alarm" : ""), "Drag to move this timer");
+  card.title = "A timer. Start it, pause it or reset it with the buttons.";
+  card.append(el("div", { className: "ftitle" },
+    el("span", { className: "fmark", textContent: "⏱" }),
+    el("span", { className: "fname", textContent: item.name }),
+    Nodes.tools([
+      { icon: "🎯", title: "Jump to the linked sound on the soundboard", hidden: !item.sound, run: () => jumpToSound(item.sound) },
+      { icon: "⚙", title: "Timer settings", cls: "gear", run: () => openTimerDlg(item) },
+      { icon: "🗑", title: "Delete this timer", cls: "fdel", run: () => { if (confirm(`Delete timer "${item.name}"?`)) removeCard(item, "deleted a timer"); } },
+    ], "ftools")));
+  addPorts(card, "flag:" + item.id);
+  card.append(...Timers.body(item, () => { edits.record("changed a timer"); save(); render(); }));
+  return card;
+}
+// timerDone(card, late): called by Timers.watch when a timer finishes: save it, redraw (the card flashes), flash this page's tab in the top
+// bar and play the linked sound (not when it finished while the page was closed: that would be long after the fact).
+function timerDone(card, late) {
+  save();
+  render(true);
+  Timers.flashTab("campaign");
+  if (!late) playLinked(card);
+}
+function openTimerDlg(item) {
+  Nodes.form({
+    title: "Timer",
+    fields: Timers.fields(item, { sounds: soundChoices().map(s => ({ value: s.id, label: s.label })), sections: sectionOptions() }),
+    save: v => { edits.record("edited a timer"); Timers.apply(item, v); save(); render(true); },
+  });
+}
+// newTimer(at, secId): ask for a name, add a timer card (five minutes to start from) in that section and open its settings.
+function newTimer(at, secId) {
+  const name = prompt("Timer name (e.g. 'The ritual completes')");
+  if (!name) return;
+  const card = { id: uid(), name, section: secId || "", checklist: [], triggered: false, loot: { entries: [], log: [] }, timer: { secs: 300 } };
+  if (at) { card.x = Math.round(at.x - 120); card.y = Math.round(at.y - 40); } else placeCard(card, secId);
+  edits.record("added a timer");
+  C().items.push(card);
+  save();
+  render(true);
+  openTimerDlg(card);
+}
+
+// ---------------------------------------------------------------- frames
+// frames: the latest rectangles of all frames ({ "sec:<id>": { l, t, r, b } }, world coordinates).
 let frames = {};
 
-// frameModel(exceptFlagId, exceptTileId): describes the nesting for Canvas.layoutFrames: sections
-// containing tiles containing flags and subsections. The optional arguments leave one flag (or one whole tile)
-// out, to answer "where would the frames be without it?" when something is dropped.
-function frameModel(exceptFlag = null, exceptTile = null) {
-  const cards = (t, test) => t.items.filter(i => i.id !== exceptFlag && test(i));
-  return {
-    sections: C().sections.map(sec => ({
-      id: sec.id,
-      obj: sec,
-      collapsed: !!sec.collapsed,
-      tiles: C().tiles.filter(t => t.section === sec.id && t.id !== exceptTile).map(t => {
-        const subIds = new Set(t.subs.map(x => x.id));   // a flag whose group is missing/unknown counts as "loose"
-        return {
-          id: t.id,
-          obj: t,
-          items: cards(t, i => !i.group || !subIds.has(i.group)),
-          subs: t.subs.map(x => ({ id: x.id, obj: x, items: cards(t, i => i.group === x.id) }))
-        };
-      })
-    }))
-  };
-}
-// relayout(): re-fit every frame around its flags (cheap; called after any move or size change).
+// frameModel(exceptCardId, exceptSectionId): the nested description Canvas.layoutFrames wants (Nodes.model); the optional arguments leave one card
+// (or one whole section) out, to answer "where would the frames be without it?" when something is dropped.
+const frameModel = (exceptCard = null, exceptSection = null) => Nodes.model(C().sections, C().items, { exceptCard, exceptSection });
+// relayout(): re-fit every frame around its cards (cheap; called after any move or size change).
 function relayout() { frames = Canvas.layoutFrames(frameModel()); }
 
-// cardEl(item): the page element of a flag card.  cardsOf(items): the { obj, el } list Canvas.dragItems wants.
+// cardEl(item): the page element of a card.  cardsOf(items): the { obj, el } list Canvas.dragItems wants.
 const cardEl = item => document.querySelector(`.flag[data-iid="${item.id}"]`);
 const cardsOf = items => items.map(i => ({ obj: i, el: cardEl(i) }));
 
@@ -461,64 +458,48 @@ function dragHooks(after) {
     onMove: () => { relayout(); scheduleDraw(); },
     onEnd: moved => {
       drag = null;
-      if (moved) { after?.(); save(); }
+      if (moved) { edits.record("moved something"); after?.(); save(); }
       render(true);
     }
   };
 }
 
-// adoptFlag(item): after a flag is dropped, decide which tile (and subsection) it belongs to NOW. The frames
-// are computed WITHOUT this flag (otherwise its own frame would have stretched to cover it wherever it was
-// dropped); if the flag's centre is inside another tile's or subsection's frame it joins that one. Dropped
-// inside its own tile but outside any subsection frame it becomes a "loose" flag; dropped in empty space it
-// stays where it was (membership unchanged).
-function adoptFlag(item) {
-  const loc = locate(item.id),
-    card = cardEl(item);
-  if (!loc || !card) return;
+// adoptCard(item): after a card is dropped, decide which section it belongs to NOW. The frames are computed WITHOUT this card (otherwise its own
+// frame would have stretched to cover it wherever it was dropped); if the card's centre is inside a frame it joins the innermost one. Dropped in
+// empty space it stays where it was (membership unchanged).
+function adoptCard(item) {
+  const card = cardEl(item);
+  if (!card) return;
   const rects = Canvas.layoutFrames(frameModel(item.id), true),   // true = just compute, change nothing
     fid = Canvas.frameAt(rects, item.x + card.offsetWidth / 2, item.y + card.offsetHeight / 2);
-  if (!fid || fid.startsWith("sec:")) return;
-  const [kind, tileId, subId] = fid.split(":");
-  const dest = C().tiles.find(t => t.id === tileId);
-  if (!dest) return;
-  if (dest !== loc.tile) {
-    loc.tile.items.splice(loc.i, 1);
-    dest.items.push(item);
-  }
-  item.group = kind === "sub" ? subId : undefined;
+  if (fid) item.section = fid.slice(4);
 }
-
-// adoptTile(tile): after a tile's frame is dragged, if its centre is inside ANOTHER section's frame the tile joins that section.
-function adoptTile(tile) {
-  const mine = frames[`tile:${tile.id}`];
+// adoptSection(sec): after a section's frame is dragged, if its centre is inside ANOTHER section's frame (not one of its own descendants) it joins that section.
+function adoptSection(sec) {
+  const mine = frames[`sec:${sec.id}`];
   if (!mine) return;
-  const rects = Canvas.layoutFrames(frameModel(null, tile.id), true),
-    cx = (mine.l + mine.r) / 2,
-    cy = (mine.t + mine.b) / 2;
-  for (const sec of C().sections) {
-    const r = rects[`sec:${sec.id}`];
-    if (sec.id !== tile.section && r && cx > r.l && cx < r.r && cy > r.t && cy < r.b) { tile.section = sec.id; return; }
-  }
+  const rects = Canvas.layoutFrames(frameModel(null, sec.id), true),
+    fid = Canvas.frameAt(rects, (mine.l + mine.r) / 2, (mine.t + mine.b) / 2);
+  if (fid) Nodes.reparent(C().sections, sec.id, fid.slice(4));
 }
 
-// placeFlag(item, tile): choose a free canvas position for a flag being added to `tile`: the nearest free
-// spot to that tile's other flags (or to its empty frame); flags of other tiles are bigger obstacles.
-function placeFlag(item, tile) {
-  const mine = new Set(tile.items.filter(i => i !== item).map(i => i.id)),
+// placeCard(item, secId): choose a free canvas position for a card being added to section `secId`: the nearest free spot to that section's
+// other cards (or to its empty frame); cards of other sections are bigger obstacles, and so are other frames.
+function placeCard(item, secId) {
+  const mine = new Set(C().items.filter(i => i !== item && (i.section || "") === (secId || "")).map(i => i.id)),
     rects = Canvas.itemRects(new Set([item.id])),
     grow = (r, m) => ({ l: r.l - m, t: r.t - m, r: r.r + m, b: r.b + m });
   const obstacles = rects.map(r => (mine.has(r.id) ? r : grow(r, 70)));
-  Object.entries(frames).forEach(([fid, r]) => { if (fid.startsWith("tile:") && fid !== `tile:${tile.id}`) obstacles.push(grow(r, 20)); });
+  Object.entries(frames).forEach(([fid, r]) => { const id = fid.slice(4); if (id !== secId && !Nodes.inside(C().sections, secId, id)) obstacles.push(grow(r, 20)); });
   const near = rects.filter(r => mine.has(r.id)),
-    own = frames[`tile:${tile.id}`];
+    own = secId ? frames[`sec:${secId}`] : null;
   Object.assign(item, Canvas.freeSpot(obstacles, 240, 130, near.length ? near : own ? [own] : []));
 }
 
-// frameEl(level, fid, hue, key, head, getItems, after): builds the shell of a frame: a <div class="frame f-LEVEL">
-// with its id, a header holding the `head` elements, and (when `key` is given) link ports so the frame itself can
-// be linked to other items. Dragging the header moves everything inside: `getItems()` returns the { obj, el } list.
-function frameEl(level, fid, hue, key, head, getItems, after) {
+// frameEl(fid, level, hue, head, getItems, after, key): builds the shell of a frame: a <div class="frame f-LEVEL"> with its id, a header holding the
+// `head` elements, and link ports so the frame itself can be linked to other things. Dragging the header moves everything inside:
+// `getItems()` returns the { obj, el } list.
+function frameEl(fid, level, hue, head, getItems, after, key) {
   const frame = el("div", { className: `frame f-${level}` });
   frame.dataset.fid = fid;
   frame.style.setProperty("--gh", hue);
@@ -532,97 +513,90 @@ function frameEl(level, fid, hue, key, head, getItems, after) {
   return frame;
 }
 
-// sectionFrame(sec): the outermost frame: title bar with collapse arrow, name and tools (add tile, rename,
-// delete). Dragging the title bar moves the whole section.
-function sectionFrame(sec) {
-  const tiles = C().tiles.filter(t => t.section === sec.id),
-    all = () => tiles.flatMap(t => t.items);
-  const hue = (C().sections.indexOf(sec) * 137.5 + 260) % 360;   // golden-angle steps give each section its own colour
-  const head = [
-    el("button", { className: "tiny", textContent: sec.collapsed ? "▸" : "▾", title: "Collapse / expand",
-      onclick: () => { sec.collapsed = !sec.collapsed; save(); render(); } }),
-    el("h2", { textContent: sec.name }),
-    el("span", { className: "tools" },
-      el("button", { textContent: "+ Tile", onclick: () => addTile(sec.id) }),
-      el("button", { textContent: "✎", title: "Rename section", onclick: () => {
-        const n = prompt("Section name", sec.name);
-        if (n) { sec.name = n; save(); render(); }
-      } }),
-      el("button", { textContent: "🗑", title: "Delete section", onclick: () => {
-        if (C().sections.length < 2) return alert("Keep at least one section.");
-        const dest = C().sections.find(s => s !== sec);
-        if (tiles.length && !confirm(`Delete section "${sec.name}"? Its ${tiles.length} tile(s) move to "${dest.name}".`)) return;
-        tiles.forEach(t => (t.section = dest.id));
-        C().sections = C().sections.filter(s => s !== sec);
-        save();
-        render();
-      } }))
+// ---- the create menu. ONE list of "new ..." entries serves the click menu on empty canvas, a section's + button, and (with no position) the
+// toolbar: createEntries(secId, at) -> [[label, function]]. `secId` is the section the new thing goes in ("" = none), `at` the world
+// position it should appear at (null = a free spot).
+function createEntries(secId, at) {
+  return [
+    ["New section", () => addSection(secId, at)],
+    ["New flag", () => { newAt = at; openFlagDlg(null, secId); }],
+    ["New encounter", () => openLibDlg("encounter", at, secId)],
+    ["New loot table", () => openLibDlg("loot", at, secId)],
+    ["New condition", () => newCondition(at, secId)],
+    ["New timer", () => newTimer(at, secId)],
   ];
-  return frameEl("sec", `sec:${sec.id}`, hue, "sec:" + sec.id, head,
-    () => (all().length ? cardsOf(all()) : [{ obj: sec, el: document.querySelector(`.frame[data-fid="sec:${sec.id}"]`) }]));
 }
 
-// tileFrame(tile): the frame around one tile's flags and subsections: title bar with the tile's name, how many
-// flags are triggered, and tools (add flag, settings, delete). Dragging it moves the tile's flags; dropping it
-// inside another section's frame moves the tile to that section.
-function tileFrame(tile) {
-  const triggered = tile.items.filter(i => i.triggered).length;
-  const head = [
-    el("h2", { textContent: tile.name }),
-    el("span", { className: "muted", textContent: tile.items.length ? `${triggered}/${tile.items.length} triggered` : "" }),
-    el("span", { className: "tools" },
-      el("button", { textContent: "+", title: "Add a flag here", onclick: () => openFlagDlg(null, tile.id) }),
-      el("button", { textContent: "⚙", title: "Tile settings (rename, subsections)", onclick: () => openTileDlg(tile) }),
-      el("button", { textContent: "🗑", title: "Delete tile", onclick: () => {
-        if (confirm(`Delete tile "${tile.name}" and its ${tile.items.length} flags?`)) {
-          C().tiles = C().tiles.filter(t => t !== tile);
-          save();
-          render();
-        }
-      } }))
-  ];
-  const hue = (C().sections.findIndex(x => x.id === tile.section) * 137.5 + 260) % 360;
-  return frameEl("tile", `tile:${tile.id}`, hue, "tile:" + tile.id, head,
-    () => (tile.items.length ? cardsOf(tile.items) : [{ obj: tile, el: document.querySelector(`.frame[data-fid="tile:${tile.id}"]`) }]),
-    () => adoptTile(tile));
-}
-
-// subFrame(tile, sub): the frame around one subsection's flags: its name and tools (add flag, rename, delete).
-function subFrame(tile, sub) {
-  const mine = tile.items.filter(i => i.group === sub.id);
-  const head = [
-    el("h3", { textContent: sub.name }),
-    el("span", { className: "tools" },
-      el("button", { textContent: "+", title: "Add a flag to this subsection", onclick: () => openFlagDlg(null, tile.id, sub.id) }),
-      el("button", { textContent: "✎", title: "Rename", onclick: () => {
-        const n = prompt("Subsection name", sub.name);
-        if (n) { sub.name = n; save(); render(); }
-      } }),
-      el("button", { textContent: "🗑", title: "Delete subsection (flags stay in the tile)", onclick: () => {
-        tile.subs = tile.subs.filter(x => x !== sub);
-        tile.items.forEach(i => { if (i.group === sub.id) delete i.group; });
-        save();
-        render();
-      } }))
-  ];
-  return frameEl("sub", `sub:${tile.id}:${sub.id}`, 260, `sub:${tile.id}:${sub.id}`, head,
-    () => (mine.length ? cardsOf(mine) : [{ obj: sub, el: document.querySelector(`.frame[data-fid="sub:${tile.id}:${sub.id}"]`) }]));
-}
-
-// addTile(sectionId): ask for a name and add an empty tile to that section (or the first one). Its (empty)
-// frame goes in the free spot nearest to that section's other frames.
-function addTile(sectionId) {
-  const name = prompt("New tile name (e.g. 'The Sunken Temple')");
+// addSection(parentId, at): ask for a name and add an empty section inside `parentId` (or at the top level). Its (empty) frame goes where the canvas
+// was clicked (`at`), or in the free spot nearest to its siblings.
+function addSection(parentId, at) {
+  const name = prompt(parentId ? "New section name (it goes inside this one)" : "New section name (e.g. 'The Sunken Temple')");
   if (!name) return;
-  const sec = sectionId || C().sections[0].id;
-  const tile = { id: uid(), name, section: sec, subs: [], items: [] };
+  const sec = { id: uid(), name, parent: parentId || "" };
   const grow = (r, m) => ({ l: r.l - m, t: r.t - m, r: r.r + m, b: r.b + m });
-  const obstacles = Object.entries(frames).filter(([fid]) => fid.startsWith("tile:")).map(([, r]) => grow(r, 24));
-  const near = C().tiles.filter(t => t.section === sec).map(t => frames[`tile:${t.id}`]).filter(Boolean);
-  Object.assign(tile, Canvas.freeSpot(obstacles, 320, 100, near));
-  C().tiles.push(tile);
+  const obstacles = Object.values(frames).map(r => grow(r, 24));
+  const near = C().sections.filter(s => s.parent === sec.parent).map(s => frames[`sec:${s.id}`]).filter(Boolean);
+  Object.assign(sec, at ? { x: Math.round(at.x), y: Math.round(at.y) } : Canvas.freeSpot(obstacles, 340, 120, near));
+  edits.record("added a section");
+  C().sections.push(sec);
   save();
   render();
+}
+
+// deleteSection(sec): delete a section WITHOUT deleting anything in it: its child sections and its cards move up to its own parent.
+function deleteSection(sec) {
+  const kids = Nodes.kids(C().sections, sec.id).length, cards = C().items.filter(c => c.section === sec.id).length;
+  const up = Nodes.byId(C().sections, sec.parent)?.name;
+  if ((kids || cards) && !confirm(`Delete section "${sec.name}"? Its ${[kids && kids + " section(s)", cards && cards + " card(s)"].filter(Boolean).join(" and ")} stay on the board${up ? `, inside "${up}"` : ", without a section"}.`)) return;
+  edits.record("deleted a section");
+  C().sections = Nodes.remove(C().sections, C().items, sec.id);
+  save();
+  render();
+}
+
+// openSectionDlg(sec): the section's settings (the shared Nodes.form dialog): its name and the section it sits in.
+function openSectionDlg(sec) {
+  Nodes.form({
+    title: "Section settings",
+    fields: [
+      { key: "name", label: "Name", value: sec.name },
+      { key: "parent", label: "Inside", type: "select", value: sec.parent || "", options: sectionOptions({ except: sec.id }), hint: "(a section can sit inside another)" },
+    ],
+    save: v => {
+      edits.record("edited a section");
+      sec.name = v.name.trim() || sec.name;
+      Nodes.reparent(C().sections, sec.id, v.parent);
+      save();
+      render(true);
+    },
+  });
+}
+
+// sectionFrame(sec): the frame around everything in one section (its cards and child sections): title bar with a collapse arrow, the name, how many
+// of the flags inside are triggered, and tools (+ add something here, ⚙ settings, 🗑 delete). Dragging the title bar moves everything inside; dropping
+// it inside another section's frame moves the section into that one.
+function sectionFrame(sec) {
+  const below = C().items.filter(i => Nodes.inside(C().sections, i.section, sec.id));   // every card in this section or any section inside it
+  const flags = below.filter(i => !i.encounter && !i.condition && !i.timer), triggered = flags.filter(i => i.triggered).length;
+  const d = Nodes.depth(C().sections, sec.id), hue = Nodes.hue(C().sections, sec.id) ?? 260;
+  const head = [
+    el("button", { className: "tiny", textContent: sec.collapsed ? "▸" : "▾", title: "Collapse / expand",
+      onclick: () => { edits.record(sec.collapsed ? "expanded a section" : "collapsed a section"); sec.collapsed = !sec.collapsed; save(); render(); } }),
+    el(d < 2 ? "h2" : "h3", { textContent: sec.name }),
+    el("span", { className: "muted", textContent: flags.length ? `${triggered}/${flags.length} triggered` : "" }),
+    Nodes.tools([
+      { icon: "+", title: "Add a section, flag, encounter, loot table, condition or timer here", run: ev => Canvas.popupMenu(createEntries(sec.id, null), ev.clientX, ev.clientY) },
+      { icon: "⚙", title: "Section settings (rename, move inside another section)", run: () => openSectionDlg(sec) },
+      { icon: "🗑", title: "Delete section (what is inside stays on the board)", run: () => deleteSection(sec) },
+    ]),
+  ];
+  // What dragging the title bar moves: every card below, plus the empty sections below (they have no cards to carry their frame along).
+  const moveSet = () => {
+    const ids = [sec.id, ...Nodes.descendants(C().sections, sec.id)], out = cardsOf(below);
+    ids.forEach(id => { if (!C().items.some(i => Nodes.inside(C().sections, i.section, id))) out.push({ obj: Nodes.byId(C().sections, id), el: document.querySelector(`.frame[data-fid="sec:${id}"]`) }); });
+    return out;
+  };
+  return frameEl(`sec:${sec.id}`, ["sec", "tile", "sub"][Math.min(d, 2)], hue, head, moveSet, () => adoptSection(sec), "sec:" + sec.id);
 }
 
 // render(force): rebuild the whole board from S.campaign. Postponed during a drag (see `drag`).
@@ -632,15 +606,13 @@ function render(force = false) {
   pruneLinks();   // forget links whose items were deleted, before anything uses them
   const root = $("#tiles");
   root.textContent = "";
-  // Frames first (behind): sections, tiles, subsections; then every flag card; then fit the frames to the cards.
-  C().sections.forEach(sec => root.append(sectionFrame(sec)));
-  C().tiles.forEach(t => root.append(tileFrame(t)));
-  C().tiles.forEach(t => t.subs.forEach(sub => root.append(subFrame(t, sub))));
-  C().tiles.forEach(t => t.items.forEach(i => root.append(flagEl(i, t))));
+  // Frames first (behind), outer ones before the ones inside them; then every card; then fit the frames to the cards.
+  [...C().sections].sort((a, b) => Nodes.depth(C().sections, a.id) - Nodes.depth(C().sections, b.id)).forEach(sec => root.append(sectionFrame(sec)));
+  C().items.forEach(i => root.append(flagEl(i)));
   relayout();
   markLinked();   // lit-up ports and "locked" styling from the links
   trackUnlocks();
-  // Watch every flag's size: when one grows or shrinks (a checklist item was added, text wrapped) the frames
+  // Watch every card's size: when one grows or shrinks (a checklist item was added, text wrapped) the frames
   // and links must follow.
   cardObserver.disconnect();
   document.querySelectorAll(".flag").forEach(n => cardObserver.observe(n));
@@ -664,17 +636,6 @@ let editingFlag = null,
   draftChecks = [];
 document.querySelectorAll("[data-close]").forEach(b => (b.onclick = () => b.closest("dialog").close()));
 fdlg.addEventListener("close", () => { newAt = null; });
-
-// fillGroups(tileId, selected): fill the Subsection menu with the chosen tile's subsections.
-function fillGroups(tileId, selected) {
-  const tile = C().tiles.find(t => t.id === tileId);
-  fform.group.textContent = "";
-  fform.group.append(el("option", { value: "", textContent: "(none)" }));
-  (tile?.subs || []).forEach(s => fform.group.append(el("option", { value: s.id, textContent: s.name })));
-  fform.group.value = selected || "";
-}
-// Choosing a different tile in the dialog changes which subsections are offered.
-fform.tile.addEventListener("change", () => fillGroups(fform.tile.value, ""));
 
 // drawChecks(): redraw the checklist editor rows from draftChecks (skipping the ones marked deleted).
 function drawChecks() {
@@ -707,19 +668,18 @@ $("#addCheckBtn").onclick = addDraftCheck;
 // Enter in the "new item" box adds the item instead of submitting the whole form.
 $("#newCheck").addEventListener("keydown", ev => { if (ev.key === "Enter") { ev.preventDefault(); addDraftCheck(); } });
 
-// openFlagDlg(item, tileId, groupId): open the dialog to edit `item`, or to add a new flag
-// (item = null) pre-selecting a tile and optionally a subsection.
-function openFlagDlg(item, tileId, groupId) {
+// openFlagDlg(item, secId): open the dialog to edit `item`, or to add a new flag
+// (item = null) pre-selecting a section.
+function openFlagDlg(item, secId) {
   editingFlag = item;
   if (item) newAt = null;
   fform.reset();
   $("#flagDlgTitle").textContent = item ? "Edit flag" : "New flag";
   $("#deleteFlag").hidden = !item;
   $("#flagMsg").textContent = "";
-  fform.tile.textContent = "";
-  C().tiles.forEach(t => fform.tile.append(el("option", { value: t.id, textContent: t.name })));
-  fform.tile.value = tileId || C().tiles[0].id;
-  fillGroups(fform.tile.value, item ? item.group : groupId);
+  fform.section.textContent = "";
+  sectionOptions().forEach(o => fform.section.append(el("option", { value: o.value, textContent: o.label })));
+  fform.section.value = item ? item.section || "" : secId ?? firstSection();
   // The sound menu lists the soundboard's sounds. If the flag's sound was deleted, show "(none)".
   fform.sound.textContent = "";
   fform.sound.append(el("option", { value: "", textContent: "(none)" }));
@@ -737,8 +697,9 @@ function openFlagDlg(item, tileId, groupId) {
 
 // Delete button: remove the flag.
 $("#deleteFlag").onclick = () => {
+  edits.record("deleted a flag");
   const loc = locate(editingFlag.id);
-  loc.tile.items.splice(loc.i, 1);
+  C().items.splice(loc.i, 1);
   fdlg.close();
   save();
   render();
@@ -749,6 +710,7 @@ $("#deleteFlag").onclick = () => {
 // form submission (a page reload).
 fform.addEventListener("submit", ev => {
   ev.preventDefault();
+  edits.record(editingFlag ? "edited a flag" : "added a flag");
   addDraftCheck();   // a typed-but-not-added item still counts
   const f = fform;
   const data = {
@@ -756,23 +718,18 @@ fform.addEventListener("submit", ev => {
     maxWidth: +f.maxWidth.value > 0 ? Math.min(1200, Math.max(140, +f.maxWidth.value)) : undefined,
     sound: f.sound.value || undefined,
     notes: f.notes.value.trim() || undefined,
-    group: f.group.value || undefined
+    section: f.section.value || ""
   };
   const checklist = draftChecks.filter(x => !x.del && x.text.trim()).map(x => ({ id: x.id, text: x.text.trim(), done: !!x.done, sound: x.sound || undefined }));
-  const dest = C().tiles.find(t => t.id === f.tile.value);
   if (editingFlag) {
-    const old = locate(editingFlag.id).tile;
+    const moved = (editingFlag.section || "") !== data.section;
     Object.assign(editingFlag, data, { checklist });
-    if (old !== dest) {   // moved to another tile in the dialog: put the card next to that tile's flags
-      old.items.splice(old.items.indexOf(editingFlag), 1);
-      placeFlag(editingFlag, dest);
-      dest.items.push(editingFlag);
-    }
+    if (moved) placeCard(editingFlag, data.section);   // moved to another section in the dialog: put the card next to that section's cards
   } else {
     const flag = { id: uid(), ...data, checklist, triggered: false, loot: { entries: [], log: [] } };
     if (newAt) { flag.x = Math.round(newAt.x - 120); flag.y = Math.round(newAt.y - 40); newAt = null; }   // where the canvas was clicked
-    else placeFlag(flag, dest);   // a free spot next to the tile's other flags
-    dest.items.push(flag);
+    else placeCard(flag, data.section);   // a free spot next to the section's other cards
+    C().items.push(flag);
   }
   fdlg.close();
   save();
@@ -782,37 +739,17 @@ fform.addEventListener("submit", ev => {
 
 // ------------------------------------------------------------ click menu
 // A plain click on empty canvas (or on the empty inside of a frame) opens a small menu at that spot (Canvas.clickMenu in
-// canvas.js, the same menu the soundboard uses): new section, tile, flag, encounter or loot table, created where you clicked.
-// `here` says which section / tile the click landed inside, so the new thing goes into the right one.
-Canvas.clickMenu($("#stage"), () => frames, (at, here) => {
-  const tile = (here.kind === "tile" || here.kind === "sub" ? C().tiles.find(t => t.id === here.id) : null) || C().tiles[0];
-  const sec = here.kind === "sec" ? C().sections.find(x => x.id === here.id) : C().sections.find(x => x.id === tile.section);
-  return [
-    ["New section", () => {
-      const name = prompt("New section name");
-      if (!name) return;
-      C().sections.push({ id: uid(), name, x: Math.round(at.x), y: Math.round(at.y) });
-      save(); render(true);
-    }],
-    ["New tile", () => {
-      const name = prompt("New tile name (e.g. 'The Sunken Temple')");
-      if (!name) return;
-      C().tiles.push({ id: uid(), name, section: (sec || C().sections[0]).id, subs: [], items: [], x: Math.round(at.x), y: Math.round(at.y) });
-      save(); render(true);
-    }],
-    ["New flag", () => { newAt = at; openFlagDlg(null, tile.id); }],
-    ["New encounter", () => openLibDlg("encounter", at, tile.id)],
-    ["New loot table", () => openLibDlg("loot", at, tile.id)],
-    ["New condition", () => newCondition(at, tile.id)],
-  ];
-});
+// canvas.js, the same menu the soundboard uses): new section, flag, encounter, loot table, condition or timer, created where you clicked, inside
+// the innermost section the click landed in (or in none when it landed in empty space). `createEntries` (above) builds the entries; a section's
+// + button shows the same list.
+Canvas.clickMenu($("#stage"), () => frames, (at, here) => createEntries(here.kind === "sec" ? here.id : "", at));
 
-// newAt: where the flag being created should go (set by the menu; null = a free spot next to its tile's cards).
+// newAt: where the flag being created should go (set by the menu; null = a free spot next to its section's cards).
 let newAt = null;
 
 // ------------------------------------------------------------ library dialog (encounters and loot tables)
 // "New encounter" / "New loot table" from the menu: choose one that already exists (they are shared by every campaign) or
-// make a new one, and the tile it goes in. A NEW one is created empty and its tab opens on it so it can be filled in.
+// make a new one, and the section it goes in. A NEW one is created empty and its tab opens on it so it can be filled in.
 // An encounter becomes an encounter card; a loot table becomes a flag that rolls on the table (loot.source = "table:<id>").
 const LIB = {
   encounter: { title: "Encounter", noun: "encounter", list: () => S.encounters || [], api: "/api/encounters", page: "encounters",
@@ -823,7 +760,7 @@ const LIB = {
 const edlg = $("#encDlg"),
   eform = $("#encForm");
 let encAt = null, encKind = "encounter";
-function openLibDlg(kind, at, tileId) {
+function openLibDlg(kind, at, secId) {
   encKind = kind;
   encAt = at;
   const k = LIB[kind];
@@ -831,9 +768,9 @@ function openLibDlg(kind, at, tileId) {
   $("#encPickLabel").textContent = k.title;
   eform.enc.textContent = "";
   eform.enc.append(el("option", { value: "", textContent: `(new ${k.noun})` }), ...k.list().map(e => el("option", { value: e.id, textContent: e.name })));
-  eform.tile.textContent = "";
-  C().tiles.forEach(t => eform.tile.append(el("option", { value: t.id, textContent: t.name })));
-  eform.tile.value = tileId;
+  eform.section.textContent = "";
+  sectionOptions().forEach(o => eform.section.append(el("option", { value: o.value, textContent: o.label })));
+  eform.section.value = secId || "";
   eform.newName.value = "";
   eform.newName.hidden = false;
   edlg.showModal();
@@ -851,73 +788,16 @@ eform.addEventListener("submit", async ev => {
       fresh = true;
       UI.libraryChanged();   // the Browse lists on the other pages show it at once
     }
-    const tile = C().tiles.find(t => t.id === eform.tile.value) || C().tiles[0];
     const card = k.card(k.list().find(r => r.id === id));
-    if (encAt) { card.x = Math.round(encAt.x - 120); card.y = Math.round(encAt.y - 40); } else placeFlag(card, tile);
-    tile.items.push(card);
+    card.section = eform.section.value || "";
+    if (encAt) { card.x = Math.round(encAt.x - 120); card.y = Math.round(encAt.y - 40); } else placeCard(card, card.section);
+    edits.record(`added ${encKind === "encounter" ? "an encounter" : "a loot table"} card`);
+    C().items.push(card);
     edlg.close();
     save();
     render(true);
     if (fresh) window.parent.postMessage({ type: "goto", page: k.page, path: `/_/${k.page}?id=${id}` }, location.origin);
   } catch (e) { alert(e.message); }
-});
-
-// ------------------------------------------------------------ tile dialog
-// Rename a tile, move it to another section, and manage its subsections. Subsection edits are made on
-// a COPY (draftSubs) and applied on Save, so Cancel discards them.
-const tdlg = $("#tileDlg"),
-  tform = $("#tileForm");
-let editingTile = null,
-  draftSubs = [];
-
-// drawSubList(): redraw the subsection rows in the dialog (a rename box and a Delete button each).
-function drawSubList() {
-  const box = $("#subList");
-  box.textContent = "";
-  draftSubs.filter(x => !x.del).forEach(x => {
-    const inp = el("input", { value: x.name });
-    inp.oninput = () => (x.name = inp.value);
-    box.append(el("div", { className: "row subrow" }, inp,
-      el("button", { type: "button", className: "danger tiny", textContent: "Delete", title: "Flags stay in the tile",
-        onclick: () => { x.del = true; drawSubList(); } })));
-  });
-  if (!box.children.length) box.append(el("span", { className: "muted", textContent: "No subsections yet." }));
-}
-// addDraftSub(): turn the "new subsection" box into a draft row.
-function addDraftSub() {
-  const inp = $("#newSub"),
-    name = inp.value.trim();
-  if (!name) return;
-  draftSubs.push({ id: uid(), name });
-  inp.value = "";
-  drawSubList();
-}
-$("#addSubBtn").onclick = addDraftSub;
-$("#newSub").addEventListener("keydown", ev => { if (ev.key === "Enter") { ev.preventDefault(); addDraftSub(); } });
-
-// openTileDlg(tile): fill the dialog from the tile and show it.
-function openTileDlg(tile) {
-  editingTile = tile;
-  tform.section.textContent = "";
-  C().sections.forEach(s => tform.section.append(el("option", { value: s.id, textContent: s.name })));
-  tform.name.value = tile.name;
-  tform.section.value = tile.section;
-  draftSubs = tile.subs.map(x => ({ ...x }));
-  drawSubList();
-  tdlg.showModal();
-}
-// Save: apply the name, subsections (deleted ones un-group their flags) and section.
-tform.addEventListener("submit", ev => {
-  ev.preventDefault();
-  const t = editingTile;
-  addDraftSub();
-  t.name = tform.name.value.trim() || t.name;
-  draftSubs.filter(x => x.del).forEach(x => t.items.forEach(i => { if (i.group === x.id) delete i.group; }));
-  t.subs = draftSubs.filter(x => !x.del).map(x => ({ id: x.id, name: x.name.trim() || "Subsection" }));
-  if (t.section !== tform.section.value) moveTile(t.id, tform.section.value, null);
-  tdlg.close();
-  save();
-  render(true);
 });
 
 // ------------------------------------------------------------ loot dialog
@@ -1079,7 +959,7 @@ $("#clearLootLog").onclick = () => {
   save();
   drawLoot();
 };
-// When the popup closes, redraw the board so the 🎁 count on the tile is up to date.
+// When the popup closes, redraw the board so the 🎁 count on the card is up to date.
 ldlg.addEventListener("close", () => render(true));
 
 // ---- a loot table made or edited right here: the Loot tab's editor in its small form (builder.js + loottable.js).
@@ -1177,47 +1057,32 @@ function trackUnlocks() {
   lastSat = sat;
 }
 
-// newCondition(at, tileId): ask for a name, add a condition card (one group with two tiers to start from) and open its settings.
-function newCondition(at, tileId) {
+// newCondition(at, secId): ask for a name, add a condition card (one group with two tiers to start from) and open its settings.
+function newCondition(at, secId) {
   const name = prompt("Condition name (e.g. 'Defeat the guardians')");
   if (!name) return;
-  const tile = C().tiles.find(t => t.id === tileId) || C().tiles[0];
-  const card = { id: uid(), name, checklist: [], triggered: false, loot: { entries: [], log: [] },
+  const card = { id: uid(), name, section: secId || "", checklist: [], triggered: false, loot: { entries: [], log: [] },
     condition: { groups: [{ id: uid(), name: "Conditions", tiers: [{ id: uid(), need: 1, label: "Marginal success" }, { id: uid(), need: 2, label: "Full success" }] }] } };
-  if (at) { card.x = Math.round(at.x - 130); card.y = Math.round(at.y - 40); } else placeFlag(card, tile);
-  tile.items.push(card);
+  if (at) { card.x = Math.round(at.x - 130); card.y = Math.round(at.y - 40); } else placeCard(card, secId);
+  edits.record("added a condition");
+  C().items.push(card);
   save();
   render(true);
   openCondDlg(card);
 }
 
-// condEl(item, tile): the card. Per group: its name, how many conditions are met out of how many are linked, a progress bar and
+// condEl(item): the card. Per group: its name, how many conditions are met out of how many are linked, a progress bar and
 // its tiers (reached ones lit, the best one in bold). Click the card (or ⚙) for the settings; 🗑 removes it (links to it go too).
-function condEl(item, tile) {
-  const card = el("div", { className: "flag cond" + (condDone(item) ? " done" : ""), role: "button", tabIndex: 0 });
-  card.dataset.id = item.id;
-  card.dataset.iid = item.id;
-  card.dataset.sec = tile.section;
-  card.dataset.tile = tile.id;
-  card.dataset.sub = tile.id + ":" + (item.group || "");
-  card.style.left = item.x + "px";
-  card.style.top = item.y + "px";
-  if (C().sections.find(x => x.id === tile.section)?.collapsed) card.style.display = "none";
-  card.style.setProperty("--maxw", (item.maxWidth || 320) + "px");
+function condEl(item) {
+  const card = cardShell(item, "cond" + (condDone(item) ? " done" : ""));
   card.title = "A condition: link nodes into it, and link nodes out of it to unlock them. Click for its settings.";
   card.append(el("div", { className: "ftitle" },
     el("span", { className: "fmark", textContent: "⚖" }),
     el("span", { className: "fname", textContent: item.name }),
-    el("span", { className: "ftools" },
-      el("button", { className: "tiny gear", textContent: "⚙", title: "Condition settings: groups, tiers and what each link is for", onclick: ev => { ev.stopPropagation(); openCondDlg(item); } }),
-      el("button", { className: "tiny fdel", textContent: "🗑", title: "Delete this condition", onclick: ev => {
-        ev.stopPropagation();
-        if (!confirm(`Delete condition "${item.name}"?`)) return;
-        const loc = locate(item.id);
-        if (loc) loc.tile.items.splice(loc.i, 1);
-        save();
-        render();
-      } }))));
+    Nodes.tools([
+      { icon: "⚙", title: "Condition settings: groups, tiers and what each link is for", cls: "gear", run: () => openCondDlg(item) },
+      { icon: "🗑", title: "Delete this condition", cls: "fdel", run: () => { if (confirm(`Delete condition "${item.name}"?`)) removeCard(item, "deleted a condition"); } },
+    ], "ftools")));
   addPorts(card, condKey(item));
   item.condition.groups.forEach(g => {
     const st = groupState(item, g);
@@ -1228,14 +1093,7 @@ function condEl(item, tile) {
         el("span", { className: "ctier" + (st.done >= t.need ? " on" : "") + (st.best === t ? " best" : ""), textContent: `${t.label} · ${t.need}`, title: `Reached when ${t.need} of the linked conditions are met` })))));
   });
   if (!item.condition.groups.length) card.append(el("div", { className: "muted", textContent: "No groups yet: open the settings." }));
-  const bar = el("div", { className: "dragbar", textContent: "⠿⠿⠿", title: "Drag to move this card" });
-  bar.addEventListener("pointerdown", ev => {
-    if (ev.button !== 0) return;
-    Canvas.dragItems(ev, [{ obj: item, el: card }], dragHooks(() => adoptFlag(item)));
-  });
-  card.prepend(bar);
-  card.addEventListener("click", ev => { if (!ev.target.closest(".ftools,.dragbar,.lp")) openCondDlg(item); });
-  card.addEventListener("keydown", ev => { if (ev.key === "Enter" && ev.target === card) card.click(); });
+  onCardClick(card, () => openCondDlg(item));
   return card;
 }
 
@@ -1314,7 +1172,7 @@ function drawCond() {
 $("#condForm").addEventListener("submit", ev => {
   ev.preventDefault();
   const item = condItem;
-  linkHistory.record("changed a condition");   // so Undo can put the links' group and tier choices back
+  edits.record("changed a condition");   // so Undo can put the links' group and tier choices back
   item.name = draft.name.trim() || item.name;
   // Tiers need a label; a group with no tiers could never be reached, so it is dropped with a warning in the card's text.
   item.condition.groups = draft.groups.map(g => ({ id: g.id, name: g.name.trim() || "Conditions", tiers: g.tiers.map(t => ({ id: t.id, need: Math.max(1, Math.floor(+t.need || 1)), label: t.label.trim() || `${t.need} met` })) }));
@@ -1329,10 +1187,9 @@ $("#condForm").addEventListener("submit", ev => {
 
 // ------------------------------------------------------------ campaign links
 // Links are cables between ANY two items on the board, to show how things depend on each other: "this
-// flag unlocks that tile", "finishing this checklist entry opens that section". They are stored in
+// flag unlocks that section", "finishing this checklist entry opens that section". They are stored in
 // S.campaign.links as { id, from, to } where from/to are item KEYS, a kind and an id joined by a colon:
-//     sec:<id>            a section (its frame)        tile:<id>        a tile
-//     sub:<tileId>:<id>   a subsection                 flag:<id>        a flag
+//     sec:<id>            a section (its frame)        flag:<id>        a card (flag, encounter, condition, timer)
 //     chk:<id>            one checklist entry
 // Every item has a column of INPUT squares on its left edge and OUTPUT circles on its right edge. There is
 // one input per incoming link and one output per outgoing link, plus one extra EMPTY (dashed) input and
@@ -1350,28 +1207,30 @@ $("#condForm").addEventListener("submit", ev => {
 // shown as "locked" (dimmed, with a tooltip saying what it is waiting for). This is only a visual
 // guide: nothing is ever blocked.
 
-// ---- undo / redo for links
-// Every change to the links (making, removing or re-routing one) can be undone and redone, with Ctrl+Z /
-// Ctrl+Y (Cmd on a Mac) or the ↶ ↷ buttons in the toolbar. undo.js keeps the history; here we only say how to
-// take a snapshot of the links (the whole list as JSON text) and how to put one back: the list is replaced,
-// then saved and redrawn; a link to an item that has since been deleted is dropped by pruneLinks() during
-// render. Deleting an item (which also removes its links) is not part of this history.
-const linkHistory = Undo.create({
-  snapshot: () => JSON.stringify(C().links),
+// ---- undo / redo for everything on this page
+// EVERY change can be undone and redone, with Ctrl+Z / Ctrl+Y (Cmd on a Mac) or the ↶ ↷ buttons in the toolbar: creating or
+// deleting a section or card, renaming, moving, editing in a dialog, ticking a checklist, making or removing a link ...
+// undo.js keeps the command stack (see its header). save() reports every change to it (edits.commit()), so nothing needs its own
+// undo code; the code that makes a change may name it first with edits.record("deleted a section") to get a good message. Here we
+// only say how to take a snapshot of the page (the whole campaign as JSON text) and how to put one back: the campaign is
+// replaced, tidied by normalize(), saved and redrawn (a link to an item that no longer exists is dropped by pruneLinks()).
+const edits = Undo.create({
+  snapshot: () => JSON.stringify(C()),   // the whole campaign: sections, cards and links
   restore: text => {
-    C().links = JSON.parse(text);
-    save();
+    S.campaign = JSON.parse(text);
+    normalize();
+    save();          // (edits ignores the commit this makes while it is restoring)
     render(true);
   },
   onChange: () => {   // grey out the toolbar buttons when there is nothing to undo / redo
-    $("#undoBtn").disabled = !linkHistory.canUndo();
-    $("#redoBtn").disabled = !linkHistory.canRedo();
+    $("#undoBtn").disabled = !edits.canUndo();
+    $("#redoBtn").disabled = !edits.canRedo();
   }
 });
-$("#undoBtn").onclick = () => Undo.toast(linkHistory.undo() ? "Undid the last link change" : "Nothing to undo");
-$("#redoBtn").onclick = () => Undo.toast(linkHistory.redo() ? "Redid the link change" : "Nothing to redo");
+$("#undoBtn").onclick = () => { const l = edits.undo(); Undo.toast(l ? "Undid: " + l : "Nothing to undo"); };
+$("#redoBtn").onclick = () => { const l = edits.redo(); Undo.toast(l ? "Redid: " + l : "Nothing to redo"); };
 $("#undoBtn").disabled = $("#redoBtn").disabled = true;   // an empty history to start with
-Undo.bindKeys(linkHistory);
+Undo.bindKeys(edits);
 
 // parseKey(key): "flag:abc" -> { kind: "flag", id: "abc" } (the id is everything after the first colon).
 function parseKey(key) {
@@ -1382,36 +1241,27 @@ function parseKey(key) {
 function lookup(key) {
   const { kind, id } = parseKey(key);
   if (kind === "sec") { const o = C().sections.find(x => x.id === id); return o && { kind, obj: o, name: o.name }; }
-  if (kind === "tile") { const o = C().tiles.find(x => x.id === id); return o && { kind, obj: o, name: o.name }; }
-  if (kind === "sub") {
-    const [tileId, subId] = id.split(":");
-    const t = C().tiles.find(x => x.id === tileId),
-      o = t?.subs.find(x => x.id === subId);
-    return o && { kind, obj: o, tile: t, name: o.name };
-  }
   if (kind === "flag") { const loc = locate(id); return loc && { kind, obj: loc.item, name: loc.item.name }; }
   if (kind === "chk") {
-    for (const t of C().tiles) for (const i of t.items) {
+    for (const i of C().items) {
       const c = i.checklist.find(x => x.id === id);
       if (c) return { kind, obj: c, name: c.text };
     }
   }
   return null;
 }
-// isDone(key): has the party finished this item? flag = triggered (a condition card: every group at its top tier); checklist entry = ticked; subsection = it has flags and all are triggered; tile = it has flags and all are
-// triggered; section = it has tiles and all are done.
+// isDone(key): has the party finished this item? flag = triggered (a condition card: every group at its top tier; a timer: it has finished);
+// checklist entry = ticked; section = it holds cards (anywhere inside it) and every one of them is done.
 function isDone(key) {
   const it = lookup(key);
   if (!it) return false;
-  if (it.kind === "flag") return isCond(it.obj) ? condDone(it.obj) : !!it.obj.triggered;
+  if (it.kind === "flag") return isCond(it.obj) ? condDone(it.obj) : it.obj.timer ? !!it.obj.timer.done : !!it.obj.triggered;
   if (it.kind === "chk") return !!it.obj.done;
-  if (it.kind === "sub") { const f = it.tile.items.filter(i => i.group === it.obj.id); return f.length > 0 && f.every(i => i.triggered); }
-  if (it.kind === "tile") return it.obj.items.length > 0 && it.obj.items.every(i => i.triggered);
-  const tiles = C().tiles.filter(t => t.section === it.obj.id);   // a section
-  return tiles.length > 0 && tiles.every(t => isDone("tile:" + t.id));
+  const below = C().items.filter(i => Nodes.inside(C().sections, i.section, it.obj.id));   // a section
+  return below.length > 0 && below.every(i => isDone("flag:" + i.id));
 }
 // pruneLinks(): drop links that point at items that no longer exist, links from an item to itself, and
-// duplicates. Runs on every render, so deleting anything (a flag, a tile, a checklist entry...) cleans up.
+// duplicates. Runs on every render, so deleting anything (a flag, a section, a checklist entry...) cleans up.
 function pruneLinks() {
   const seen = new Set();
   C().links = C().links.filter(l => {
@@ -1471,7 +1321,7 @@ function markLinked() {
 function addLink(from, to) {
   if (from === to || !lookup(from) || !lookup(to)) return;
   if (C().links.some(l => l.from === from && l.to === to)) return;
-  linkHistory.record("made a link");   // remember the state first, so it can be undone
+  edits.record("made a link");   // remember the state first, so it can be undone
   C().links.push({ id: uid(), from, to });
   save();
   render(true);
@@ -1529,12 +1379,12 @@ function startLink(ev, from, existing) {
     const to = t?.dataset.lid;
     if (moved && to && to !== from) {
       if (!existing) return addLink(from, to);   // addLink records, saves and re-renders
-      linkHistory.record("re-routed a link");
+      edits.record("re-routed a link");
       // Re-route: point the existing link at the new item (or just drop it if that exact link already exists).
       if (C().links.some(l => l !== existing && l.from === from && l.to === to)) C().links = C().links.filter(l => l !== existing);
       else { existing.to = to; delete existing.group; }   // (a new target: the old group choice no longer applies)
     } else if (!moved && !cancelled && existing) {
-      linkHistory.record("removed a link");
+      edits.record("removed a link");
       C().links = C().links.filter(l => l !== existing);   // a plain click on a filled port removes the link
     } else {
       return render(true);   // nothing changed
@@ -1547,6 +1397,14 @@ function startLink(ev, from, existing) {
   addEventListener("pointermove", move);
   addEventListener("pointerup", up);
   addEventListener("pointercancel", cancel);
+}
+
+// sectionHue(key): the colour (hue) of the top-level section an item belongs to, the same hue its frame uses; null when it has no section.
+// Cables take the colour of the section they START in, so you can tell at a glance where a cable comes from.
+function sectionHue(key) {
+  const { kind, id } = parseKey(key);
+  const secId = kind === "sec" ? id : kind === "flag" ? locate(id)?.item.section : kind === "chk" ? C().items.find(i => i.checklist.some(c => c.id === id))?.section : null;
+  return secId ? Nodes.hue(C().sections, secId) : null;
 }
 
 // drawLinks(): redraw every cable. Positions are world coordinates (Canvas.posIn), so cables pan and zoom
@@ -1585,11 +1443,13 @@ function drawLinks() {
   links.forEach(({ l }, n) => {
     // Cables.pair adds the visible cable (solid green if its source is done, dashed otherwise) and a wider invisible one on top
     // that is easy to click; clicking it removes the link.
+    const hue = sectionHue(l.from);
     const vis = Cables.pair(layer, ds[n], {
       cls: "link " + (linkSatisfied(l) ? "sat" : "wait"),
+      stroke: hue == null ? undefined : `hsl(${hue} 70% 62%)`,   // the colour of the section the cable starts in (solid = satisfied, dashed = waiting)
       title: `${lookup(l.from)?.name} → ${lookup(l.to)?.name}  (click to remove)`,
       onRemove: () => {
-        linkHistory.record("removed a link");
+        edits.record("removed a link");
         C().links = C().links.filter(x => x !== l);
         save();
         render(true);
@@ -1611,17 +1471,15 @@ function drawLinks() {
 function scheduleDraw() { requestAnimationFrame(drawLinks); }
 
 // ------------------------------------------------------------ toolbar & boot
-$("#addTileBtn").onclick = () => addTile(null);
-$("#addSectionBtn").onclick = () => {
-  const name = prompt("New section name (e.g. 'Act 2')");
-  if (name) { C().sections.push({ id: uid(), name }); save(); render(); }
-};
-// The toolbar offers the same things as the click menu on the canvas; with no click position, a new card goes into the first tile
+$("#addSectionBtn").onclick = () => addSection("", null);
+// The toolbar offers the same things as the click menu on the canvas; with no click position, a new card goes into the first section
 // and finds a free spot.
-$("#addFlagBtn").onclick = () => { newAt = null; openFlagDlg(null, C().tiles[0].id); };
-$("#addEncounterBtn").onclick = () => openLibDlg("encounter", null, C().tiles[0].id);
-$("#addLootTableBtn").onclick = () => openLibDlg("loot", null, C().tiles[0].id);
-$("#addConditionBtn").onclick = () => newCondition(null, C().tiles[0].id);
+// (the toolbar and the menus share createEntries, above)
+$("#addFlagBtn").onclick = () => { newAt = null; openFlagDlg(null, firstSection()); };
+$("#addEncounterBtn").onclick = () => openLibDlg("encounter", null, firstSection());
+$("#addLootTableBtn").onclick = () => openLibDlg("loot", null, firstSection());
+$("#addConditionBtn").onclick = () => newCondition(null, firstSection());
+$("#addTimerBtn").onclick = () => newTimer(null, firstSection());
 // This page runs inside a frame of the app shell (shell.html), which keeps it loaded but hidden while you
 // look at other tabs. A hidden frame cannot measure layout, so when the shell shows this tab again it
 // sends { type: "shown" } and we redraw the cables.
@@ -1640,12 +1498,13 @@ async function revealNode(id) {
       await addLibrary(S);
       myRevision = S.revision;
       normalize();
+      edits.reset();
       render(true);
     }
     const loc = locate(id);
     if (!loc) return;
-    const sec = C().sections.find(x => x.id === loc.tile.section);
-    if (sec?.collapsed) { sec.collapsed = false; save(); render(true); }
+    const closed = Nodes.chain(C().sections, loc.item.section).filter(x => x.collapsed);
+    if (closed.length) { closed.forEach(x => (x.collapsed = false)); save(); render(true); }
     const card = cardEl(loc.item);
     if (card) requestAnimationFrame(() => Canvas.reveal(card));
   } catch (_) { /* server restarting: the normal poll will catch up */ }
@@ -1657,13 +1516,16 @@ addEventListener("dragend", () => { drag = null; if (pendingRender) render(true)
 // Boot: runs once when the page loads. Load everything from the server, fill in any missing
 // structure, draw the board, then start polling for outside changes every 5 seconds.
 (async () => {
-  // Turn #stage / #world into the pan-and-zoom canvas; frame all the tiles on the first visit.
+  // Turn #stage / #world into the pan-and-zoom canvas; frame all the sections on the first visit.
   const restored = Canvas.mount($("#stage"), $("#world"), "campaign");
   S = await api("/api/state");
   await addLibrary(S);
   myRevision = S.revision;
   normalize();
+  edits.reset();   // the loaded campaign is where the history starts
   render();
   if (!restored) Canvas.fit();
+  // The clock for timer cards: counts down, finishes them (flash, tab flash, sound) even if they ran out while the page was closed.
+  Timers.watch({ cards: () => C().items.filter(i => i.timer), onComplete: timerDone, redraw: () => { save(); render(true); } });
   setInterval(pollState, 5000);
 })();
