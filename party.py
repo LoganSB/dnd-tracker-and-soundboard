@@ -710,6 +710,115 @@ def update_member(cid):
         return jsonify(summary(cid, root))
 
 
+# ---- adding things to a character: loot, spells and notes from the character sheet's Add buttons. Each becomes a normal Fight Club element inside
+# the character's XML, so the character exports (and opens in the phone app) with it. The browser sends plain values; every one is cut to a safe
+# size here.
+# Fight Club item type for an Open5e magic item type ("Wondrous item", "Weapon (longsword)", "Ring" ...), by what the type starts with.
+ITEM_CODE_BY_TYPE = [("ring", "11"), ("potion", "12"), ("scroll", "13"), ("staff", "9"), ("wand", "10"), ("rod", "8"), ("wondrous", "14"),
+                     ("armor", "2"), ("shield", "4"), ("weapon", "5"), ("ammunition", "7")]
+SCHOOL_CODE = {v.lower(): k for k, v in SCHOOLS.items()}
+
+
+def _text(v, n):
+    return str(v or "").strip()[:n]
+
+
+def _append(root, parent, elem, after, before=()):
+    """Put `elem` inside `parent` after the last child tagged one of `after`, else just before the first tagged one of `before`, else last.
+    Keeps Fight Club's own order (items, containers, feats, notes, then the slots and money) so the file still looks the way it writes it."""
+    kids = list(parent)
+    last = max((i for i, k in enumerate(kids) if k.tag in after), default=None)
+    if last is None:
+        last = next((i - 1 for i, k in enumerate(kids) if k.tag in before), len(kids) - 1)
+    parent.insert(last + 1, elem)
+
+
+def _sub(parent, tag, text):
+    e = ET.SubElement(parent, tag)
+    e.text = text
+    return e
+
+
+@bp.post("/api/party/<cid>/items")
+def add_item(cid):
+    """POST /api/party/<id>/items {name, type, rarity, text, attunement} -> {"ok": true, "name"}: add a magic item (from the item search) to the
+    character's loose items. `type` is Open5e's ("Wondrous item"); it is turned into Fight Club's type code and shown in the detail line."""
+    _guard(cid)
+    b = request.get_json(force=True, silent=True) or {}
+    name = _text(b.get("name"), 80)
+    if not name:
+        return jsonify(error="The item needs a name"), 400
+    kind, rarity = _text(b.get("type"), 60), _text(b.get("rarity"), 20)
+    with lock:
+        root = _load(cid)
+        it = ET.Element("item")
+        _sub(it, "name", name)
+        _sub(it, "detail", ", ".join(x for x in (kind, rarity, "requires attunement" if b.get("attunement") else "") if x))
+        _sub(it, "text", _text(b.get("text"), 6000))
+        _sub(it, "type", next((c for p, c in ITEM_CODE_BY_TYPE if kind.lower().startswith(p)), "15"))
+        _sub(it, "magic", "1")
+        _sub(it, "weight", "0.0")
+        _sub(it, "value", "0.0")
+        _sub(it, "quantity", "1")
+        _append(root, root, it, ("item", "container"), ("feat", "note", "slots", "slotsCurrent", "money"))
+        _write(cid, root)
+    return jsonify(ok=True, name=name)
+
+
+@bp.post("/api/party/<cid>/spells")
+def add_spell(cid):
+    """POST /api/party/<id>/spells {name, level, school, time, range, duration, components, materials, text, ritual, classes} -> {"ok": true, "name"}:
+    add a spell (from the spell search) to the character's FIRST class. It starts unprepared."""
+    _guard(cid)
+    b = request.get_json(force=True, silent=True) or {}
+    name = _text(b.get("name"), 80)
+    if not name:
+        return jsonify(error="The spell needs a name"), 400
+    comps = _text(b.get("components"), 40).upper()
+    with lock:
+        root = _load(cid)
+        cls = root.find("class")
+        if cls is None:
+            return jsonify(error="This character has no class to add a spell to"), 400
+        sp = ET.Element("spell")
+        _sub(sp, "name", name)
+        _sub(sp, "school", SCHOOL_CODE.get(_text(b.get("school"), 20).lower(), ""))
+        _sub(sp, "level", str(max(0, min(9, int(_num(b.get("level")))))))
+        _sub(sp, "time", _text(b.get("time"), 60))
+        _sub(sp, "range", _text(b.get("range"), 60))
+        for tag, letter in (("v", "V"), ("s", "S"), ("m", "M")):
+            if re.search(rf"\b{letter}\b", comps):
+                _sub(sp, tag, "1")
+        _sub(sp, "materials", _text(b.get("materials"), 300))
+        _sub(sp, "duration", _text(b.get("duration"), 60))
+        _sub(sp, "text", _text(b.get("text"), 6000))
+        _sub(sp, "prepared", "0")
+        _sub(sp, "sclass", _t(cls, "name"))
+        if b.get("ritual"):
+            _sub(sp, "ritual", "1")
+        _append(root, cls, sp, ("spell",), ())
+        _write(cid, root)
+    return jsonify(ok=True, name=name)
+
+
+@bp.post("/api/party/<cid>/notes")
+def add_note(cid):
+    """POST /api/party/<id>/notes {name, text} -> {"ok": true, "name"}: add a note to the character (shown under Feats, Features and Notes)."""
+    _guard(cid)
+    b = request.get_json(force=True, silent=True) or {}
+    name = _text(b.get("name"), 80)
+    if not name:
+        return jsonify(error="The note needs a title"), 400
+    with lock:
+        root = _load(cid)
+        n = ET.Element("note")
+        _sub(n, "name", name)
+        _sub(n, "text", _text(b.get("text"), 8000))
+        _append(root, root, n, ("note",), ("slots", "slotsCurrent", "money"))
+        _write(cid, root)
+    return jsonify(ok=True, name=name)
+
+
 @bp.delete("/api/party/<cid>")
 def delete_member(cid):
     """DELETE /api/party/<cid> : remove a character's XML file and sidecar entry.

@@ -9,9 +9,11 @@
 //   Sheet.stats(m, patch)       Skills and Stats: Health (HP, hit dice, conditions), Statistics, Abilities and saves, Attacks, Skills,
 //                               Creatures. `patch(body)` sends a change (PATCH /api/party/<id>) and must return a promise; the page
 //                               then redraws the panel.
-//   Sheet.inventory(m)          every item, carried or in a bag, as one searchable table (click an item for its description)
-//   Sheet.spells(m)             every spell as one table (filter by level, school; click for the text)
-//   Sheet.features(m)           race / background / class features, feats and notes as one table (filter by source)
+//   Sheet.inventory(m, add)     every item, carried or in a bag, as one searchable table (click an item for its description)
+//   Sheet.spells(m, add)        every spell as one table (filter by level, school; click for the text)
+//   Sheet.features(m, add)      race / background / class features, feats and notes as one table (filter by source)
+//                               `add` (each of the three, optional): called by the + Add loot / + Add spell / + Add note button above the table;
+//                               the page decides what it does (party.js opens the search pop-up or the note form)
 //   Sheet.counts(m)             {items, spells, features}: the numbers the sub-menu buttons show
 //
 // ALL the lists are UI.dataTable (ui.js): the same table, search box (typos and regular expressions), filters, expanding rows and
@@ -32,8 +34,11 @@ const Sheet = (() => {
   const itemStats = i => [i.ac && "AC " + i.ac, i.damage && `${i.damage}${i.damage2h ? " (" + i.damage2h + " two-handed)" : ""} ${i.damageType}`.trim(), i.property,
     i.range && "range " + i.range + (i.longRange ? "/" + i.longRange : ""), i.weight && i.weight * i.quantity + " lb"].filter(Boolean).join(" · ");
 
-  function inventory(m) {
-    return dataTable({
+  // withAdd(label, add, table): the list with its Add button above it (no button when the page gave no `add`).
+  const withAdd = (label, add, table) => h("div", {}, add ? h("div", { className: "row addbar" }, h("button", { className: "primary", textContent: label, onclick: add })) : null, table);
+
+  function inventory(m, add) {
+    return withAdd("+ Add loot", add, dataTable({
       key: `sheet.${m.id}.items`, rows: flatItems(m), empty: "No items.",
       columns: [
         { label: "Item", text: i => (i.quantity > 1 ? `${i.quantity}× ` : "") + i.name.trim() + (i.magic ? " ✦" : "") },
@@ -44,13 +49,13 @@ const Sheet = (() => {
         { label: "Value", text: i => gp(i.value) },
       ],
       detail: i => i.text || i.detail || null, rowClass: i => (i.equipped ? "equipped" : ""),
-    });
+    }));
   }
 
   // ---- spells
-  function spells(m) {
+  function spells(m, add) {
     const rows = [...m.spells].sort((a, b) => a.level - b.level || b.prepared - a.prepared || a.name.localeCompare(b.name));
-    return dataTable({
+    return withAdd("+ Add spell", add, dataTable({
       key: `sheet.${m.id}.spells`, rows, empty: "No spells.",
       columns: [
         { label: "Spell", text: s => s.name },
@@ -63,7 +68,7 @@ const Sheet = (() => {
         { label: "Comp.", text: s => s.components },
       ],
       detail: s => ((s.materials ? `Materials: ${s.materials}\n\n` : "") + s.text) || null, rowClass: s => (s.prepared ? "equipped" : ""),
-    });
+    }));
   }
 
   // ---- features, feats and notes
@@ -73,55 +78,81 @@ const Sheet = (() => {
       ...m.classes.flatMap(c => c.feats.map(f => ({ ...f, source: c.name }))), ...m.feats.map(f => ({ ...f, source: "Feat" })),
       ...m.notes.map(n => ({ ...n, source: "Note" }))];
   }
-  function features(m) {
-    return dataTable({
+  function features(m, add) {
+    return withAdd("+ Add note", add, dataTable({
       key: `sheet.${m.id}.features`, rows: featureRows(m), empty: "No features, feats or notes.",
       columns: [{ label: "Name", text: f => f.name }, { label: "Source", text: f => f.source, filter: true }],
       detail: f => f.text || null,
-    });
+    }));
   }
 
   const counts = m => ({ items: m.items.length + m.containers.reduce((n, c) => n + c.items.length, 0), spells: m.spells.length, features: featureRows(m).length });
 
-  // ---- skills and stats
+  // ---- shared pieces of the Tracker and Skills and Stats pages
   const tile = (label, value, title, ...extra) => h("div", { className: "stat", title: title || "" }, h("div", { className: "muted", textContent: label }), h("b", { textContent: value }), ...extra);
 
-  function stats(m, patch) {
+  // panel(m, patch, build): a panel that redraws ITSELF after every change. `build(run, note)` returns the content; `run(body)` sends one
+  // change (patch must return a promise: the page's PATCH) and then redraws; a failure is printed in `note` beside the controls.
+  function panel(m, patch, build) {
+    const box = h("div");
     const note = h("p", { className: "muted" });
-    const run = body => patch(body).catch(e => { note.textContent = e.message; note.className = "bad"; });
+    const run = body => patch(body).then(draw).catch(e => { note.textContent = e.message; note.className = "bad"; });
+    function draw() { note.textContent = ""; note.className = "muted"; box.replaceChildren(build(run, note)); }
+    draw();
+    return box;
+  }
+
+  // statistics(m, run): the tiles AC, Initiative, Speed, Passive Perception, Proficiency and Inspiration (with - / +).
+  function statistics(m, run) {
     const s = m.stats;
-
-    const health = card("Health", Vitals.hp(m, run), h("h3", { textContent: "Hit dice" }), Vitals.hitDice(m, run),
-      h("h3", { textContent: "Conditions" }), Vitals.conditions(m, run), note);
-
     const insp = h("div", { className: "stat", title: "Inspiration" }, h("div", { className: "muted", textContent: "Inspiration" }), h("b", { textContent: m.inspiration }),
       h("div", { className: "row" }, h("button", { className: "tiny", textContent: "−", onclick: () => run({ inspiration: m.inspiration - 1 }) }),
         h("button", { className: "tiny", textContent: "+", onclick: () => run({ inspiration: m.inspiration + 1 }) })));
-    const statistics = card("Statistics", h("div", { className: "stats" },
+    return h("div", {}, h("div", { className: "stats" },
       tile("Armor class", s.ac, s.acNote), tile("Initiative", sgn(s.initiative), "Dexterity modifier"), tile("Speed", s.speed || "—"),
       tile("Passive Perception", s.passivePerception, "10 + Perception"), tile("Proficiency", sgn(s.profBonus), "Proficiency bonus"), insp),
       h("p", { className: "muted", textContent: "Armor class, initiative and proficiency are worked out from the character's ability scores, level and equipped items; bonuses from class features and spells are not included." }));
+  }
 
-    const abilities = card("Abilities and saving throws", h("div", { className: "stats" }, m.abilities.map((a, i) => {
-      const sv = m.saves[i];
-      return h("div", { className: "stat" }, h("div", { className: "muted", textContent: a.name }), h("b", { textContent: sgn(a.mod) }), h("div", { textContent: a.score }),
-        h("div", { className: "muted" + (sv.proficient ? " prof" : ""), textContent: `Save ${sgn(sv.mod)}${sv.proficient ? " ●" : ""}`, title: sv.proficient ? "Proficient" : "" }));
-    })));
+  // attacks(m): the equipped weapons from the character's items, with attack bonus and damage plus type.
+  const attacks = m => h("div", {}, dataTable({
+    key: `sheet.${m.id}.attacks`, rows: m.attacks, empty: "No weapons equipped.",
+    columns: [{ label: "Weapon", text: a => a.name }, { label: "Attack", text: a => sgn(a.atk) },
+      { label: "Damage", text: a => a.damage + (a.damage2h ? ` (${a.damage2h} two-handed)` : "") }, { label: "Notes", text: a => a.notes }],
+  }), h("p", { className: "muted", textContent: "Equipped weapons only. Attack = ability modifier + proficiency (if proficient) + the item's bonus." }));
 
-    const attacks = card("Attacks", dataTable({
-      key: `sheet.${m.id}.attacks`, rows: m.attacks, empty: "No weapons equipped.",
-      columns: [{ label: "Weapon", text: a => a.name }, { label: "Attack", text: a => sgn(a.atk) },
-        { label: "Damage", text: a => a.damage + (a.damage2h ? ` (${a.damage2h} two-handed)` : "") }, { label: "Notes", text: a => a.notes }],
-    }), h("p", { className: "muted", textContent: "Equipped weapons only. Attack = ability modifier + proficiency (if proficient) + the item's bonus." }));
+  // ---- the Tracker page, below the live tracker: hit dice first, then Conditions, Statistics, Attacks and Creatures, each under a thin line.
+  // All of it sits in the one card the live tracker is in (party.js puts the tracker widget above this). Everything is built from the
+  // character's own data (the Fight Club import): hit dice from the classes, attacks from the equipped items, creatures from <monster>.
+  function trackerExtras(m, patch) {
+    return panel(m, patch, (run, note) => {
+      const part = (title, ...kids) => h("div", { className: "part" }, h("hr", { className: "thin" }), h("h3", { textContent: title }), ...kids);
+      return h("div", { className: "trackerextras" },
+        h("h3", { textContent: "Hit dice" }), Vitals.hitDice(m, run),
+        part("Conditions", Vitals.conditions(m, run)),
+        part("Statistics", statistics(m, run)),
+        part("Attacks", attacks(m)),
+        part("Creatures", creatures(m, run)),
+        note);
+    });
+  }
 
-    const skills = card("Skills", dataTable({
-      key: `sheet.${m.id}.skills`, rows: m.skills, empty: "No skills.",
-      columns: [{ label: "Skill", text: k => k.name }, { label: "Ability", text: k => k.ability, filter: true },
-        { label: "Modifier", text: k => sgn(k.mod) }, { label: "Proficient", text: k => (k.proficient ? "Proficient" : ""), filter: true }],
-      rowClass: k => (k.proficient ? "equipped" : ""),
-    }));
-
-    return h("div", { className: "sheetstats" }, health, statistics, abilities, attacks, skills, card("Creatures", creatures(m, run)));
+  // ---- the Skills and Stats page: Statistics, Abilities and saving throws, and every Skill.
+  function stats(m, patch) {
+    return panel(m, patch, run => {
+      const abilities = card("Abilities and saving throws", h("div", { className: "stats" }, m.abilities.map((a, i) => {
+        const sv = m.saves[i];
+        return h("div", { className: "stat" }, h("div", { className: "muted", textContent: a.name }), h("b", { textContent: sgn(a.mod) }), h("div", { textContent: a.score }),
+          h("div", { className: "muted" + (sv.proficient ? " prof" : ""), textContent: `Save ${sgn(sv.mod)}${sv.proficient ? " ●" : ""}`, title: sv.proficient ? "Proficient" : "" }));
+      })));
+      const skills = card("Skills", dataTable({
+        key: `sheet.${m.id}.skills`, rows: m.skills, empty: "No skills.",
+        columns: [{ label: "Skill", text: k => k.name }, { label: "Ability", text: k => k.ability, filter: true },
+          { label: "Modifier", text: k => sgn(k.mod) }, { label: "Proficient", text: k => (k.proficient ? "Proficient" : ""), filter: true }],
+        rowClass: k => (k.proficient ? "equipped" : ""),
+      }));
+      return h("div", { className: "sheetstats" }, card("Statistics", statistics(m, run)), abilities, skills);
+    });
   }
 
   // creatures: companions, familiars and summons. Two kinds share one table: the companions Fight Club has on the character (m.companions:
@@ -153,5 +184,5 @@ const Sheet = (() => {
     }), h("div", { className: "row addrow" }, name, hp, ac, notes, h("button", { className: "primary tiny", textContent: "Add creature", onclick: add })));
   }
 
-  return { stats, inventory, spells, features, counts };
+  return { stats, trackerExtras, inventory, spells, features, counts };
 })();

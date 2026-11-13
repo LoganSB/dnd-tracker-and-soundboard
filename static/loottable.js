@@ -7,6 +7,7 @@
 // once from the server, which keeps it on disk and rebuilds it from Open5e at most monthly, so searching makes no API calls.
 //
 // LootTables.items()                promise of { rows, d } the prepared item list (downloaded once, then remembered)
+// LootTables.itemPanel(add, compact) the magic item search (also the character sheet's Add loot pop-up): add(row) is called by the + buttons
 // LootTables.config(opts)           the Builder configuration: opts.sections() -> campaign sections (for "Put on campaign tracker"),
 //                                   opts.compact, opts.lockId, opts.onChange, opts.extraActions(record, ctx)
 // LootTables.pick(entries)          weighted random choice: { entry, roll, total }
@@ -88,6 +89,7 @@ const LootTables = (() => {
           const sel = h("select", {}, Nodes.options(opts.sections()).map(o => h("option", { value: o.value, textContent: o.label })));
           return [sel, h("button", { textContent: "Put on campaign tracker", onclick: async () => {
             await ctx.flush();
+            await parent.flushAllPages?.();   // unsaved edits on the campaign tracker go first, so they cannot overwrite the new card
             const r = await api(`/api/loots/${rec.id}/place`, "POST", { section: sel.value });
             parent.postMessage({ type: "goto", page: "campaign", node: r.item }, location.origin);
             await ctx.reload();
@@ -99,5 +101,5 @@ const LootTables = (() => {
     };
   }
 
-  return { items, config, pick, pickRarity, label };
+  return { items, itemPanel, config, pick, pickRarity, label };
 })();

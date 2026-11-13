@@ -78,7 +78,10 @@ function uploadBox(users) {
     msg.say(res ? `Imported ${res.imported.length} character(s)` : "Nothing imported");
   } });
   return h("div", {}, h("p", { className: "muted", textContent: "Fight Club 5 backup (.backup / .xml) or a zip containing one. You choose which characters in it to import; characters with the same id are updated." }),
-    h("div", { className: "row" }, file, owner, btn), msg);
+    h("div", { className: "row" }, file, owner, btn), msg,
+    // Downloads (buttons, not links: safeDownload prints a failure beside the button). The server only includes the characters this user may see.
+    h("div", { className: "row" }, h("button", { onclick: () => safeDownload("/api/party/export.zip"), textContent: users ? "⬇ Export all characters (Fight Club backup)" : "⬇ Export my characters (Fight Club backup)" }),
+      h("button", { onclick: () => safeDownload("/download/collection.zip"), textContent: "⬇ Fight Club 5e collection zip" })));
 }
 
 // linkFooter(me): a small line at the very bottom of this page, shown only to someone signed in with Google alone.
@@ -206,6 +209,7 @@ function campaignBox(camps, ap) {
       actions: r => [
         h("button", { textContent: "Load", onclick: async () => {
           if (!confirm(`Load campaign "${r.name}"? The current board is saved as a version first.`)) return;
+          await parent.flushAllPages?.();   // send the pages' unsaved edits first, so they cannot overwrite the loaded campaign afterwards
           await api(`/api/campaigns/${encodeURIComponent(r.name)}/load`, "POST");
           reload(); boot();
         } }),
@@ -213,7 +217,7 @@ function campaignBox(camps, ap) {
           if (confirm(`Delete campaign "${r.name}"?`)) { await api("/api/campaigns/" + encodeURIComponent(r.name), "DELETE"); boot(); }
         } })],
     }),
-    h("div", { className: "row" }, name, h("button", { className: "primary", textContent: "Save current board as campaign", onclick: attempt(msg, () => api("/api/campaigns", "POST", { name: name.value })) })),
+    h("div", { className: "row" }, name, h("button", { className: "primary", textContent: "Save current board as campaign", onclick: attempt(msg, async () => { await parent.flushAllPages?.(); return api("/api/campaigns", "POST", { name: name.value }); }) })),
     h("p", { className: "muted", textContent: "A campaign holds the soundboard, the campaign tracker (cards that point at encounters and loot tables, which are shared by every campaign), its combat and the list of party members. Party members are only references: each character's sheet stays with the player who uploaded it." }),
     msg);
 }

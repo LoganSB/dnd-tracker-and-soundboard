@@ -35,6 +35,8 @@ MAP_DIR = ROOT / "data" / "encounter_maps"
 MAP_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".pdf": "application/pdf"}
 MAP_MAX = 25 * 1024 * 1024   # bytes per map
 MAPS_PER_ENCOUNTER = 20
+# A record's notes: at most 100 lines of about 80 characters (the Encounters and Loot editors grow the box to fit, up to 10 lines, then scroll).
+NOTE_MAX_CHARS = 8000
 
 bp = Blueprint("encounters", __name__)
 API = "https://api.open5e.com/v1"
@@ -178,6 +180,13 @@ ITEMS = Catalog("magicitems", "/magicitems/", "slug,name,type,rarity,requires_at
                 {"rarities": RARITIES + ["varies"]})
 
 
+# Spells: the same kind of catalogue (about 1,400 from the SRD and the Kobold Press / Deep Magic books). Used by the character sheet's Add spell
+# pop-up. The row: [slug, name, level (0 = cantrip), school, classes, casting time, range, duration, components, book].
+SPELLS = Catalog("spells", "/spells/", "slug,name,level_int,school,dnd_class,casting_time,range,duration,components,document__slug,document__title",
+                 lambda m: [m["slug"], m["name"], int(m.get("level_int") or 0), (m.get("school") or "").title(), m.get("dnd_class", ""), m.get("casting_time", ""),
+                            m.get("range", ""), m.get("duration", ""), m.get("components", ""), m.get("document__slug", "")])
+
+
 def _routes(cat, kind, page, template, **extra):
     """Register the four routes every catalogue has: /api/<kind>/index, /api/<kind>/index/refresh,
     /api/<kind>/<slug> (the full record) and /<page>/<slug> (a small readable page for it)."""
@@ -189,6 +198,7 @@ def _routes(cat, kind, page, template, **extra):
 
 _routes(MONSTERS, "monsters", "monster", "monster.html", mod=_mod, xp=XP)
 _routes(ITEMS, "items", "item", "item.html")
+_routes(SPELLS, "spells", "spell", "spell.html")
 
 
 # ------------------------------------------------------------------ the library: encounters and loot tables
@@ -371,7 +381,7 @@ def update_encounter(eid):
         if "name" in b:
             e["name"] = str(b["name"]).strip()[:80] or e["name"]
         if "notes" in b:
-            e["notes"] = str(b["notes"])[:2000]
+            e["notes"] = str(b["notes"])[:NOTE_MAX_CHARS]
         if "monsters" in b:
             e["monsters"] = [_clean_line(x) for x in b["monsters"][:60] if isinstance(x, dict)]
         _save_lib("encounters", _lib("encounters"))
@@ -527,7 +537,7 @@ def update_loot(lid):
         if "name" in b:
             t["name"] = str(b["name"]).strip()[:80] or t["name"]
         if "notes" in b:
-            t["notes"] = str(b["notes"])[:2000]
+            t["notes"] = str(b["notes"])[:NOTE_MAX_CHARS]
         if "entries" in b:
             t["entries"] = [_clean_entry(x) for x in b["entries"][:200] if isinstance(x, dict)]
         _save_lib("loots", _lib("loots"))

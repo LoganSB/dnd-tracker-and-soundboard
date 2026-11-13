@@ -438,15 +438,35 @@ function paths(links, cards, W, H) {
     : routed(l.a, l.b, { top: l.cs.t, bottom: l.cs.b }, { top: l.ct.t, bottom: l.ct.b }, W)));
 }
 
+// PATTERNS / patterns(links, sourceOf): when one item has several cables leaving it, each gets its own dash pattern so they can be told
+// apart: solid, dashed, dotted, dash-dot, long dash (five; a sixth cable repeats the first). A lone cable gets none (null) and keeps
+// the page's own look. `sourceOf(link)` names the item a cable leaves (the campaign page: the link's `from` key). Returns one entry per
+// link, in order: a stroke-dasharray string ("none" = solid) or null. Numbers are tuned for the 3px round-capped cable.
+const PATTERNS = ["none", "14 9", "1 8", "14 7 1 7", "26 10"];
+function patterns(links, sourceOf) {
+  const group = new Map();
+  links.forEach(l => group.set(sourceOf(l), (group.get(sourceOf(l)) || 0) + 1));
+  const seen = new Map();
+  return links.map(l => {
+    const k = sourceOf(l);
+    if (group.get(k) < 2) return null;
+    const i = seen.get(k) || 0;
+    seen.set(k, i + 1);
+    return PATTERNS[i % PATTERNS.length];
+  });
+}
+
 // pair(layer, d, opts): add one cable to `layer`: the visible path and, on top of it, a wider invisible one that is easy to click.
 //   opts.cls      the visible path's class         opts.stroke   optional stroke colour
+//   opts.dash     optional stroke-dasharray (one of PATTERNS; see patterns())
 //   opts.title    tooltip text                     opts.onRemove called when the cable is clicked (a click removes the link)
 // Returns the visible path so the caller can add more attributes.
-function pair(layer, d, { cls, stroke, title, onRemove }) {
+function pair(layer, d, { cls, stroke, dash, title, onRemove }) {
   const vis = document.createElementNS(SVGNS, "path");
   vis.setAttribute("d", d);
   vis.setAttribute("class", cls);
   if (stroke) vis.style.stroke = stroke;
+  if (dash) vis.style.strokeDasharray = dash;
   vis.setAttribute("marker-end", "url(#arr)");
   layer.append(vis);
   const hit = document.createElementNS(SVGNS, "path");   // pointer-events: stroke in the stylesheet makes only the stroke receive the mouse
@@ -460,5 +480,5 @@ function pair(layer, d, { cls, stroke, title, onRemove }) {
   return vis;
 }
 
-  return { SVGNS, bezier, routed, roundPoly, routeCables, live, tempPath, paths, pair };
+  return { SVGNS, bezier, routed, roundPoly, routeCables, live, tempPath, paths, pair, patterns, PATTERNS };
 })();

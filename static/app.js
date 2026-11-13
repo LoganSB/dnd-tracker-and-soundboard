@@ -276,25 +276,20 @@ function normalize() {
 // ------------------------------------------------------------- persistence
 // Saving the state to the Flask server.
 
-// saveTimer holds the id of the pending timer so a new save() can cancel it (debouncing).
-let saveTimer = null;
+// saver: sends the whole state S to the server. A change is sent at most once every 30 seconds (autosave.js: Ctrl+S sends it now, and so
+// does hiding or closing the page). The "unsaved / saving… / saved" label next to the button shows the progress.
+const saver = Autosave.create({ send: keep => Autosave.put("/api/state", S, keep), label: $("#saveState") });
 
-// save(): schedule an upload of the whole state S to the server.
-// Why a timer? The volume sliders call save() dozens of times per second while
-// dragged. Each call cancels the previous timer and starts a new 300 ms one, so
-// only the last call in a burst actually sends a request. The "saving…/saved"
-// label next to the button shows the progress.
-// Side effects: network request; updates the #saveState label. Does NOT re-render.
+// save(): a change was made. Registers it as an undoable command (undo.js) and asks the saver to send the state within 30 seconds.
+// (The volume sliders call this dozens of times per second while dragged: the saver does not mind.) Does NOT re-render.
 function save() {
   edits.commit();   // register this change as an undoable command (undo.js); a no-op while an undo or redo is restoring
-  $("#saveState").textContent = "saving…";
-  clearTimeout(saveTimer);
-  // setTimeout(fn, ms): ask the browser to call fn once after ms milliseconds, without blocking.
-  saveTimer = setTimeout(async () => {
-    try { await api("/api/state", "PUT", S); $("#saveState").textContent = "saved"; }
-    catch (e) { $("#saveState").textContent = "SAVE FAILED"; }
-  }, 300);
+  saver.request();
 }
+// flushSaves: the app shell (and Home, through it) calls this to make the page send any unsaved change NOW, before it saves, loads or changes
+// the server's copy of the board. flushAll(): the same for every page at once (see flushAllPages in shell.html).
+window.flushSaves = () => saver.flush();
+const flushAll = () => (window.parent !== window && parent.flushAllPages ? parent.flushAllPages() : saver.flush());
 
 // ------------------------------------------------------------------ audio
 // The audio engine, built on the browser's "Web Audio API": a graph of audio
@@ -2049,7 +2044,7 @@ async function refreshPresetUI() {
   pl.textContent = "";
   presets.forEach(n => pl.append(el("li", {}, el("span", { textContent: n }), el("span", {},
     // encodeURIComponent makes the name safe to put in a URL path (escapes "/", spaces, etc.).
-    el("button", { textContent: "Load", onclick: () => applyState(api(`/api/campaigns/${encodeURIComponent(n)}/load`, "POST")) }),
+    el("button", { textContent: "Load", onclick: () => applyState(flushAll().then(() => api(`/api/campaigns/${encodeURIComponent(n)}/load`, "POST"))) }),
     el("button", {
       textContent: "Delete",
       onclick: async () => {
@@ -2069,7 +2064,7 @@ async function refreshPresetUI() {
   vl.textContent = "";
   versions.forEach(n => vl.append(el("li", {}, el("span", { textContent: n }),
     // `a && b`: b only runs if a is truthy, so applyState happens only when the user confirms.
-    el("button", { textContent: "Restore", onclick: () => confirm("Replace live state with this version? (current state is snapshotted first)") && applyState(api(`/api/versions/${encodeURIComponent(n)}/restore`, "POST")) }))));
+    el("button", { textContent: "Restore", onclick: () => confirm("Replace live state with this version? (current state is snapshotted first)") && applyState(flushAll().then(() => api(`/api/versions/${encodeURIComponent(n)}/restore`, "POST"))) }))));
 }
 
 // applyState(p): replace the live state with one the server returns. `p` is a Promise (the
@@ -2095,7 +2090,8 @@ $("#savePreset").onclick = async () => {
   const name = $("#presetName").value.trim();
   if (!name) return;
   try {
-    await api("/api/state", "PUT", S);
+    await flushAll();   // the campaign tracker's unsaved edits too
+    await Autosave.put("/api/state", S);
     await api("/api/campaigns", "POST", { name });
     $("#presetName").value = "";
     refreshPresetUI();

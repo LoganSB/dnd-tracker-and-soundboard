@@ -12,7 +12,8 @@
 //   PLACEMENT  Nodes.nest(secs) (depth, canEnter, moveInto, moveUp: the nesting rules for ANY object, sections and cards alike),
 //          Nodes.upButton (the move-up button), Nodes.dropper (drag onto a section's header to move into it)
 //   MENUS  Nodes.tools(actions)   the row of small buttons on a section's title bar and on every card (one implementation)
-//          Nodes.form(spec)       the one settings dialog (section settings, timer settings, ...): fields in, values out
+//          Nodes.form(spec)       the one settings dialog (section settings, timer settings, an added note ...): fields in, values out
+//          Nodes.popup(spec)      a roomy pop-up around any element (the character sheet's item and spell search)
 //   (The create menu that opens when empty canvas is clicked is Canvas.clickMenu in canvas.js.)
 const Nodes = (() => {
   const el = (tag, props = {}, ...kids) => {
@@ -170,23 +171,40 @@ const Nodes = (() => {
         onclick: ev => { ev.stopPropagation(); return a.run(ev); } })));
   }
 
+  // dialog(cls): the ONE <dialog id="nodeDlg"> every pop-up here uses (created on first use); `cls` "wide" makes it roomy for search pop-ups.
+  function dialog(cls) {
+    let dlg = document.getElementById("nodeDlg");
+    if (!dlg) {
+      dlg = el("dialog", { id: "nodeDlg" });
+      document.body.append(dlg);
+    }
+    dlg.className = cls;
+    return dlg;
+  }
+  // popup({ title, body, note }): a roomy pop-up around any element `body` (a search panel, a list), with a Close button; returns the dialog.
+  // This and form() are the app's two pop-ups: form() asks for values, popup() shows something to work in.
+  function popup({ title, body, note = "" }) {
+    const dlg = dialog("wide");
+    dlg.replaceChildren(el("h2", { textContent: title }), note ? el("p", { className: "muted", textContent: note }) : null, body,
+      el("menu", {}, el("span", { className: "grow" }), el("button", { type: "button", textContent: "Close", onclick: () => dlg.close() })));
+    dlg.showModal();
+    return dlg;
+  }
+
   // form({ title, fields, save, saveLabel, note }): the one settings dialog. It is built fresh each time inside a single <dialog>.
   //   fields  [{ key, label, type, value, options, min, max, step, placeholder, hint }] with type "text" (default), "number",
   //           "range", "select" (options [{ value, label }]), "checkbox", or "note" (just a paragraph of `hint`)
   //   save(values)  called when Save is pressed with { key: value } (numbers as numbers, a blank number as null, checkboxes as true / false).
   //                 Return a string to show it as an error and keep the dialog open; anything else closes it.
   function form({ title, fields, save, saveLabel = "Save", note = "" }) {
-    let dlg = document.getElementById("nodeDlg");
-    if (!dlg) {
-      dlg = el("dialog", { id: "nodeDlg" });
-      document.body.append(dlg);
-    }
+    const dlg = dialog("");
     const inputs = {}, msg = el("p", { className: "bad" });
     const rows = fields.map(f => {
       if (f.type === "note") return el("p", { className: "muted", textContent: f.hint });
       let input;
       if (f.type === "select") input = el("select", {}, f.options.map(o => el("option", { value: o.value, textContent: o.label })));
       else if (f.type === "checkbox") input = el("input", { type: "checkbox", checked: !!f.value });
+      else if (f.type === "textarea") input = el("textarea", { rows: f.rows || 4, maxLength: f.max ?? 4000, placeholder: f.placeholder || "" });
       else input = el("input", { type: f.type || "text", placeholder: f.placeholder || "", min: f.min ?? "", max: f.max ?? "", step: f.step ?? "" });
       if (f.type !== "checkbox") input.value = f.value ?? "";
       inputs[f.key] = input;
@@ -210,5 +228,5 @@ const Nodes = (() => {
     return dlg;
   }
 
-  return { el, byId, kids, roots, descendants, inside, chain, depth, hue, hidden, path, options, fix, model, remove, reparent, nest, upButton, dropper, tools, form };
+  return { el, byId, kids, roots, descendants, inside, chain, depth, hue, hidden, path, options, fix, model, remove, reparent, nest, upButton, dropper, tools, form, popup };
 })();

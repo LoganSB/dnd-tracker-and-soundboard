@@ -26,6 +26,22 @@
 const Builder = (() => {
   const { h, api, box, status, libraryChanged } = UI;
 
+  // The notes box grows with its text: at least 2 lines, up to 10 lines tall (then it scrolls), at most 100 lines of text and 8000 characters
+  // (about 80 characters a line; the server keeps the same limit, NOTE_MAX_CHARS in encounters.py).
+  const NOTE_MIN_LINES = 2, NOTE_AUTO_LINES = 10, NOTE_MAX_LINES = 100, NOTE_MAX_CHARS = 8000;
+  function fit(t) {
+    if (!t.isConnected) return;
+    t.style.height = "auto";   // back to the 2-line height so scrollHeight measures the text alone
+    const cs = getComputedStyle(t), line = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.25;
+    const min = t.offsetHeight, chrome = t.offsetHeight - t.clientHeight, max = Math.max(min, NOTE_AUTO_LINES * line + (min - NOTE_MIN_LINES * line));
+    t.style.height = Math.min(Math.max(t.scrollHeight + chrome, min), max) + "px";
+    t.style.overflowY = t.scrollHeight + chrome > max ? "auto" : "hidden";
+  }
+  function limitLines(t) {
+    const lines = t.value.split("\n");
+    if (lines.length > NOTE_MAX_LINES) t.value = lines.slice(0, NOTE_MAX_LINES).join("\n");
+  }
+
   function mount(host, cfg) {
     let items = [], current = cfg.lockId || cfg.initialId || null, timer = null;
     const msg = status();
@@ -75,7 +91,7 @@ const Builder = (() => {
           i.onchange = () => { entry[key] = i.value === "" ? null : +i.value; save(); ctx.refresh(); };
           return i;
         } };
-      const notes = h("textarea", { rows: 2, placeholder: "Notes", value: rec.notes || "", oninput: () => { rec.notes = notes.value; save(); } });
+      const notes = h("textarea", { rows: 2, placeholder: "Notes", value: rec.notes || "", maxLength: NOTE_MAX_CHARS, className: "notebox", oninput: () => { limitLines(notes); rec.notes = notes.value; fit(notes); save(); } });
       const rows = rec[cfg.list].map(entry => h("tr", {},
         cfg.row(entry, ctx).map(c => h("td", { textContent: typeof c === "string" ? c : undefined }, typeof c === "string" ? null : c)),
         h("td", { className: "acts" }, cfg.preview ? h("button", { textContent: "📖", title: "Details", onclick: () => cfg.preview(entry) }) : null,
@@ -92,6 +108,7 @@ const Builder = (() => {
           h("tbody", {}, rows.length ? rows : h("tr", {}, h("td", { colSpan: cfg.head.length + 1, className: "muted", textContent: "Nothing yet: search below and press +." })))),
         custom, summary, h("div", { className: "row" }, ...(cfg.actions?.(rec, ctx) || [])), cfg.attach?.(rec, ctx), msg].filter(Boolean));
       ctx.refresh();
+      requestAnimationFrame(() => fit(notes));   // size the notes box to its text once it is on the page
     }
 
     // The search panel is built once (it keeps what was typed) and added to by pressing + on a row.

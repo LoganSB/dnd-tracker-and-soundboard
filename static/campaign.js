@@ -153,33 +153,30 @@ function locate(id) {
 }
 
 // ------------------------------------------------------------ persistence
-// saveTimer: handle of the pending delayed save (null = nothing pending).
-let saveTimer = null;
-// save(): store the campaign on the server. Debounced: every call restarts a 300 ms countdown, so
-// a burst of edits (ticking several boxes) becomes one request. The server's reply carries the new
-// revision number, which we remember so pollState does not mistake our own save for an outside change.
+// saver: stores the campaign on the server. A change is sent at most once every 30 seconds (autosave.js: Ctrl+S sends it now, and so does hiding
+// or closing the page). The server's reply carries the new revision number, which we remember so pollState does not mistake our own save for
+// an outside change.
+const saver = Autosave.create({
+  label: $("#saveState"),
+  send: async keep => {
+    const r = await Autosave.put("/api/campaign", { campaign: C() }, keep);
+    myRevision = r.revision;
+    UI.libraryChanged();   // which campaigns hold which encounters and loot tables may have changed (Browse lists)
+  },
+});
+window.flushSaves = () => saver.flush();   // the app shell calls this (flushAllPages) before something changes the server's copy
+// save(): a change was made: register it as an undoable command (undo.js; a no-op while an undo or redo is restoring) and ask the saver to
+// send the campaign within 30 seconds.
 function save() {
-  edits.commit();   // register this change as an undoable command (undo.js); a no-op while an undo or redo is restoring
-  $("#saveState").textContent = "saving…";
-  clearTimeout(saveTimer);
-  saveTimer = setTimeout(async () => {
-    saveTimer = null;
-    try {
-      const r = await api("/api/campaign", "PUT", { campaign: C() });
-      myRevision = r.revision;
-      $("#saveState").textContent = "saved";
-      UI.libraryChanged();   // which campaigns hold which encounters and loot tables may have changed (Browse lists)
-    } catch (e) {
-      $("#saveState").textContent = "SAVE FAILED";
-    }
-  }, 300);
+  edits.commit();
+  saver.request();
 }
 
 // pollState(): runs every 5 seconds. If the server's state has a different revision from ours
 // (another window saved, or a preset/version was loaded on the soundboard page), reload it and
 // redraw. It stays out of the way while we have an unsaved edit, a dialog open or a drag going.
 async function pollState() {
-  if (saveTimer || drag || document.querySelector("dialog[open]")) return;
+  if (saver.pending() || drag || document.querySelector("dialog[open]")) return;
   try {
     const st = await api("/api/state");
     if (st.revision === myRevision) return;
@@ -1456,12 +1453,16 @@ function drawLinks() {
   // cables that share a road run side by side as lanes instead of stacking on top of each other.
   const cards = [...document.querySelectorAll(".flag")].filter(n => n.offsetParent).map(rect);
   const ds = Cables.paths(links, cards, Canvas.WORLD, Canvas.WORLD);
+  // An item with several cables leaving it gives each its own dash pattern (Cables.patterns); satisfied or waiting is then shown by how
+  // bright the cable is (a waiting one is dimmer), because the dashes no longer say it.
+  const pats = Cables.patterns(links, x => x.l.from);
   links.forEach(({ l }, n) => {
     // Cables.pair adds the visible cable (solid green if its source is done, dashed otherwise) and a wider invisible one on top
     // that is easy to click; clicking it removes the link.
     const hue = sectionHue(l.from);
     const vis = Cables.pair(layer, ds[n], {
-      cls: "link " + (linkSatisfied(l) ? "sat" : "wait"),
+      cls: "link " + (linkSatisfied(l) ? "sat" : "wait") + (pats[n] ? " multi" : ""),
+      dash: pats[n] || undefined,
       stroke: hue == null ? undefined : `hsl(${hue} 70% 62%)`,   // the colour of the section the cable starts in (solid = satisfied, dashed = waiting)
       title: `${lookup(l.from)?.name} → ${lookup(l.to)?.name}  (click to remove)`,
       onRemove: () => {
@@ -1509,7 +1510,7 @@ addEventListener("message", ev => {
 // first; open its section if collapsed; then Canvas.reveal centres on it and flashes it.
 async function revealNode(id) {
   try {
-    if (!saveTimer && !drag) {
+    if (!saver.pending() && !drag) {
       S = await api("/api/state");
       await addLibrary(S);
       myRevision = S.revision;

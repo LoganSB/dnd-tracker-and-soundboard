@@ -1,0 +1,24 @@
+<!doctype html>
+<!--
+  spell.html - one spell from Open5e as a small page (opened by the 📖 buttons in the spell search). Jinja2 variable: m (the Open5e record).
+  The description is plain text with **bold** marks; it is shown as text, never as HTML.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ m.name }}</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" type="image/jpeg" href="/static/icon.jpeg">
+</head>
+<body class="monsterpage">
+<article class="statblock">
+  <h1>{{ m.name }}</h1>
+  <p class="muted"><i>{{ m.level }} {{ m.school | lower }}{{ ' (ritual)' if m.can_be_cast_as_ritual }}{{ ' · ' ~ m.dnd_class if m.dnd_class }}</i></p>
+  <p><b>Casting time</b> {{ m.casting_time }} · <b>Range</b> {{ m.range }} · <b>Components</b> {{ m.components }}{{ ' (' ~ m.material ~ ')' if m.material }} · <b>Duration</b> {{ m.duration }}</p>
+  {% for para in (m.desc or '').replace('**', '').split('\n') if para.strip() %}<p>{{ para }}</p>{% endfor %}
+  {% if m.higher_level %}<p><b>At higher levels.</b> {{ m.higher_level }}</p>{% endif %}
+  <p class="muted">Source: {{ m.document__title }} · via Open5e</p>
+</article>
+</body>
+</html>

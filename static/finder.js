@@ -11,7 +11,7 @@
 //     a monster: "cr 5", "cr 1/2", "3-5", "5+") all work. Best matches first, then shorter names, then A to Z.
 //   * the same matching also drives every searchable TABLE in the app (UI.dataTable in ui.js uses find with keepOrder).
 //   * panel(cfg): the search box with live suggestions (each shows its CR or rarity), filter menus, and the result
-//     table with a "+" button per row. With nothing typed it lists everything A to Z, 10 rows at a time; the buttons under the list (10 / 20 / 50 / 100, see pageSize) change that and remember your choice.
+//     table with a "+" button per row. With nothing typed it lists everything A to Z, 20 rows at a time; the buttons and page arrows under the list (see pageSize.pager) change that and remember your choice.
 // Nothing here calls Open5e: all searching happens in the browser on the downloaded list.
 const Finder = (() => {
   const el = (tag, props = {}, ...kids) => {
@@ -20,36 +20,56 @@ const Finder = (() => {
     return e;
   };
 
-  // pageSize: how many rows a list shows at a time. One of 10, 20, 50 or 100 (default 10), remembered in this browser and shared by
-  // every searchable list in the app: the monster and item searches (panel below) and every UI.dataTable.
+  // pageSize: how many rows a list shows at a time, and the PAGES of every list. One of 10, 20, 50 or 100 (default 20), remembered in this
+  // browser and shared by every searchable list in the app: the monster, item and spell searches (panel below) and every UI.dataTable.
   //
-  // buttons(onChange) -> { el, sync(total, shown) } is the control under a list: up to four buttons (10 / 20 / 50 / 100) at the bottom
-  // left, the current choice highlighted. A button only exists when the list is longer than the size before it, so 3 or 10 rows show
-  // none, 11 rows show 10 and 20, 30 rows show 10, 20 and 50, and 51 or more show all four. Clicking the highlighted button does
-  // nothing; clicking another one saves it and calls onChange(n) with the new row count. Call sync(total) after every redraw.
+  // pager(onChange) -> { el, text, show(list, all), reset() } is the control under a list. One component, so no list does paging itself:
+  //   show(list, all)  give it the whole (filtered) list and the size of the unfiltered list; it returns the rows of the CURRENT page and
+  //                    updates its buttons. `text` is then the counter, such as "21-28 of 28" ("1-20 of 28 (filtered from 90)" when a
+  //                    search or filter hides rows), for the page to show wherever it likes (el shows it between the page arrows too).
+  //   reset()          back to the first page: call it when the search or a filter changes.
+  //   el               up to four size buttons (10 / 20 / 50 / 100) at the bottom left, the current one highlighted, and the page arrows
+  //                    « ‹ › » at the right. A size button only exists when the list is longer than the size before it (10 rows show none,
+  //                    11 rows show 10 and 20, 30 rows show 10, 20 and 50, 51 or more show all four); clicking the highlighted one does
+  //                    nothing. The arrows only exist when there is more than one page. onChange() is called after any click.
   //
-  // showMore(onChange, step) -> same shape: the plain "Show more (N left)" button the small pop-up lists use (they add `step` rows).
+  // showMore(onChange, step) -> { el, sync(total, shown) }: the plain "Show more (N left)" button the small pop-up lists use (they add `step` rows).
   const pageSize = {
     options: [10, 20, 50, 100],
-    get() { try { const n = +localStorage.getItem("finder.pageSize"); return this.options.includes(n) ? n : 10; } catch (_) { return 10; } },
+    get() { try { const n = +localStorage.getItem("finder.pageSize"); return this.options.includes(n) ? n : 20; } catch (_) { return 20; } },
     set(n) { try { localStorage.setItem("finder.pageSize", n); } catch (_) { /* storage blocked */ } },
     // Which buttons a list of `total` rows gets: an option appears when total is more than the option before it (10 needs more than 10).
     visible(total) { return this.options.filter((n, i) => total > (i ? this.options[i - 1] : n)); },
     // The highlighted size: the saved choice, or the biggest button shown when the saved one is not offered for a short list
     // (everything already fits, so the biggest button is the true state).
     current(total) { const v = this.visible(total), n = this.get(); return v.includes(n) ? n : v[v.length - 1]; },
-    buttons(onChange) {
-      const box = el("div", { className: "sizebtns", role: "group", title: "Rows shown" });
-      let last = 0;
-      return { el: box, sync: total => {
-        last = total;
-        const vis = pageSize.visible(total), on = pageSize.current(total);
-        box.hidden = !vis.length;
-        box.replaceChildren(...vis.map(n => el("button", {
-          type: "button", className: "tiny sizebtn" + (n === on ? " on" : ""), textContent: String(n), title: `Show ${n} rows`, "aria-pressed": n === on,
-          onclick: () => { if (n === pageSize.current(last)) return; pageSize.set(n); onChange(n); },
-        })));
-      } };
+    // The size actually used to cut pages: the highlighted button's, or the saved size when a short list shows no buttons.
+    effective(total) { return this.current(total) || this.get(); },
+    pager(onChange) {
+      const el0 = el("div", { className: "pagerbar" });
+      let page = 0, total = 0;
+      const api = { el: el0, text: "", reset() { page = 0; },
+        show(list, all = list.length) {
+          total = list.length;
+          const size = pageSize.effective(total), pages = Math.max(1, Math.ceil(total / size));
+          page = Math.min(page, pages - 1);
+          const start = page * size, rows = list.slice(start, start + size), vis = pageSize.visible(total), on = pageSize.current(total);
+          api.text = total ? `${start + 1}-${start + rows.length} of ${total}` : `0 of ${all}`;
+          if (total && all > total) api.text += ` (filtered from ${all})`;
+          const go = n => () => { page = Math.max(0, Math.min(pages - 1, n)); onChange(); };
+          const arrow = (label, title, n, off) => el("button", { type: "button", className: "tiny pagebtn", textContent: label, title, disabled: off, onclick: go(n) });
+          el0.hidden = !vis.length && pages < 2;
+          el0.replaceChildren(
+            el("div", { className: "sizebtns", role: "group", title: "Rows per page" }, vis.map(n => el("button", {
+              type: "button", className: "tiny sizebtn" + (n === on ? " on" : ""), textContent: String(n), title: `Show ${n} rows per page`, "aria-pressed": n === on,
+              // changing the size keeps the first row on screen: the page number is recomputed from it
+              onclick: () => { if (n === pageSize.current(total)) return; pageSize.set(n); page = Math.floor(start / n); onChange(); },
+            }))),
+            pages > 1 ? el("div", { className: "pagenav" }, arrow("«", "First page", 0, page === 0), arrow("‹", "Previous page", page - 1, page === 0),
+              el("span", { className: "muted", textContent: api.text }), arrow("›", "Next page", page + 1, page >= pages - 1), arrow("»", "Last page", pages - 1, page >= pages - 1)) : null);
+          return rows;
+        } };
+      return api;
     },
     showMore(onChange, step) {
       const b = el("button", { className: "tiny moreBtn" });
@@ -164,23 +184,22 @@ const Finder = (() => {
   //   onAdd(m)  the "+" button                            preview(m) the 📖 button (optional)
   //   note()    text to show while there are no rows yet  compact    a smaller version for pop-ups (fewer rows, no hint)
   function panel(cfg) {
-    // Page size: the pop-up version shows 6 rows and a "Show more" button; the tabs use the shared 10 / 20 / 50 / 100 buttons (pageSize above).
-    const size = () => (cfg.compact ? 6 : pageSize.get());
-    let rows = cfg.rows || [], shown = size();
-    const more = cfg.compact ? pageSize.showMore(n => { shown = n; redraw(); }, 6) : pageSize.buttons(n => { shown = n; redraw(); });
+    // Paging: the pop-up version shows 6 rows and a "Show more" button; the tabs use the shared pager (pageSize.pager above: sizes and pages).
+    let rows = cfg.rows || [], shown = 6;
+    const more = cfg.compact ? pageSize.showMore(n => { shown = n; redraw(); }, 6) : pageSize.pager(() => redraw());
     const f = { q: "", filters: {}, numMin: "", numMax: "" };
     const q = el("input", { type: "search", placeholder: cfg.placeholder, autocomplete: "off", className: "grow" });
     const sug = el("div", { className: "suggest", hidden: true });
     const byKey = {};
     const menus = (cfg.filters || []).map(x => {
       const sel = el("select", { title: x.label }, el("option", { value: "", textContent: x.all }), x.options.map(([v, t]) => el("option", { value: v, textContent: t })));
-      sel.onchange = () => { f.filters[x.key] = sel.value; shown = size(); redraw(); };
+      sel.onchange = () => { f.filters[x.key] = sel.value; shown = 6; more.reset?.(); redraw(); };
       byKey[x.key] = sel;
       return sel;
     });
     const nmin = cfg.num && el("input", { type: "number", min: 0, max: 30, step: "any", placeholder: cfg.num.label + " from", className: "inum" });
     const nmax = cfg.num && el("input", { type: "number", min: 0, max: 30, step: "any", placeholder: "to", className: "inum" });
-    if (cfg.num) [nmin, nmax].forEach(x => (x.onchange = () => { f.numMin = nmin.value; f.numMax = nmax.value; redraw(); }));
+    if (cfg.num) [nmin, nmax].forEach(x => (x.onchange = () => { f.numMin = nmin.value; f.numMax = nmax.value; more.reset?.(); redraw(); }));
     const results = el("div");
     const fcfg = { num: cfg.num?.get, filters: cfg.filters };
 
@@ -190,12 +209,12 @@ const Finder = (() => {
       pick = -1;
       sug.replaceChildren(...best.map(m => {
         const b = el("button", { type: "button", textContent: cfg.label(m) }, el("span", { className: "muted", textContent: "  " + cfg.sub(m) }));
-        b.onmousedown = ev => { ev.preventDefault(); q.value = m.name; sug.hidden = true; f.q = m.name; shown = size(); redraw(); };
+        b.onmousedown = ev => { ev.preventDefault(); q.value = m.name; sug.hidden = true; f.q = m.name; shown = 6; more.reset?.(); redraw(); };
         return b;
       }));
       sug.hidden = !best.length;
     };
-    q.oninput = () => { clearTimeout(timer); timer = setTimeout(() => { f.q = q.value.trim(); shown = size(); redraw(); showSug(); }, 60); };
+    q.oninput = () => { clearTimeout(timer); timer = setTimeout(() => { f.q = q.value.trim(); shown = 6; more.reset?.(); redraw(); showSug(); }, 60); };
     q.onblur = () => { sug.hidden = true; };
     q.onkeydown = ev => {
       const items = [...sug.children];
@@ -207,15 +226,16 @@ const Finder = (() => {
     function redraw() {
       if (!rows.length) { results.replaceChildren(el("p", { className: (cfg.note?.() || "").startsWith("Could") ? "bad" : "muted", textContent: cfg.note?.() || "" })); return; }
       const list = find(rows, f, fcfg);
-      const body = list.slice(0, shown).map(m => el("tr", {}, cfg.columns.map(c => el("td", { textContent: c.text(m) })),
+      const visible = cfg.compact ? list.slice(0, shown) : more.show(list, rows.length);
+      const body = visible.map(m => el("tr", {}, cfg.columns.map(c => el("td", { textContent: c.text(m) })),
         el("td", { className: "acts" }, el("button", { className: "primary", textContent: "+", title: "Add", onclick: () => cfg.onAdd(m) }),
           cfg.preview ? el("button", { textContent: "📖", title: "Details", onclick: () => cfg.preview(m) }) : null)));
       results.replaceChildren(
-        el("p", { className: "muted", textContent: `${list.length} of ${rows.length}` + (f.q ? "" : ", A to Z") }),
+        el("p", { className: "muted", textContent: cfg.compact ? `${list.length} of ${rows.length}` + (f.q ? "" : ", A to Z") : more.text + (f.q ? "" : ", A to Z") }),
         el("table", { className: "loot" }, el("thead", {}, el("tr", {}, [...cfg.columns.map(c => c.label), ""].map(t => el("th", { textContent: t })))),
           el("tbody", {}, body.length ? body : el("tr", {}, el("td", { colSpan: cfg.columns.length + 1, className: "muted", textContent: "Nothing matches." })))),
         more.el);
-      more.sync(list.length, Math.min(shown, list.length));
+      if (cfg.compact) more.sync(list.length, Math.min(shown, list.length));
     }
     const root = el("div", { className: "finder" + (cfg.compact ? " compact" : "") },
       el("div", { className: "row" }, el("div", { className: "sugwrap grow" }, q, sug), menus, nmin, nmax),

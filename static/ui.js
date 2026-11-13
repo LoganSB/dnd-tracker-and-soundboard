@@ -61,7 +61,7 @@ function box(key, title, ...body) {
   return sec;
 }
 
-// dataTable({ key, columns, rows, actions, empty }) -> element   (lists 10 rows at a time; the buttons under it choose 10 / 20 / 50 / 100)
+// dataTable({ key, columns, rows, actions, empty }) -> element   (lists 20 rows at a time; the buttons and page arrows under it choose the size and the page)
 //   columns  [{ label, text(row) -> string used for searching and filtering, show(row) -> node or text (optional;
 //            defaults to the text), filter: true to give the column a menu of its distinct values,
 //            tags(row) -> array: with filter, a row belongs to every value in its list (a row in two campaigns shows up under both) }]
@@ -93,9 +93,8 @@ function dataTable({ key, columns, rows, actions, detail, rowClass, empty = "Not
   const body = h("tbody");
   // How many rows to list at a time: the same 10 / 20 / 50 / 100 choice as the monster and item searches (Finder.pageSize). The
   // buttons at the bottom left only offer sizes smaller than the list; the chosen one is highlighted.
-  let shown = Finder.pageSize.get();
   const opened = new Set();   // rows whose description is open
-  const more = Finder.pageSize.buttons(n => { shown = n; draw(); });
+  const pager = Finder.pageSize.pager(() => draw());   // sizes, pages and the "1-20 of 28" counter: one shared component (finder.js)
   const draw = () => {
     store(`q.${key}`, search.value);
     search.classList.toggle("badre", Finder.isBadRegex(search.value));
@@ -111,7 +110,7 @@ function dataTable({ key, columns, rows, actions, detail, rowClass, empty = "Not
     const list = (q ? [...new Set([...exact, ...generous])] : generous)
       .map(p => p.ref).filter(r => !filters.some((f, i) => f && f.value && !(columns[i].tags ? columns[i].tags(r).includes(f.value) : columns[i].text(r) === f.value)));
     const span = columns.length + (actions ? 1 : 0);
-    body.replaceChildren(...list.slice(0, shown).flatMap(r => {
+    body.replaceChildren(...pager.show(list, rows.length).flatMap(r => {
       const info = detail ? detail(r) : null;
       const tr = h("tr", { className: (rowClass?.(r) || "") + (info ? " expandable" + (opened.has(r) ? " open" : "") : "") }, columns.map(c => h("td", {}, c.show ? c.show(r) : c.text(r))),
         actions ? h("td", { className: "acts" }, actions(r)) : null);
@@ -127,14 +126,13 @@ function dataTable({ key, columns, rows, actions, detail, rowClass, empty = "Not
       return [tr, drow];
     }));
     if (!list.length) body.append(h("tr", {}, h("td", { colSpan: columns.length + 1, className: "muted", textContent: "No rows match." })));
-    count.textContent = `${list.length} of ${rows.length}`;
-    more.sync(list.length, Math.min(shown, list.length));
+    count.textContent = pager.text;
   };
-  search.oninput = () => { shown = Finder.pageSize.get(); draw(); };
-  filters.forEach((f, i) => f && (f.onchange = () => { store(`f.${key}.${i}`, f.value); draw(); }));
+  search.oninput = () => { pager.reset(); draw(); };
+  filters.forEach((f, i) => f && (f.onchange = () => { store(`f.${key}.${i}`, f.value); pager.reset(); draw(); }));
   draw();
   wrap.append(h("div", { className: "dbar" }, search, filters.filter(Boolean), count),
-    h("table", { className: "loot" }, h("thead", {}, h("tr", {}, columns.map(c => h("th", { textContent: c.label })), actions ? h("th") : null)), body), more.el);
+    h("table", { className: "loot" }, h("thead", {}, h("tr", {}, columns.map(c => h("th", { textContent: c.label })), actions ? h("th") : null)), body), pager.el);
   return wrap;
 }
 

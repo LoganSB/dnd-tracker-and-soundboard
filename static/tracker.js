@@ -154,6 +154,7 @@
   // window.mountTracker(host, opts) - the public entry point.
   //   opts.only       : a character id. Show just that one character (used on a character's page).
   //   opts.initiative : false = leave out the Initiative tab and its tab bar (default: show both tabs).
+  //   opts.conditions : false = leave out the conditions chips;  opts.inspiration : false = leave out the Insp counter (a page that shows them elsewhere).
   // Assigning to `window` creates a global, which is how the HTML page (outside this IIFE) can call
   // it. Builds the whole widget inside the DOM element `host`, loads data, and
   // starts polling. Every function below is nested inside it, so they all share
@@ -389,7 +390,7 @@
             h("a", { href: "/party/" + m.id, target: "_blank", textContent: m.name, title: "Open full character page", onclick: ev => openParty(ev, m.id) }),
             h("span", { className: "muted", textContent: m.class })),
           // The death-save row only appears while the character is at 0 HP.
-          hpBar(m), ...(m.hp === 0 ? [deathSaves(m)] : []), ...trackerRows(m), inspiration(m), ...slotRows(m), addTrackerRow(m), cond));
+          hpBar(m), ...(m.hp === 0 ? [deathSaves(m)] : []), ...trackerRows(m), ...(opts.inspiration === false ? [] : [inspiration(m)]), ...slotRows(m), addTrackerRow(m), ...(opts.conditions === false ? [] : [cond])));
       });
     }
 

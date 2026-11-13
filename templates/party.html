@@ -1,22 +1,20 @@
 <!doctype html>
 <!--
-  party.html - the character sheets area (a list of party members, and a detail view per character).
+  party.html - the Characters tab: one character's sheet (five sub-menu pages) with a picker to switch character.
 
-  SERVED AT: /party (the "Characters" button on the soundboard also links here).
+  SERVED AT: /party (the "Characters" tab) and /party/<id>. Home lists, uploads and exports characters.
 
-  This is a shell. The HTML is a static outline with an empty toolbar
-  (div#partyBar) and an empty content area (div#view). party.js decides what to
-  show (character list or one character), builds the elements at runtime, and
-  inserts them into those two containers. Its only Jinja2 substitution is role ("dm" or
-  "player") on the body tag: a player's page leaves out the DM-only extras (the whole-party tracker, the
-  expansion download). The server refuses those requests from a player anyway; see auth.py.
+  An empty toolbar (div#partyBar) and an empty content area (div#view): party.js builds both at runtime. Its only Jinja2 substitution is
+  role ("dm" or "player") on the body tag.
 
   SCRIPTS (in order):
-    1. /static/ui.js, finder.js, vitals.js - shared: the tables (search, filters, row-count buttons), sub-menu tabs and the
+    1. /static/ui.js, finder.js, vitals.js - shared: the tables (search, filters, pages), sub-menu tabs and the
        HP / hit dice / conditions controls.
-    2. /static/tracker.js - the live tracker. party.js reuses it.
-    3. /static/sheet.js   - the panels of a character's sheet (Skills and Stats, Inventory, Spells, Feats...).
-    4. /static/party.js   - builds this page's UI into #partyBar and #view.
+    2. /static/nodes.js, loottable.js, spells.js - the pop-up and form dialogs, and the magic item and spell searches the
+       Add loot / Add spell buttons open.
+    3. /static/tracker.js - the live tracker. party.js reuses it.
+    4. /static/sheet.js   - the panels of a character's sheet (Tracker extras, Skills and Stats, Inventory, Spells, Feats...).
+    5. /static/party.js   - builds this page's UI into #partyBar and #view.
 
   The body class "partypage" lets style.css apply rules only to this page.
 -->
@@ -37,10 +35,12 @@
 <!-- view: main content area, filled by party.js -->
 <div id="view"></div>
 <script src="/static/errors.js"></script>
-<script src="/static/importer.js"></script>
 <script src="/static/ui.js"></script>
 <script src="/static/finder.js"></script>
 <script src="/static/vitals.js"></script>
+<script src="/static/nodes.js"></script>
+<script src="/static/loottable.js"></script>
+<script src="/static/spells.js"></script>
 <script src="/static/tracker.js"></script>
 <script src="/static/sheet.js"></script>
 <script src="/static/party.js"></script>

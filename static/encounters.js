@@ -136,6 +136,7 @@ const config = {
       secSel,
       h("button", { textContent: "Put on campaign tracker", onclick: async () => {
         await ctx.flush();
+        await parent.flushAllPages?.();   // the campaign tracker's unsaved edits go first, so they cannot overwrite the new card
         const r = await api(`/api/encounters/${e.id}/place`, "POST", { section: secSel.value });
         // Same hop as the campaign page's 🎯 buttons use for the soundboard: show the tab and highlight the card.
         parent.postMessage({ type: "goto", page: "campaign", node: r.item }, location.origin);

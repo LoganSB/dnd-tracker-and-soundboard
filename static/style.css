@@ -2118,6 +2118,8 @@ body.partypage > header {
   stroke: #8f84b5;
   stroke-dasharray: 6 5;
 }
+/* Several cables leaving one item each have their own dash pattern (cables.js patterns); a waiting one is dimmer instead of dashed. */
+#links .link.multi.wait { opacity: .5; }
 #links .linkhit {
   fill: none;
   stroke: transparent;
@@ -2618,6 +2620,7 @@ button.gsi:focus-visible, a.gsi:focus-visible { outline: 3px solid #a8c7fa; outl
 .verdict.hard { --side: #ff9248; --tone: rgba(255, 146, 72, .16); }
 .verdict.deadly { --side: #ff5d6c; --tone: rgba(255, 93, 108, .18); }
 .encpage textarea { width: 100%; box-sizing: border-box; margin: 8px 0; }
+.notebox { resize: vertical; min-height: 2.4em; }
 
 /* Encounter card on the campaign canvas */
 .flag.encounter { border-color: #ff9248; }
@@ -2691,10 +2694,14 @@ body.canvaspage .flag {
 
 h1 .brandicon { width: 1.15em; height: 1.15em; margin-right: .35rem; }
 .moreBtn { margin-top: .5rem; }
-/* The 10 / 20 / 50 / 100 row-count buttons under every list (Finder.pageSize.buttons). The chosen one is highlighted. */
-.sizebtns { display: flex; gap: .3rem; margin-top: .5rem; justify-content: flex-start; }
-.sizebtns[hidden] { display: none; }
+/* The pager under every list (Finder.pageSize.pager): the 10 / 20 / 50 / 100 buttons at the left (the chosen one highlighted), the page arrows
+   and the "21-40 of 90" counter at the right. */
+.pagerbar { display: flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: center; justify-content: space-between; margin-top: .5rem; }
+.pagerbar[hidden] { display: none; }
+.sizebtns { display: flex; gap: .3rem; }
 .sizebtns .sizebtn.on { background: var(--accent); border-color: var(--accent); color: #fff; cursor: default; }
+.pagenav { display: flex; gap: .3rem; align-items: center; margin-left: auto; }
+.pagenav .pagebtn:disabled { opacity: .35; cursor: default; }
 
 /* Condition cards and the unlock highlight (campaign.js, "conditions and triggers"). */
 .flag.cond { border-left-color: #4fa3ff; min-width: 250px; }
@@ -2800,3 +2807,11 @@ h1 .brandicon { width: 1.15em; height: 1.15em; margin-right: .35rem; }
 .maps { margin-top: 1rem; }
 .mapthumb { max-width: 100%; max-height: 24rem; border-radius: 6px; display: block; }
 #mapsDlg { width: min(46rem, 94vw); }
+
+/* The Tracker page's one card: the live tracker, then its parts under thin lines (sheet.js trackerExtras). */
+.sheetcard .trackerlist article.pc { background: none; border: 0; padding: 0; margin: 0; }
+.trackerextras h3 { margin: .8rem 0 .4rem; }
+hr.thin { border: 0; border-top: 1px solid #ffffff22; margin: 1rem 0 0; }
+
+/* The shared pop-up (nodes.js): the roomy version holds a search panel. */
+#nodeDlg.wide { width: min(60rem, 94vw); }

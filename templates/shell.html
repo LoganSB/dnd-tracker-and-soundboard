@@ -151,6 +151,10 @@
     if (node) f.contentWindow.postMessage({ type: "focusNode", id: node }, "*");
   }
   window.shellGoto = goto;   // so the tracker panel (which runs in this page) can use it too
+  // flushAllPages(): ask every page that keeps unsaved edits (the soundboard and the campaign tracker save every 30 seconds, see
+  // autosave.js) to send them now. Home and the library pages call it before they save, load or add to the board, so the server's copy
+  // is current and a late save cannot overwrite what they did.
+  window.flushAllPages = () => Promise.all(Object.values(frames).map(f => { try { return f.contentWindow.flushSaves?.(); } catch (_) { return null; } }));
   // Messages from the pages (see the header comment). "reloadPages" (from Home, after a campaign is loaded)
   // reloads the Soundboard and Campaign pages, which keep their own copy of the board in memory.
   addEventListener("message", ev => {
