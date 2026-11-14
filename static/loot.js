@@ -8,14 +8,16 @@
 //   GET/POST /api/loots, PUT/DELETE /api/loots/<id>   the campaign's loot tables
 //   POST /api/loots/<id>/place {section}           put it on the campaign tracker -> {section, item}
 //   GET  /api/state                                only to list the campaign tracker's sections
+//   (the Random loot box above the editor is LootTables.randomPanel: rolls items by rarity checkboxes, can save the result as a table)
 // A page can be opened on one table with  /_/loot?id=<id>.
 const { h, api } = UI;
 let sections = [];
-document.getElementById("loot").replaceChildren(h("h1", { textContent: "🎁 Loot tables" }), h("div", { id: "lootMount" }), h("div", { id: "lootBrowse" }));
+document.getElementById("loot").replaceChildren(h("h1", { textContent: "🎁 Loot tables" }), h("div", { id: "lootRandom" }), h("div", { id: "lootMount" }), h("div", { id: "lootBrowse" }));
 // The browse list sits below everything else; Open selects that table in the editor above and scrolls up to it.
 const browse = Browse.mount(document.getElementById("lootBrowse"), "loot", r => { mounted.select(r.id); scrollTo({ top: 0 }); });
 const mounted = Builder.mount(document.getElementById("lootMount"), LootTables.config({
   sections: () => sections, initialId: new URLSearchParams(location.search).get("id"), onChange: () => browse.refresh() }));
+document.getElementById("lootRandom").append(LootTables.randomPanel(() => { browse.refresh(); mounted.reload(); }));   // roll X random items by tier; Save makes a table
 const loadSections = () => api("/api/state").then(s => { sections = s.campaign?.sections || []; });
 loadSections().then(() => mounted.reload());
 // Tables are changed from other tabs too (the campaign tracker's loot pop-up): reload when this tab is shown again.
