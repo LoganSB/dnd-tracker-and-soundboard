@@ -297,6 +297,17 @@ async function renderDetail(id) {
     },
   });
 
+  // ✎ on any row of the Feats, Features and Notes page: a note, a feat, a class, race or background feature (PATCH .../features/<ref>).
+  const editFeature = f => Nodes.form({
+    title: `Edit ${f.source === "Note" ? "note" : f.source.toLowerCase() === "feat" ? "feat" : "feature"}`, saveLabel: "Save",
+    fields: [{ key: "name", label: "Title", value: f.name }, { key: "text", label: "Text", type: "textarea", rows: 10, max: 8000, value: f.text || "" }],
+    save: async v => {
+      if (!v.name.trim()) return "Give it a title";
+      try { await call("PATCH", `features/${f.ref}`, { name: v.name.trim(), text: v.text }); } catch (e) { return e.message; }
+      await refresh("feats");
+    },
+  });
+
   // The five sub-menu pages. Inventory, Spells and Feats are rebuilt every time they are shown (an Add may have changed them).
   const counts = () => Sheet.counts(m);
   const sheet = UI.tabs({ key: "sheet", first: "tracker", tabs: [
@@ -304,7 +315,7 @@ async function renderDetail(id) {
     { id: "stats", label: "Skills and Stats", render: statsPanel, fresh: true },
     { id: "inv", label: () => `Inventory (${counts().items})`, render: () => Sheet.inventory(m, invHooks), fresh: true },
     { id: "spells", label: () => `Spells (${counts().spells})`, render: spellsPanel, fresh: true },
-    { id: "feats", label: () => `Feats, Features and Notes (${counts().features})`, render: () => Sheet.features(m, addNote), fresh: true },
+    { id: "feats", label: () => `Feats, Features and Notes (${counts().features})`, render: () => Sheet.features(m, addNote, editFeature), fresh: true },
   ] });
   view.append(sheet.el);
 }

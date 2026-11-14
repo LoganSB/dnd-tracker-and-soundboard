@@ -327,10 +327,10 @@ def _mod(score):
     return (score - 10) // 2
 
 
-def _feats(parent):
-    """List of {"name", "text"} for every <feat> child of `parent` (a class, race,
-    background or the character itself). A "feat" here means any named feature/trait."""
-    return [{"name": _t(f, "name"), "text": _t(f, "text")} for f in parent.findall("feat")]
+def _feats(parent, prefix="f"):
+    """List of {"ref", "name", "text"} for every <feat> child of `parent` (a class, race, background or the character itself). A "feat" here means any named
+    feature/trait. `ref` ("r0" race, "b0" background, "c1.0" the second class, "f0" the character) is how PATCH .../features/<ref> finds it (see _feature_at)."""
+    return [{"ref": f"{prefix}{i}", "name": _t(f, "name"), "text": _t(f, "text")} for i, f in enumerate(parent.findall("feat"))]
 
 
 def _item(it, ref="", st=None):
@@ -491,15 +491,15 @@ def detail(cid, root):
     # (Leonin 35, Aarakocra 25), so a missing tag means 30 feet.
     if race is not None and not d["raceInfo"]["speed"]:
         d["raceInfo"]["speed"] = "30"
-    d["raceFeats"] = _feats(race) if race is not None else []
+    d["raceFeats"] = _feats(race, "r") if race is not None else []
     bg = root.find("background")
-    d["background"] = {"name": _t(bg, "name"), "feats": _feats(bg)} if bg is not None else {}
+    d["background"] = {"name": _t(bg, "name"), "feats": _feats(bg, "b")} if bg is not None else {}
     d["classes"], d["spells"] = [], []  # both set to a fresh empty list
     for c in root.findall("class"):
         # The class's own <feat> list is exactly what Fight Club shows for this character (the features it has earned, with the one
         # chosen subclass). Each <autolevel> block is the class's whole level table (EVERY subclass option and every level up to 20),
         # so merging those in listed all the druid circles and features far above the character's level. Not used here.
-        feats = _feats(c)
+        feats = _feats(c, f"c{len(d['classes'])}.")
         d["classes"].append({
             "name": _t(c, "name"), "level": _t(c, "level"),
             # hd = hit die size (e.g. 8), hdCurrent = hit dice still unspent.
@@ -525,7 +525,7 @@ def detail(cid, root):
     # senses, traits, actions ... A companion picked from Fight Club's own list only has name, kind, abilities and hit dice.
     d["companions"] = [fcmonster.parse(i, m) for i, m in enumerate(root.findall("monster"))]
     d["feats"] = _feats(root)
-    d["notes"] = [{"name": _t(n, "name"), "text": _t(n, "text")} for n in root.findall("note")]
+    d["notes"] = [{"ref": f"n{i}", "name": _t(n, "name"), "text": _t(n, "text")} for i, n in enumerate(root.findall("note"))]
     st = gear.states(root, _extra().get(cid, {}), fcedit.is_equipped)
     d["items"] = [_item(i, f"i{n}", st[i]) for n, i in enumerate(root.findall("item"))]
     d["containers"] = [
@@ -1209,6 +1209,43 @@ def add_note(cid):
         _append(root, root, n, ("note",), ("slots", "slotsCurrent", "money"))
         _write(cid, root)
     return jsonify(ok=True, name=name)
+
+
+def _feature_at(root, ref):
+    """The element a feature `ref` names (see _feats; "n2" is the third note): race "r", background "b", class "c<class>.<n>", character feat "f", note "n"."""
+    m = re.fullmatch(r"([rbfn]|c(\d+)\.)(\d+)", ref)
+    if not m:
+        raise ValueError("No such entry")
+    kind, i = m.group(1), int(m.group(3))
+    parent = {"r": root.find("race"), "b": root.find("background")}.get(kind, root)
+    if kind.startswith("c"):
+        classes = root.findall("class")
+        parent = classes[int(m.group(2))] if int(m.group(2)) < len(classes) else None
+    items = parent.findall("note" if kind == "n" else "feat") if parent is not None else []
+    if i >= len(items):
+        raise ValueError("No such entry")
+    return items[i]
+
+
+@bp.patch("/api/party/<cid>/features/<ref>")
+def change_feature(cid, ref):
+    """PATCH /api/party/<id>/features/<ref> {name, text} -> {"ok": true, "character"}: edit the title and text of a note, feat or class / race / background feature
+    (`ref` from the character record: notes "n0", feats "f0", class "c0.3", race "r1", background "b0")."""
+    _guard(cid)
+    b = request.get_json(force=True, silent=True) or {}
+    name = _text(b.get("name"), 80)
+    if not name:
+        return jsonify(error="It needs a title"), 400
+    with lock:
+        root = _load(cid)
+        try:
+            el = _feature_at(root, ref)
+        except ValueError as err:
+            return jsonify(error=str(err)), 404
+        fcedit.put(el, "name", name)
+        fcedit.put(el, "text", _text(b.get("text"), 8000))
+        _write(cid, root)
+    return jsonify(ok=True, character=detail(cid, root))
 
 
 @bp.delete("/api/party/<cid>")

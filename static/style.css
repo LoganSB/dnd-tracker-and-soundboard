@@ -2899,3 +2899,26 @@ hr.thin { border: 0; border-top: 1px solid #ffffff22; margin: 1rem 0 0; }
   .dtable tr.mobonly.expandable { cursor: default; }
   .dtable tr.mobonly.expandable > td:first-child::before { content: ""; }
 }
+
+/* hover text (static/tooltip.js) */
+.tip { position: fixed; z-index: 100000; margin: 0; inset: auto; max-width: min(22rem, calc(100vw - 8px)); padding: .4rem .6rem; border-radius: 6px; background: #000d; color: #fff;
+  border: 1px solid var(--accent, #9b6cff); font-size: .8rem; line-height: 1.35; white-space: pre-line; pointer-events: auto; box-shadow: 0 4px 14px #0008; }
+.tip[hidden] { display: none; }
+.dtable .cliptext { max-width: 16rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }   /* a div inside the cell: a table cell itself will not clip */
+.dtable .clipinfo { margin-bottom: .5rem; color: var(--muted); }
+@media (max-width: 600px) {
+  .currency { display: block; text-align: center; }
+  .coins { display: grid; grid-template-columns: 1fr 1fr; gap: .7rem .4rem; justify-items: center; }
+  .coin { flex-direction: column; gap: .15rem; }
+  .coin b { min-width: 0; text-align: center; }
+}
+.loot tr.addable { cursor: pointer; }
+.loot tr.addable:hover { background: #ffffff0d; }
+
+/* phones: pop-up menus stay on the screen, there is room to scroll the bottom of a page up to the middle of the screen, and a finger can pan the canvas */
+@media (max-width: 600px) {
+  .restpop { position: fixed; left: 4vw; right: 4vw; top: 12vh; width: auto; max-height: 76vh; overflow: auto; z-index: 90; }
+  .suggest { min-width: 0; width: calc(100vw - 24px); max-width: calc(100vw - 24px); }
+  body:not(.canvaspage)::after { content: ""; display: block; height: 50vh; }   /* half a screen of extra footer (vh is the frame's own height) */
+}
+body.canvaspage #stage { touch-action: none; }   /* without this the phone scrolls or zooms the page instead of moving the board (canvas.js pans from pointer events) */

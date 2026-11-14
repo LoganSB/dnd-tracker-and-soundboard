@@ -14,7 +14,7 @@
 //   Sheet.inventory(m, hooks)   every item, carried or in a bag, as one searchable table (click an item for its description) with count -/+, Equip, Give,
 //                               remove and the Add buttons (hooks: see inventory below; the page decides what each does)
 //   Sheet.spells(m, add, patch, ready) the spell slots (pips, with a long-rest button) above every spell as one table (filter by level, school; click for the text)
-//   Sheet.features(m, add)      race / background / class features, feats and notes as one table (filter by source)
+//   Sheet.features(m, add, edit)      race / background / class features, feats and notes as one table (filter by source)
 //                               `add` (each of the three, optional): called by the + Add loot / + Add spell / + Add note button above the table;
 //                               the page decides what it does (party.js opens the search pop-up or the note form)
 //   Sheet.counts(m)             {items, spells, features}: the numbers the sub-menu buttons show
@@ -52,13 +52,13 @@ const Sheet = (() => {
   };
 
   // currency(m, hooks): the coins in a little box of their own (they are items in Fight Club's file, named "Gold (gp)" ..., but they are not listed with the
-  // gear). Gold, silver and copper always show; platinum and electrum only when the character has some. hooks.coin(coin, delta) changes one.
+  // gear). Platinum, gold, silver and copper always show (two by two on a phone); electrum only when the character has some. hooks.coin(coin, delta) changes one.
   const COIN_ORDER = [["pp", "Platinum"], ["gp", "Gold"], ["ep", "Electrum"], ["sp", "Silver"], ["cp", "Copper"]];
   function currency(m, hooks) {
     const have = Object.fromEntries(m.items.filter(i => i.coin).map(i => [i.coin, i.quantity]));
     const cell = ([c, label]) => h("div", { className: "coin" }, h("span", { className: "muted", textContent: label }), h("b", { textContent: String(have[c] || 0) }),
       hooks.coin ? stepper(d => hooks.coin(c, d), `${label} pieces`) : null);
-    return h("div", { className: "currency" }, h("h3", { textContent: "Currency" }), h("div", { className: "coins" }, ...COIN_ORDER.filter(([c]) => have[c] || ["gp", "sp", "cp"].includes(c)).map(cell)));
+    return h("div", { className: "currency" }, h("h3", { textContent: "Currency" }), h("div", { className: "coins" }, ...COIN_ORDER.filter(([c]) => have[c] || ["pp", "gp", "sp", "cp"].includes(c)).map(cell)));
   }
 
   // withAdd(adds, table): the list with its purple Add buttons above it. `adds` = [[label, fn], ...]; a button whose fn the page did not give is left out.
@@ -87,7 +87,7 @@ const Sheet = (() => {
         { label: "Type", text: i => i.type || i.detail, filter: true, wide: true },
         { label: "Where", text: i => i.where, filter: true, wide: true },
         { label: "Worn", text: wornText, filter: true, wide: true },
-        { label: "Stats", text: itemStats, wide: true },
+        { label: "Stats", text: itemStats, wide: true, clip: true },
         { label: "Value", text: i => gp(i.value), wide: true },
       ],
       detail: i => i.text || i.detail || null, rowClass: i => [isOn(i) && i.active !== false ? "equipped" : "", unattuned(i) ? "unattuned" : "", i.gift ? "gift" : ""].filter(Boolean).join(" "),
@@ -126,17 +126,20 @@ const Sheet = (() => {
   }
 
   // ---- features, feats and notes
-  // featureRows(m): every named feature as { name, source, text }: race, background, each class, feats, and the character's notes.
+  // featureRows(m): every named feature as { ref, name, source, text }: the character's notes first (newest on top, so a note just added is the first thing
+  // seen), then race, background, each class and feats.
   function featureRows(m) {
-    return [...m.raceFeats.map(f => ({ ...f, source: "Race" })), ...(m.background.feats || []).map(f => ({ ...f, source: "Background" })),
-      ...m.classes.flatMap(c => c.feats.map(f => ({ ...f, source: c.name }))), ...m.feats.map(f => ({ ...f, source: "Feat" })),
-      ...m.notes.map(n => ({ ...n, source: "Note" }))];
+    return [...[...m.notes].reverse().map(n => ({ ...n, source: "Note" })),
+      ...m.raceFeats.map(f => ({ ...f, source: "Race" })), ...(m.background.feats || []).map(f => ({ ...f, source: "Background" })),
+      ...m.classes.flatMap(c => c.feats.map(f => ({ ...f, source: c.name }))), ...m.feats.map(f => ({ ...f, source: "Feat" }))];
   }
-  function features(m, add) {
+  // features(m, add, edit): `edit(feature)` opens the editor for any row (every kind has the ✎ button).
+  function features(m, add, edit) {
     return withAdd([["+ Add note", add]], dataTable({
       key: `sheet.${m.id}.features`, rows: featureRows(m), empty: "No features, feats or notes.",
       columns: [{ label: "Name", text: f => f.name }, { label: "Source", text: f => f.source, filter: true }],
       detail: f => f.text || null,
+      actions: edit ? f => [h("button", { className: "tiny", textContent: "✎", title: "Edit the title and text", onclick: () => edit(f) })] : null,
     }));
   }
 

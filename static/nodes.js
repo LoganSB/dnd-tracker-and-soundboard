@@ -185,7 +185,7 @@ const Nodes = (() => {
   // This and form() are the app's two pop-ups: form() asks for values, popup() shows something to work in.
   function popup({ title, body, note = "" }) {
     const dlg = dialog("wide");
-    dlg.replaceChildren(el("h2", { textContent: title }), note ? el("p", { className: "muted", textContent: note }) : null, body,
+    dlg.replaceChildren(el("h2", { textContent: title }), ...(note ? [el("p", { className: "muted", textContent: note })] : []), body,
       el("menu", {}, el("span", { className: "grow" }), el("button", { type: "button", textContent: "Close", onclick: () => dlg.close() })));
     dlg.showModal();
     return dlg;

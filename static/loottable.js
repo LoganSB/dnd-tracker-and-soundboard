@@ -7,12 +7,12 @@
 // once from the server, which keeps it on disk and rebuilds it from Open5e at most monthly, so searching makes no API calls.
 //
 // LootTables.items()                promise of { rows, d } the prepared item list (downloaded once, then remembered)
-// LootTables.itemPanel(add, compact) the magic item search (also the character sheet's Add loot pop-up): add(row) is called by the + buttons
+// LootTables.itemPanel(add, compact, give) the magic item search (also the character sheet's Add loot pop-up): add(row) is called by the + buttons or a click on the row; give adds a 🎁 Give button per row
 // LootTables.config(opts)           the Builder configuration: opts.sections() -> campaign sections (for "Put on campaign tracker"),
 //                                   opts.compact, opts.lockId, opts.onChange, opts.extraActions(record, ctx)
 // LootTables.pick(entries)          weighted random choice: { entry, roll, total }
 // LootTables.pickRarity(rows, r)    random item of that rarity (every item equally likely)
-// LootTables.giveButton(entry, done) the 🎁 Give button for one loot entry (give.js): used by the entries table, a roll here and the campaign's loot pop-up
+// LootTables.giveButton(entry, done) the 🎁 Give button for one loot entry (give.js): used by a roll here, the item search and the campaign's loot pop-up (rolled results)
 // A loot table record: { id, name, notes, entries: [{ slug, name, type, rarity, weight, note }] }
 const LootTables = (() => {
   const { h, api } = UI;
@@ -27,7 +27,7 @@ const LootTables = (() => {
   const rarityText = r => r || "";
 
   // itemPanel(add, compact): the item search (Finder.panel), the same component the monster search uses.
-  function itemPanel(add, compact) {
+  function itemPanel(add, compact, give) {
     const panel = Finder.panel({
       compact, rows: [], note: () => note.text, placeholder: "Type any part of an item name (typos are fine), or a rarity",
       hint: "Matches while you type, with or without typos, from the Open5e magic item list. Try: boots, cloak of prot, rare ring, legendary.",
@@ -35,6 +35,7 @@ const LootTables = (() => {
       columns: [{ label: "Item", text: m => m.name }, { label: "Type", text: m => m.type }, { label: "Rarity", text: m => m.rarity },
         { label: "Book", text: m => m.docTitle }],
       onAdd: add, preview: m => preview(m.slug),
+      rowActions: give ? m => [giveButton(m)] : null,   // the loot search (not a character's own Add loot) can give an item straight to a party member
       filters: [{ key: "rarity", label: "Rarity", all: "Any rarity", options: [], get: m => m.rarity }, { key: "type", label: "Type", all: "Any type", options: [], get: m => m.type },
         { key: "doc", label: "Book", all: "Any book", options: [], get: m => m.doc }],
     });
@@ -70,8 +71,7 @@ const LootTables = (() => {
       head: ["Item", "Type", "Rarity", "Weight"],
       row: (e, ctx) => [e.name, e.type || "", rarityText(e.rarity), ctx.num(e, "weight")],
       preview: e => (e.slug ? preview(e.slug) : null),
-      rowActions: e => [giveButton(e)],
-      finder: add => itemPanel(add, opts.compact),
+      finder: add => itemPanel(add, opts.compact, true),
       addEntry: (rec, m) => {
         const line = rec.entries.find(e => e.slug === m.slug);
         if (line) line.weight = Math.min(1000, line.weight + 1);

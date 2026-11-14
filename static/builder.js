@@ -16,7 +16,7 @@
 //   cfg.list        key of the entries array in a record ("monsters" / "entries")      cfg.box    storage key prefix
 //   cfg.head        column titles                                  cfg.row(entry, ctx) -> array of cells (nodes or text)
 //   cfg.preview(entry)  optional: opens details for an entry (adds a 📖 button)
-//   cfg.rowActions(entry, ctx)  optional: more buttons at the end of each entry's row (the Loot tab adds 🎁 Give)
+//   cfg.rowActions(entry, ctx)  optional: more buttons at the end of each entry's row
 //   cfg.finder(add) -> a Finder.panel whose "+" calls add(rowFromTheList)               cfg.addEntry(record, row)
 //   cfg.custom      optional { placeholder, make(name) -> entry } for adding an entry by hand
 //   cfg.summary(record, ctx) -> node (redrawn after every edit)           cfg.actions(record, ctx) -> array of buttons

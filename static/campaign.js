@@ -944,7 +944,7 @@ function drawLoot() {
       el("td", {}, wbox),
       el("td", { textContent: ((w / total) * 100).toFixed(w / total < 0.1 ? 1 : 0) + "%" }),
       el("td", { className: "muted", textContent: entry.note || "" }),
-      el("td", {}, LootTables.giveButton(entry), entry.readonly ? "" : el("button", { className: "danger tiny", textContent: "✕", title: "Remove this reward", onclick: () => {
+      el("td", {}, entry.readonly ? "" : el("button", { className: "danger tiny", textContent: "✕", title: "Remove this reward", onclick: () => {
         lootItem.loot.entries = lootItem.loot.entries.filter(x => x !== entry);
         save();
         drawLoot();

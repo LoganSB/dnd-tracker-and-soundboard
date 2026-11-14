@@ -63,8 +63,8 @@ const Finder = (() => {
               // changing the size keeps the first row on screen: the page number is recomputed from it
               onclick: () => { if (n === pageSize.current(total)) return; pageSize.set(n); page = Math.floor(start / n); onChange(); },
             }))),
-            pages > 1 ? el("div", { className: "pagenav" }, arrow("«", "First page", 0, page === 0), arrow("‹", "Previous page", page - 1, page === 0),
-              el("span", { className: "muted", textContent: api.text }), arrow("›", "Next page", page + 1, page >= pages - 1), arrow("»", "Last page", pages - 1, page >= pages - 1)) : null);
+            ...(pages > 1 ? [el("div", { className: "pagenav" }, arrow("«", "First page", 0, page === 0), arrow("‹", "Previous page", page - 1, page === 0),
+              el("span", { className: "muted", textContent: api.text }), arrow("›", "Next page", page + 1, page >= pages - 1), arrow("»", "Last page", pages - 1, page >= pages - 1))] : []));   // (replaceChildren would print a null as the text "null")
           return rows;
         } };
       return api;
@@ -173,7 +173,8 @@ const Finder = (() => {
   //   sub(m)    the grey second part of a suggestion      columns    [{ label, text(m) }] for the result table (name first)
   //   num       { label, get(m) } for the number filter (monster CR) or omitted
   //   filters   [{ key, label, all, options: [[value, text]], get(m) or tags(m) }]
-  //   onAdd(m)  the "+" button                            preview(m) the 📖 button (optional)
+  //   rowActions(m) more buttons per result row (the loot search adds 🎁 Give)
+  //   onAdd(m)  the "+" button (a click anywhere on the row does the same)                            preview(m) the 📖 button (optional)
   //   note()    text to show while there are no rows yet  compact    a smaller layout for pop-ups (no hint line)
   // The result table is paged by the shared pager (pageSize.pager above: 10 / 20 / 50 / 100 and page arrows), in pop-ups too.
   // Also returns setFilter(key, value): choose a filter menu's value from code (the spell search starts on the character's class).
@@ -220,8 +221,10 @@ const Finder = (() => {
       if (!rows.length) { results.replaceChildren(el("p", { className: (cfg.note?.() || "").startsWith("Could") ? "bad" : "muted", textContent: cfg.note?.() || "" })); return; }
       const list = find(rows, f, fcfg);
       const visible = more.show(list, rows.length);
-      const body = visible.map(m => el("tr", {}, cfg.columns.map(c => el("td", { textContent: c.text(m) })),
+      // The WHOLE row adds (a click anywhere but on one of its buttons), as well as the purple + button.
+      const body = visible.map(m => el("tr", { className: "addable", onclick: ev => { if (!ev.target.closest("button, a")) cfg.onAdd(m); } }, cfg.columns.map(c => el("td", { textContent: c.text(m) })),
         el("td", { className: "acts" }, el("button", { className: "primary", textContent: "+", title: "Add", onclick: () => cfg.onAdd(m) }),
+          ...(cfg.rowActions?.(m) || []),
           cfg.preview ? el("button", { textContent: "📖", title: "Details", onclick: () => cfg.preview(m) }) : null)));
       results.replaceChildren(
         el("p", { className: "muted", textContent: more.text + (f.q ? "" : ", A to Z") }),
