@@ -2029,35 +2029,48 @@ let newSoundAt = null;
 dlg.addEventListener("close", () => { newSoundAt = null; });
 Canvas.clickMenu($("#stage"), () => frames, (at, here) => createEntries(here.kind === "sec" ? here.id : "", at));
 
-// --------------------------------------------------- campaigns & versions
-// (The element ids and function names still say "preset": the feature was renamed Campaigns, only the wording and URLs changed.)
-// Campaigns = named snapshots of the whole soundboard the user saved on purpose. Versions =
-// automatic backups kept by the server. Both live on the server; this code lists them and asks the server to load/restore.
+// --------------------------------------------------- soundboards & versions
+// (The dialog's element ids still say "preset": it used to hold the campaigns, which are now loaded and saved on the Campaign tab.)
+// Soundboards = named files holding sections, sounds and timers (savefiles.py). The one on screen autosaves into its own file; loading another swaps
+// only the sounds, never the campaign tracker. Versions = automatic backups kept by the server. This code lists them and asks the server to load,
+// clone, delete or restore.
 const pdlg = $("#presetDlg");
 
-// refreshPresetUI(): fetch campaigns, versions and launch config from the server (three requests at once) and
-// rebuild the three lists in the campaigns dialog. Promise.all([...]) waits for all of the
-// futures to finish and returns their results as an array, which `const [a, b, c] = ...` unpacks.
+// refreshBoards(): fetch the soundboards and rebuild the drop-down in the toolbar and the list in the dialog.
+async function refreshBoards() {
+  const d = await api("/api/soundboards");
+  const sel = $("#boardSel");
+  sel.textContent = "";
+  d.soundboards.forEach(b => sel.append(el("option", { value: b.name, textContent: b.name })));
+  sel.value = d.current;
+  const bl = $("#boardList");
+  bl.textContent = "";
+  d.soundboards.forEach(b => bl.append(el("li", {}, el("span", { textContent: b.name + (b.name === d.current ? "  (on screen)" : "") + (b.usedBy.length ? "  · used by " + b.usedBy.join(", ") : "") }), el("span", {},
+    el("button", { textContent: "Load", disabled: b.name === d.current, onclick: () => loadBoard(b.name) }),
+    el("button", { textContent: "Delete", disabled: b.name === d.current || !!b.usedBy.length, title: b.usedBy.length ? "A campaign still uses it" : b.name === d.current ? "It is on screen" : "",
+      onclick: async () => { if (confirm(`Delete soundboard ${b.name}?`)) { await api("/api/soundboards/" + encodeURIComponent(b.name), "DELETE"); refreshBoards(); } } })))));
+}
+// loadBoard(name): put a saved soundboard on screen. flushAll first, so the soundboard being left is saved in its own file.
+const loadBoard = name => applyState(flushAll().then(() => api(`/api/soundboards/${encodeURIComponent(name)}/load`, "POST")));
+// makeBoard(name, empty): clone the one on screen (or start an empty one) under `name` and switch to it.
+const makeBoard = (name, empty) => applyState(flushAll().then(() => api("/api/soundboards", "POST", { name, empty })));
+$("#boardSel").onchange = () => loadBoard($("#boardSel").value).catch(e => { alert(e.message); refreshBoards(); });
+$("#cloneBoardBtn").onclick = () => Nodes.form({
+  title: "Clone soundboard", saveLabel: "Clone",
+  note: "Copies this soundboard (sections, sounds, timers) under a new name and switches to the copy. The original stays as it is.",
+  fields: [{ key: "name", label: "Name for the copy", value: `${S.soundboardName || "Soundboard"} copy` }],
+  save: async v => { if (!v.name.trim()) return "Give the copy a name"; try { await makeBoard(v.name.trim(), false); } catch (e) { return e.message; } },
+});
+$("#cloneBoard").onclick = async () => { const n = $("#boardName").value.trim(); if (n) { await makeBoard(n, false); $("#boardName").value = ""; } };
+$("#newBoard").onclick = async () => { const n = $("#boardName").value.trim(); if (n) { await makeBoard(n, true); $("#boardName").value = ""; } };
+
+// refreshPresetUI(): the dialog's lists: the soundboards, the launch choices (which campaign loads at server start) and the versions.
 async function refreshPresetUI() {
-  const [presets, versions, cfg] = await Promise.all([api("/api/campaigns"), api("/api/versions"), api("/api/config")]);
-  const pl = $("#presetList");
-  pl.textContent = "";
-  presets.forEach(n => pl.append(el("li", {}, el("span", { textContent: n }), el("span", {},
-    // encodeURIComponent makes the name safe to put in a URL path (escapes "/", spaces, etc.).
-    el("button", { textContent: "Load", onclick: () => applyState(flushAll().then(() => api(`/api/campaigns/${encodeURIComponent(n)}/load`, "POST"))) }),
-    el("button", {
-      textContent: "Delete",
-      onclick: async () => {
-        if (confirm(`Delete campaign ${n}?`)) {
-          await api("/api/campaigns/" + encodeURIComponent(n), "DELETE");
-          refreshPresetUI();
-        }
-      }
-    })))));
-  // The "launch behaviour" drop-downs: which campaign (if any) to load when the app starts.
+  const [campaigns, versions, cfg] = await Promise.all([api("/api/campaigns"), api("/api/versions"), api("/api/config"), refreshBoards()]);
+  // The "launch behaviour" drop-downs: which campaign (if any) to load when the app starts (it brings its last-used soundboard).
   const lp = $("#launchPreset");
   lp.textContent = "";
-  presets.forEach(n => lp.append(el("option", { value: n, textContent: n })));
+  campaigns.forEach(n => lp.append(el("option", { value: n, textContent: n })));
   $("#launchMode").value = cfg.launch.mode;
   if (cfg.launch.preset) lp.value = cfg.launch.preset;
   const vl = $("#versionList");
@@ -2071,32 +2084,20 @@ async function refreshPresetUI() {
 // not-yet-finished request). Stops all audio, discards every engine (their audio belongs to the old sounds), installs
 // and normalises the new S, closes the dialog, redraws, and preloads the new sounds.
 async function applyState(p) {
+  const st = await p;   // (a failed request leaves everything as it was)
   allSounds().forEach(s => stopSound(s, true));
-  S = await p;
+  S = st;
   normalize();
   engines.clear();
-  edits.clear();   // a different campaign or version: the old history no longer applies
+  edits.clear();   // a different soundboard or version: the old history no longer applies
   pdlg.close();
   render();
   loadAll();
+  refreshBoards();
 }
 $("#presetsBtn").onclick = async () => {
   await refreshPresetUI();
   pdlg.showModal();
-};
-// "Save campaign": first upload the current state (so the campaign captures what is on screen right
-// now rather than the last debounced save), then ask the server to store it under the typed name.
-$("#savePreset").onclick = async () => {
-  const name = $("#presetName").value.trim();
-  if (!name) return;
-  try {
-    await flushAll();   // the campaign tracker's unsaved edits too
-    await Autosave.put("/api/state", S);
-    await api("/api/campaigns", "POST", { name });
-    $("#presetName").value = "";
-    refreshPresetUI();
-  }
-  catch (e) { alert(e.message); }
 };
 $("#saveLaunch").onclick = async () => {
   await api("/api/config", "PUT", { launch: { mode: $("#launchMode").value, preset: $("#launchPreset").value } });
@@ -2167,6 +2168,7 @@ function loadAll() { allSounds().forEach(s => loadSound(s)); }
   loadAll(); // preload + decode everything up front so playback is instant
   Timers.watch({ cards: () => S.timers, onComplete: timerDone, redraw: () => render() });   // the clock for the timer cards
   startRepeatClock();   // begin the once-a-second heartbeat that fires repeat timers
+  refreshBoards().catch(() => {});   // the soundboard drop-down in the toolbar
   pollLibrary();        // fill the MP3-folder list now...
   setInterval(pollLibrary, 3000);   // ...and keep it current (also retries library sounds that had failed)
 })();

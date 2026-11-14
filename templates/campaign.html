@@ -39,6 +39,12 @@
     <button id="addLootTableBtn">+ Loot table</button>
     <button id="addConditionBtn" title="A condition: unlocks what is linked out of it once enough of what is linked into it is done">+ Condition</button>
     <button id="addTimerBtn" title="A timer that flashes (and can play a sound) when it finishes">+ Timer</button>
+    <!-- The campaign and its soundboards (static/campaign.js: refreshCampaignBar). campSel loads another campaign: its tracker, party and combat replace
+         these, and the soundboard on screen stays. defBoardSel is the loaded campaign's DEFAULT soundboard: what loading the campaign from Home brings in.
+         saveCampBtn writes this campaign to its file (a new one asks for a name). -->
+    <select id="campSel" title="The loaded campaign. Choose another to load its tracker, party and combat (the soundboard on screen stays)."></select>
+    <label class="inline" title="The soundboard Home brings in when it loads this campaign">Default soundboard <select id="defBoardSel"></select></label>
+    <button id="saveCampBtn" title="Save this campaign to its file (a new campaign asks for a name)">Save campaign</button>
     <!-- saveState: "saved" / "saving…" text updated by campaign.js. -->
     <span id="saveState" class="muted">saved</span>
   </div>

@@ -26,7 +26,8 @@ Where data lives on disk (all paths are relative to the folder holding this file
   data/live.json       - live state, autosaved on every change
   data/versions/*.json - snapshot of the previous live state, once per server start
                          (also taken just before a preset load or version restore)
-  data/presets/*.json  - your saved CAMPAIGNS (named whole-board snapshots; the folder keeps its old name)
+  data/presets/*.json  - your saved CAMPAIGNS (the tracker, the party, the combat, and which soundboards it uses; the folder keeps its old name)
+  data/soundboards/*.json - your saved SOUNDBOARDS (sections, sounds, timers); the loaded one autosaves into its own file (savefiles.py)
   data/config.json     - launch behaviour (which campaign, if any, loads at start)
   data/users.json      - accounts and invites (see auth.py)
   media/               - downloaded audio files (<key>.<ext>) plus a <key>.json with the title
@@ -82,7 +83,9 @@ from werkzeug.security import safe_join
 
 import auth
 import board
+import savefiles
 import uploads
+from savefiles import atomic_write, read_json, safe_name, stamp   # (these four live in savefiles.py, shared with the saved-file code there)
 
 # ---- paths and constants. Path objects overload "/" to join path components.
 # __file__ is this script; resolve() makes it absolute; .parent is its folder.
@@ -93,13 +96,14 @@ ROOT = Path(os.environ.get("DND_DATA_ROOT") or BASE)
 DATA = ROOT / "data"
 MEDIA = ROOT / "media"
 LIBRARY = ROOT / "mp3s"  # the user's own audio files (scanned by library_watcher below)
-PRESETS = DATA / "presets"
+PRESETS = DATA / "presets"        # saved CAMPAIGNS (the folder keeps its old name)
+BOARDS = DATA / "soundboards"     # saved SOUNDBOARDS (see savefiles.py)
 VERSIONS = DATA / "versions"
 LIVE = DATA / "live.json"
 CONFIG = DATA / "config.json"
 # Make sure all the folders exist before anything tries to write into them
 # (like `mkdir -p`; exist_ok means "not an error if it is already there").
-for d in (DATA, MEDIA, LIBRARY, PRESETS, VERSIONS):
+for d in (DATA, MEDIA, LIBRARY, PRESETS, BOARDS, VERSIONS):
     d.mkdir(parents=True, exist_ok=True)
 
 # Log lines go to standard error. On Cloud Run that is collected into Cloud Logging, where
@@ -150,49 +154,6 @@ def default_state():
     return board.default_state()
 
 
-def atomic_write(path: Path, obj):
-    """Write `obj` as pretty JSON to `path` so a reader never sees a half-written file.
-
-    Why: if the program crashes (or loses power) in the middle of a plain write, the real
-    file would be left truncated and all saved data lost. Instead we write a sibling
-    "<name>.tmp" file completely, then os.replace() it over the real name. That is the C
-    pattern "write temp file, then rename()": rename is atomic on one filesystem, so the
-    file is always either the complete old version or the complete new one.
-    """
-    tmp = path.with_suffix(path.suffix + ".tmp")  # e.g. live.json -> live.json.tmp
-    tmp.write_text(json.dumps(obj, indent=2))
-    os.replace(tmp, path)
-
-
-def read_json(path: Path, fallback=None):
-    """Load JSON from `path`; return `fallback` if the file is missing or unparsable.
-
-    The blanket `except Exception` is deliberate: a missing or corrupt file should make the
-    server fall back to defaults, never crash it.
-    """
-    try:
-        return json.loads(path.read_text())
-    except Exception:
-        return fallback
-
-
-def safe_name(name: str) -> str:
-    """Sanitize a user-supplied name so it is safe to use as a file name.
-
-    The regex [^A-Za-z0-9 _.-] matches any character that is NOT a letter, digit, space,
-    underscore, dot or hyphen; those are deleted. That strips slashes and other
-    path-tricks (so "../../x" cannot escape the folder). We then trim whitespace and dots
-    from the ends and cap the length at 60. `name or ""` handles None. May return "".
-    """
-    name = re.sub(r"[^A-Za-z0-9 _.-]", "", name or "").strip().strip(".")
-    return name[:60]
-
-
-def stamp():
-    """Current local time as 'YYYYmmdd-HHMMSS', used to name snapshot files (sorts by date)."""
-    return datetime.now().strftime("%Y%m%d-%H%M%S")
-
-
 def keep_campaign(new):
     """Carry the current campaign data into `new` when `new` has none of its own.
 
@@ -238,6 +199,79 @@ def save_live():
     thread changes `state` mid-write; atomic_write protects against crashes."""
     with lock:  # `with` ~ RAII: the lock is released automatically when the block exits
         atomic_write(LIVE, state)
+
+
+# ---- soundboards and campaigns (see savefiles.py for the model). The live state holds both sides plus three bookkeeping keys:
+#   campaignName     the campaign that is loaded ("" for none)
+#   soundboardName   the soundboard that is loaded; it autosaves into data/soundboards/<name>.json whenever the page saves (put_state)
+#   boardRefs        {default, last}: the loaded campaign's two soundboards (a copy of what its file says)
+def refs():
+    return state.setdefault("boardRefs", dict(savefiles.EMPTY_REFS))
+
+
+def save_board_file():
+    """Write the loaded soundboard's sections, sounds and timers into its own file."""
+    if state.get("soundboardName"):
+        savefiles.write_board(BOARDS, state["soundboardName"], state)
+
+
+def remember_last(name):
+    """`name` is now the soundboard in use: the loaded campaign remembers it as its LAST one (in its file too, at once)."""
+    refs()["last"] = name
+    if state.get("campaignName"):
+        savefiles.set_refs(PRESETS, state["campaignName"], last=name)
+
+
+def adopt_board(name):
+    """Make saved soundboard `name` the soundboard on screen (replacing the sections, sounds and timers; the campaign side is untouched).
+    Returns False, changing nothing, when there is no such soundboard."""
+    data = savefiles.read_board(BOARDS, name)
+    if data is None:
+        return False
+    for k in savefiles.BOARD_KEYS:
+        state[k] = data.get(k, [])
+    validate_state(state)   # converts an old shape and drops runtime-only fields, in place
+    state["soundboardName"] = name
+    remember_last(name)
+    return True
+
+
+def ensure_board():
+    """Make sure the live state names a soundboard whose file exists. A state from before soundboards had files (no name) takes the loaded campaign's
+    last soundboard, else a new "Main soundboard"; the file is written from what is on screen, because the live board is the newest copy."""
+    name = state.get("soundboardName") or ""
+    if not name:
+        camp = state.get("campaignName")
+        r = savefiles.refs_of(savefiles.read_campaign(PRESETS, camp)) if camp else dict(savefiles.EMPTY_REFS)
+        name = r["last"] or r["default"] or savefiles.unique_name(BOARDS, "Main soundboard")
+        state["soundboardName"] = name
+    if state.get("campaignName"):
+        state["boardRefs"] = savefiles.refs_of(savefiles.read_campaign(PRESETS, state["campaignName"]))
+    if savefiles.read_board(BOARDS, name) is None:
+        save_board_file()
+
+
+def apply_campaign(name, board_mode):
+    """Make campaign `name` the loaded one: its tracker, party and combat replace the live ones. `board_mode` says what happens to the soundboard:
+    "default" loads the campaign's default soundboard, "last" the one it used last, "keep" leaves the soundboard on screen. (A soundboard that no longer
+    exists is skipped, and the one on screen stays.) Returns False when there is no such campaign."""
+    global state
+    data = savefiles.read_campaign(PRESETS, name)
+    if data is None:
+        return False
+    new = {k: v for k, v in state.items() if k in savefiles.BOARD_KEYS or k in ("revision", "soundboardName")}
+    new.update({k: v for k, v in data.items() if k not in savefiles.NOT_CAMPAIGN})
+    for k in ("campaign", "party"):   # a campaign saved before the tracker / party lists existed keeps what is on screen
+        if k not in new and k in state:
+            new[k] = state[k]
+    new["campaignName"] = name
+    new["boardRefs"] = savefiles.refs_of(data)
+    state = new
+    want = {"default": new["boardRefs"]["default"], "last": new["boardRefs"]["last"] or new["boardRefs"]["default"]}.get(board_mode, "")
+    if want:
+        adopt_board(want)
+    ensure_board()
+    return True
 
 
 def snapshot_previous_live(tag="start"):
@@ -312,14 +346,14 @@ def startup(args):
     if snap:
         print(f"Saved version snapshot of previous live state: data/versions/{snap}")
 
+    for camp, board_name in savefiles.split_legacy(PRESETS, BOARDS, VERSIONS):   # campaign files from before soundboards had their own files
+        print(f"Split campaign '{camp}' into its own file and soundboard '{board_name}' (the original is in data/versions/).")
+
     loaded = None
     if mode == "preset" and preset and (PRESETS / f"{safe_name(preset)}.json").exists():
-        state = validate_state(read_json(PRESETS / f"{safe_name(preset)}.json"))
-        if "campaign" not in state:  # an older preset: keep the campaign progress from live.json
-            old_live = read_json(LIVE, {})
-            if isinstance(old_live, dict) and "campaign" in old_live:
-                state["campaign"] = old_live["campaign"]
-        state["campaignName"] = safe_name(preset)
+        # the board on screen last time (live.json) is the fallback soundboard; the campaign then brings the one it used last
+        state = validate_state(read_json(LIVE, default_state())) if LIVE.exists() else default_state()
+        apply_campaign(safe_name(preset), "last")
         loaded = f"campaign '{preset}'"
     elif LIVE.exists():
         state = validate_state(read_json(LIVE, default_state()))
@@ -327,6 +361,7 @@ def startup(args):
     else:
         loaded = "defaults"
     state.setdefault("revision", 0)  # setdefault: set the key only if it is missing
+    ensure_board()
     encounters.adopt(state)  # encounters / loot tables saved inside the campaign by older versions move to the library
     save_live()
     print(f"Loaded {loaded}.")
@@ -784,12 +819,13 @@ def put_state():
         # The soundboard page never edits the campaign tracker, but its copy of the state may carry an
         # OLD copy of the campaign data (loaded before the campaign page saved something). Keep the
         # server's campaign so a soundboard save can never overwrite campaign progress.
-        for k in ("campaign", "party", "campaignName", "initiative"):  # party = the campaign's party characters (see below)
+        for k in ("campaign", "party", "campaignName", "initiative", "soundboardName", "boardRefs"):  # party = the campaign's party characters (see below)
             if k in state:
                 new[k] = state[k]
         new["revision"] = state.get("revision", 0) + 1
         state = new
         save_live()  # automatic export of live changes
+        save_board_file()  # ...and the loaded soundboard goes into its own file
     return jsonify(revision=new["revision"])
 
 
@@ -1120,7 +1156,7 @@ def too_large(_err):
     return jsonify(error=f"File is too big (limit {MAX_BYTES // (1024 * 1024)} MB)"), 413
 
 
-# campaigns (saved whole-board snapshots; stored in data/presets/, the folder keeps its old name)
+# campaigns (the tracker, party, combat and which soundboards they use; stored in data/presets/, the folder keeps its old name)
 @app.get("/api/campaigns")
 def list_campaigns():
     """GET /api/campaigns -> JSON list of saved campaign names, alphabetical
@@ -1130,18 +1166,24 @@ def list_campaigns():
 
 @app.post("/api/campaigns")
 def save_campaign():
-    """POST /api/campaigns : save the CURRENT live state under a name (overwrites a same-named campaign).
+    """POST /api/campaigns : save the CURRENT campaign (tracker, party, combat) under a name (overwrites a same-named campaign).
 
-    Request body: {"name": "My Preset"}; the name is sanitised by safe_name.
+    Request body: {"name": "My Campaign"}; the name is sanitised by safe_name.
     Response: {"name": "<sanitised name>"} or {"error": ...} (400 if the name is empty).
-    Side effect: writes data/presets/<name>.json.
+    Side effects: writes data/presets/<name>.json, which records the soundboard on screen as its LAST soundboard (and as its default when it had
+    none), and writes that soundboard's own file too.
     """
     name = safe_name((request.get_json(force=True) or {}).get("name"))
     if not name:
         return jsonify(error="Campaign name required"), 400
     with lock:
+        ensure_board()
+        r = refs()
+        r["default"] = r.get("default") or state["soundboardName"]
+        r["last"] = state["soundboardName"]
         state["campaignName"] = name  # remembered so the Home page can say which campaign is loaded
-        atomic_write(PRESETS / f"{name}.json", state)
+        save_board_file()
+        savefiles.write_campaign(PRESETS, name, state, r)
         encounters.reindex(name, state.get("campaign"))  # which encounters / loot tables this campaign has cards for
         save_live()
     return jsonify(name=name)
@@ -1149,27 +1191,103 @@ def save_campaign():
 
 @app.post("/api/campaigns/<name>/load")
 def load_campaign(name):
-    """POST /api/campaigns/<name>/load : make a campaign the live state.
+    """POST /api/campaigns/<name>/load[?soundboard=default|last|keep] : make a campaign the loaded one.
 
+    The tracker, party and combat come from the campaign. The soundboard: "default" (the default: what Home does) brings the campaign's default
+    soundboard, "last" the one it used last, "keep" leaves the soundboard on screen (the campaign tab does this).
     Response: the new full state JSON; 404 if no such campaign.
-    Side effects: first copies the current live.json into data/versions/ ("before-load-<name>")
-    so the load can be undone, then replaces `state`, bumps revision, autosaves, and starts
-    downloads for any sounds the preset needs that are not cached yet.
+    Side effects: first copies the current live.json into data/versions/ ("before-load-<name>") so the load can be undone, then replaces the campaign
+    side of `state`, bumps revision, autosaves, and starts downloads for any sounds the soundboard needs that are not cached yet.
     """
-    global state
-    p = PRESETS / f"{safe_name(name)}.json"
-    if not p.exists():
+    mode = request.args.get("soundboard", "default")
+    if mode not in ("default", "last", "keep"):
+        return jsonify(error="soundboard must be default, last or keep"), 400
+    if savefiles.read_campaign(PRESETS, name) is None:
         abort(404)
     with lock:
         shutil.copy2(LIVE, VERSIONS / f"live-{stamp()}-before-load-{safe_name(name)}.json")
-        state = keep_campaign(validate_state(read_json(p)))
-        state["campaignName"] = safe_name(name)
+        apply_campaign(safe_name(name), mode)
         encounters.adopt(state)  # a campaign saved before the encounter library existed brings its encounters along
         encounters.reindex(state["campaignName"], state.get("campaign"))
         state["revision"] = state.get("revision", 0) + 1
         save_live()
     resume_media_for_state()
     return jsonify(state)
+
+
+# soundboards (sections, sounds and timers; stored in data/soundboards/, see savefiles.py)
+@app.get("/api/soundboards")
+def list_soundboards():
+    """GET /api/soundboards -> {"current": the soundboard on screen, "campaign": the loaded campaign, "refs": {default, last} of that campaign,
+    "soundboards": [{"name", "usedBy": [campaigns that have it as default or last]}]}."""
+    with lock:
+        return jsonify(current=state.get("soundboardName", ""), campaign=state.get("campaignName", ""), refs=refs(),
+                       soundboards=[{"name": n, "usedBy": savefiles.campaigns_using(PRESETS, n)} for n in savefiles.list_boards(BOARDS)])
+
+
+@app.post("/api/soundboards")
+def create_soundboard():
+    """POST /api/soundboards {"name", "empty": false} : CLONE the soundboard on screen under a new name and switch to the copy; with "empty": true
+    make a new empty soundboard instead. The name is made safe and unique ("Forest (2)" if taken). Response: the new full state JSON."""
+    b = request.get_json(force=True, silent=True) or {}
+    with lock:
+        name = savefiles.unique_name(BOARDS, b.get("name") or "New soundboard")
+        if b.get("empty"):
+            fresh = default_state()
+            for k in savefiles.BOARD_KEYS:
+                state[k] = fresh.get(k, [])
+        savefiles.write_board(BOARDS, name, state)
+        state["soundboardName"] = name
+        remember_last(name)
+        state["revision"] = state.get("revision", 0) + 1
+        save_live()
+    return jsonify(state)
+
+
+@app.post("/api/soundboards/<name>/load")
+def load_soundboard(name):
+    """POST /api/soundboards/<name>/load : put a saved soundboard on screen (the loaded campaign remembers it as its last one). The page saves its
+    unsaved edits first (flushAll), so the soundboard it is leaving is already in its own file. Response: the new full state JSON; 404 if none."""
+    with lock:
+        shutil.copy2(LIVE, VERSIONS / f"live-{stamp()}-before-soundboard-{safe_name(name)}.json")
+        if not adopt_board(safe_name(name)):
+            abort(404)
+        state["revision"] = state.get("revision", 0) + 1
+        save_live()
+    resume_media_for_state()
+    return jsonify(state)
+
+
+@app.delete("/api/soundboards/<name>")
+def delete_soundboard(name):
+    """DELETE /api/soundboards/<name> : remove a soundboard file. Refused (409) while it is on screen or a campaign uses it as its default or last
+    soundboard, so a campaign never points at a soundboard that is gone."""
+    name = safe_name(name)
+    with lock:
+        if name == state.get("soundboardName"):
+            return jsonify(error="That soundboard is on screen: load another one first"), 409
+        used = savefiles.campaigns_using(PRESETS, name)
+        if used:
+            return jsonify(error=f"Campaigns still use it ({', '.join(used)}): give them another default or last soundboard first"), 409
+        savefiles.delete_board(BOARDS, name)
+    return jsonify(ok=True)
+
+
+@app.put("/api/campaign-soundboard")
+def set_default_soundboard():
+    """PUT /api/campaign-soundboard {"default": name} : choose the loaded campaign's DEFAULT soundboard (what loading it from Home brings in).
+    Response: {"refs": {default, last}}; 400 when no campaign is loaded or there is no such soundboard."""
+    want = safe_name((request.get_json(force=True, silent=True) or {}).get("default"))
+    with lock:
+        camp = state.get("campaignName")
+        if not camp:
+            return jsonify(error="Load or save a campaign first"), 400
+        if want and savefiles.read_board(BOARDS, want) is None:
+            return jsonify(error="There is no such soundboard"), 400
+        refs()["default"] = want
+        savefiles.set_refs(PRESETS, camp, default=want)
+        save_live()
+        return jsonify(refs=refs())
 
 
 @app.delete("/api/campaigns/<name>")
@@ -1208,6 +1326,8 @@ def restore_version(name):
     with lock:
         shutil.copy2(LIVE, VERSIONS / f"live-{stamp()}-before-restore.json")
         state = keep_campaign(validate_state(read_json(p)))
+        ensure_board()
+        save_board_file()   # the restored soundboard goes into its own file too, or loading it later would bring the old one back
         encounters.adopt(state)
         state["revision"] = state.get("revision", 0) + 1
         save_live()

@@ -172,6 +172,60 @@ function save() {
   saver.request();
 }
 
+// ---- the campaign and its soundboards (toolbar). The loaded campaign is a drop-down (choosing another loads its tracker, party and combat only: the
+// soundboard on screen stays; Home loads the campaign's default soundboard as well), "Default soundboard" says which soundboard Home brings in, and
+// Save campaign writes the campaign to its file. The server keeps the soundboard names (savefiles.py).
+async function refreshCampaignBar() {
+  const [camps, d] = await Promise.all([api("/api/campaigns"), api("/api/soundboards")]);
+  const cs = $("#campSel");
+  cs.textContent = "";
+  if (!d.campaign) cs.append(el("option", { value: "", textContent: "(no campaign loaded)" }));
+  camps.forEach(n => cs.append(el("option", { value: n, textContent: n })));
+  cs.value = d.campaign || "";
+  const bs = $("#defBoardSel");
+  bs.textContent = "";
+  bs.append(el("option", { value: "", textContent: "(none)" }));
+  d.soundboards.forEach(b => bs.append(el("option", { value: b.name, textContent: b.name })));
+  bs.value = d.refs.default || "";
+  bs.disabled = !d.campaign;
+}
+// adoptServerState(st): show the state the server just returned (a campaign was loaded).
+async function adoptServerState(st) {
+  await addLibrary(st);
+  S = st;
+  myRevision = st.revision;
+  normalize();
+  edits.reset();   // a different campaign: the old history no longer applies
+  render(true);
+  refreshCampaignBar();
+}
+$("#campSel").onchange = async () => {
+  const name = $("#campSel").value;
+  if (!name) return;
+  if (!confirm(`Load campaign "${name}"?\nThe tracker, party and combat change; the soundboard on screen stays. The campaign on screen is saved as a version first, but only "Save campaign" writes it to its own file.`)) { refreshCampaignBar(); return; }
+  try {
+    await flushAllPages();   // everything on screen reaches the server first
+    await adoptServerState(await api(`/api/campaigns/${encodeURIComponent(name)}/load?soundboard=keep`, "POST"));
+  } catch (e) { alert(e.message); refreshCampaignBar(); }
+};
+$("#defBoardSel").onchange = async () => {
+  try { await api("/api/campaign-soundboard", "PUT", { default: $("#defBoardSel").value }); }
+  catch (e) { alert(e.message); }
+  refreshCampaignBar();
+};
+const flushAllPages = () => (window.parent !== window && parent.flushAllPages ? parent.flushAllPages() : saver.flush());
+async function saveCampaign(name) {
+  await flushAllPages();
+  await api("/api/campaigns", "POST", { name });
+  $("#saveState").textContent = `campaign "${name}" saved`;
+  refreshCampaignBar();
+}
+$("#saveCampBtn").onclick = () => {
+  if (S.campaignName) return saveCampaign(S.campaignName).catch(e => alert(e.message));
+  Nodes.form({ title: "Save campaign", saveLabel: "Save", note: "This campaign has no name yet.", fields: [{ key: "name", label: "Campaign name", placeholder: "e.g. The Hollow Crown" }],
+    save: async v => { if (!v.name.trim()) return "Give the campaign a name"; try { await saveCampaign(v.name.trim()); } catch (e) { return e.message; } } });
+};
+
 // pollState(): runs every 5 seconds. If the server's state has a different revision from ours
 // (another window saved, or a preset/version was loaded on the soundboard page), reload it and
 // redraw. It stays out of the way while we have an unsaved edit, a dialog open or a drag going.
@@ -186,6 +240,7 @@ async function pollState() {
     normalize();
     edits.reset();   // the page changed from outside: this is the new baseline, not a command
     render();
+    refreshCampaignBar();
   } catch (_) { /* server restarting: try again next time */ }
 }
 
@@ -1541,6 +1596,7 @@ addEventListener("dragend", () => { drag = null; if (pendingRender) render(true)
   normalize();
   edits.reset();   // the loaded campaign is where the history starts
   render();
+  refreshCampaignBar().catch(() => {});   // the campaign and default-soundboard drop-downs
   if (!restored) Canvas.fit();
   // The clock for timer cards: counts down, finishes them (flash, tab flash, sound) even if they ran out while the page was closed.
   Timers.watch({ cards: () => C().items.filter(i => i.timer), onComplete: timerDone, redraw: () => { save(); render(true); } });

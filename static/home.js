@@ -218,7 +218,7 @@ function campaignBox(camps, ap) {
         } })],
     }),
     h("div", { className: "row" }, name, h("button", { className: "primary", textContent: "Save current board as campaign", onclick: attempt(msg, async () => { await parent.flushAllPages?.(); return api("/api/campaigns", "POST", { name: name.value }); }) })),
-    h("p", { className: "muted", textContent: "A campaign holds the soundboard, the campaign tracker (cards that point at encounters and loot tables, which are shared by every campaign), its combat and the list of party members. Party members are only references: each character's sheet stays with the player who uploaded it." }),
+    h("p", { className: "muted", textContent: "A campaign holds the campaign tracker (cards that point at encounters and loot tables, which are shared by every campaign), its combat and the list of party members, and remembers its default soundboard (loaded with it) and the last one you used. Party members are only references: each character's sheet stays with the player who uploaded it." }),
     msg);
 }
 
