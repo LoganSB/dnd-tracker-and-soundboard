@@ -647,7 +647,9 @@ def do_fetch(key, kind, url):
     except Exception as e:  # report to UI rather than die in a thread
         log.exception("download failed after %.0fs: %s (%s)", time.time() - started, url, key)
         msg = str(e)
-        if re.search(r"sign in to confirm|not a bot|cookies", msg, re.I):   # YouTube's bot check: say what to do about it
+        if re.search(r"no video formats found|javascript runtime|n challenge|signature solving", msg, re.I):   # yt-dlp cannot unscramble YouTube's links without these
+            msg = "yt-dlp could not read YouTube's formats: it needs a JavaScript runtime and its challenge solver. Install them with: pip install -U \"yt-dlp[default]\" deno (the Docker image does this)."
+        elif re.search(r"sign in to confirm|not a bot|cookies", msg, re.I):   # YouTube's bot check: say what to do about it
             msg = ("YouTube wants a sign-in (it is checking this server is not a bot). The DM can fix it on the Home page: YouTube cookies. "
                    + ("The cookies uploaded there were refused or have expired: upload fresh ones." if COOKIES.exists() else "Upload a cookies.txt from a signed-in YouTube there."))
         jobs[key] = {"status": "error", "error": msg[:300]}

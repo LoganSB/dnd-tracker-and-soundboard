@@ -1,5 +1,8 @@
 flask
-yt-dlp
+# YouTube downloads: yt-dlp needs its challenge solver (yt-dlp-ejs, in the [default] extra) AND a JavaScript runtime (deno, which the "deno" package installs on the PATH);
+# without them YouTube answers "No video formats found" even with good cookies.
+yt-dlp[default]
+deno
 requests
 defusedxml
 gunicorn
