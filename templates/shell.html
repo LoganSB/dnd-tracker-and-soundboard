@@ -52,6 +52,9 @@
   <button id="menuBtn" class="hamburger" type="button" aria-label="Menu" aria-expanded="false" aria-controls="appLinks">☰</button>
   {% include "_nav.html" %}
   <span class="grow"></span>
+  <!-- Phones only: hides or shows the toolbar at the top of the page you are on (the character picker and download buttons, the board's buttons ...)
+       to give the page the room. The choice is remembered. -->
+  <button id="barBtn" class="barToggle" type="button" title="Hide or show the page's toolbar" aria-pressed="false">▤</button>
   {% if role == 'dm' %}
   <!-- partyBtn shows or hides the party tracker panel (below). It lives in the shell, not in a page, so it is
        available on every tab. -->
@@ -109,6 +112,20 @@
     menuBtn.textContent = open ? "✕" : "☰";
   }
   menuBtn.onclick = () => setMenu(!header.classList.contains("menu-open"));
+
+  // The toolbar button (phones): the pages' own top toolbars (their <header>) are hidden while body.hidebar is set (style.css, phone width only).
+  // The frames are on this site, so the class is set on each frame's body; it is set again whenever a frame loads a page (the character picker,
+  // a reload), and the choice is remembered in this browser.
+  const barBtn = document.getElementById("barBtn");
+  let barsHidden = false;
+  try { barsHidden = localStorage.getItem("shell.hidebar") === "1"; } catch (_) { /* storage blocked: shown */ }
+  function applyBars() {
+    barBtn.setAttribute("aria-pressed", barsHidden);
+    barBtn.classList.toggle("on", barsHidden);
+    document.querySelectorAll("#frames iframe").forEach(f => { try { f.contentDocument?.body?.classList.toggle("hidebar", barsHidden); } catch (_) { /* not ready */ } });
+  }
+  barBtn.onclick = () => { barsHidden = !barsHidden; try { localStorage.setItem("shell.hidebar", barsHidden ? "1" : "0"); } catch (_) { /* ignore */ } applyBars(); };
+  document.querySelectorAll("#frames iframe").forEach(f => f.addEventListener("load", applyBars));
 
   // show(page, push): make `page` the visible tab. Highlights its link, shows its frame and hides the
   // others, gives its frame keyboard focus (so hotkeys and arrow keys reach the soundboard), tells it it

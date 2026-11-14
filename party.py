@@ -60,6 +60,7 @@ from flask import Blueprint, Response, abort, jsonify, request, send_file
 import auth
 import charcalc
 import fcformat
+import fcmonster
 
 try:  # hardened parser if available (entity-expansion attacks), stdlib otherwise
     # defusedxml is a third-party drop-in for ElementTree's parsing functions that refuses
@@ -348,8 +349,10 @@ def summary(cid, root):
         # file does not say)
         "hitDice": [{"name": _t(c, "name"), "hd": HIT_DIE.get(int(_num(_t(c, "hd"))), 0), "level": int(_num(_t(c, "level"), 1)),
                      "left": int(_num(_t(c, "hdCurrent"), _num(_t(c, "level"), 1)))} for c in cls],
-        # companions, familiars and summons the player keeps track of (sidecar only; Fight Club has no field for them)
-        "creatures": ex.get("creatures", []),
+        # companions (Fight Club <monster>): where each is in the file, its name and kind, hit points and AC (see fcmonster.py)
+        "creatures": [fcmonster.row(i, m) for i, m in enumerate(root.findall("monster"))],
+        # the class's own counters (Channel Divinity ...): label, left now, the most, resetType, class
+        "classTrackers": fcmonster.class_trackers(root),
         # death saving throws, kept in the sidecar file (Fight Club has no field for them)
         "deaths": ex.get("deaths", {"s": 0, "f": 0}),
         # <abilities> is "STR,DEX,CON,INT,WIS,CHA" scores; [:6] keeps just those six.
@@ -405,10 +408,9 @@ def detail(cid, root):
                 "prepared": _t(s, "prepared") == "1",
                 "class": _t(s, "sclass") or _t(c, "name"),
             })
-    # Fight Club companions (<monster>: a familiar, pet or summon the player added in the app). They have no hit points in the file, only a
-    # kind, a name, six ability scores and a hit dice expression such as "1d8".
-    d["companions"] = [{"name": _t(m, "name"), "kind": _t(m, "type") or _t(m, "label"), "hd": _t(m, "hd"), "abilities": _ints(_t(m, "abilities"))[:6]}
-                       for m in root.findall("monster")]
+    # Fight Club companions (<monster>): everything the file holds for each (fcmonster.parse): size, hit points, AC, speed, saves, skills, resistances,
+    # senses, traits, actions ... A companion picked from Fight Club's own list only has name, kind, abilities and hit dice.
+    d["companions"] = [fcmonster.parse(i, m) for i, m in enumerate(root.findall("monster"))]
     d["feats"] = _feats(root)
     d["notes"] = [{"name": _t(n, "name"), "text": _t(n, "text")} for n in root.findall("note")]
     d["items"] = [_item(i) for i in root.findall("item")]
@@ -634,7 +636,9 @@ def update_member(cid):
       trackers     [{id, label, cur, max}]  the character's own counters (replaces the whole list) -> sidecar only
       deaths       {s, f}              death saves, each 0..3      -> sidecar file only
       conditions   str   free text, max 200 chars                -> sidecar file only
-      creatures    [{id, name, hp, hpMax, ac, notes}]  companions / summons (replaces the whole list, 20 at most) -> sidecar only
+      creatures    [{i, hp, hpMax, ac}]  the companions (Fight Club <monster>) to KEEP, i = position in the file; those not listed are removed. Hit points and
+                   AC are written into the monster itself (hpCurrent, hpMax, armor).
+      classTrackers [{label, cur}]  the class's own counters (Channel Divinity ...): the value left now -> the <tracker> in the class
     Response: the updated summary() JSON. 404 if unknown id. A non-numeric value makes
     int() raise, which Flask turns into an HTTP 500 error.
     Side effects: rewrites data/party/<cid>.xml (always) and data/party_extra.json (only if
@@ -677,10 +681,20 @@ def update_member(cid):
                 e = ET.SubElement(c, "hdCurrent")
             e.text = str(max(0, int(body["hdCurrent"])))
         if "creatures" in body:
-            # A creature taken off the list also leaves the character's file (the Fight Club <monster> that "Add companion" wrote for it).
-            gone = {c.get("name") for c in _extra().get(cid, {}).get("creatures", [])} - {str(c.get("name")) for c in body["creatures"]}
-            for mon in [x for x in root.findall("monster") if _t(x, "name") in gone]:
-                root.remove(mon)
+            # The list says which companions stay (by position in the file) and their hit points and AC; every other <monster> is removed.
+            mons, keep = root.findall("monster"), {}
+            for c in body["creatures"]:
+                if isinstance(c, dict) and "i" in c and 0 <= int(c["i"]) < len(mons):
+                    keep[int(c["i"])] = c
+            for i, mon in reversed(list(enumerate(mons))):
+                if i not in keep:
+                    root.remove(mon)
+                else:
+                    c = keep[i]
+                    fcmonster.set_vitals(mon, hp=c.get("hp"), hp_max=c.get("hpMax"), ac=c.get("ac"))
+        if "classTrackers" in body:
+            for t in body["classTrackers"]:
+                fcmonster.set_class_tracker(root, str(t.get("label", "")), int(_num(t.get("cur"))))
         if "hitDice" in body:
             for c, v in zip(root.findall("class"), body["hitDice"]):
                 e = c.find("hdCurrent")
@@ -688,7 +702,7 @@ def update_member(cid):
                     e = ET.SubElement(c, "hdCurrent")
                 e.text = str(max(0, min(int(v), int(_num(_t(c, "level"), 1)))))
         _write(cid, root)
-        if "trackers" in body or "conditions" in body or "deaths" in body or "creatures" in body:
+        if "trackers" in body or "conditions" in body or "deaths" in body:
             ex = _extra()
             m = ex.setdefault(cid, {})  # this character's sidecar record (created if absent)
             if "trackers" in body:
@@ -704,13 +718,6 @@ def update_member(cid):
                 m.pop("resource", None)
             if "conditions" in body:
                 m["conditions"] = str(body["conditions"])[:200]
-            if "creatures" in body:
-                m["creatures"] = []
-                for c in list(body["creatures"])[:20]:
-                    mx = max(0, int(c.get("hpMax", 0)))
-                    m["creatures"].append({"id": str(c.get("id") or uuid.uuid4().hex[:8])[:12], "name": str(c.get("name", "Creature"))[:40] or "Creature",
-                                           "hpMax": mx, "hp": max(0, min(int(c.get("hp", 0)), mx or 10 ** 4)),
-                                           "ac": max(0, int(c.get("ac", 0))), "notes": str(c.get("notes", ""))[:200]})
             if "deaths" in body:
                 # Death saving throws: successes and failures, each clamped to the legal range 0..3.
                 dth = body["deaths"]
@@ -810,43 +817,25 @@ def add_spell(cid):
     return jsonify(ok=True, name=name)
 
 
-# Fight Club's <size> on a monster or race: 0 = Tiny (a squirrel), 1 = Small (a goblin); the larger sizes follow in order (inferred: only those two
-# appear in the sample files).
-SIZE_CODE = {"tiny": 0, "small": 1, "medium": 2, "large": 3, "huge": 4, "gargantuan": 5}
-
-
 @bp.post("/api/party/<cid>/companions")
 def add_companion(cid):
-    """POST /api/party/<id>/companions {name, kind, size, abilities:[6], hd, hp, ac} -> the updated summary: add a companion chosen from the monster
-    search. `kind` is the monster's name ("Wolf"), `name` what the character calls it ("Fang"). It is written as a Fight Club <monster> (label, name,
-    size, type, abilities, hd: the six fields a real file has) and also as a creature in the sidecar list, which is where its hit points and AC are
-    tracked (Fight Club stores neither)."""
+    """POST /api/party/<id>/companions {name, kind, size, abilities:[6], hd, hp, ac, speed} -> the updated summary: add a companion chosen from the
+    monster search. `kind` is the monster's name ("Wolf"), `name` what the character calls it ("Fang"). It is written as a Fight Club <monster> exactly
+    as Fight Club writes one picked from its own list (fcmonster.make), plus its hit points, AC and speed, which Fight Club keeps on the monster too."""
     _guard(cid)
     b = request.get_json(force=True, silent=True) or {}
     kind = _text(b.get("kind"), 60)
     name = _text(b.get("name"), 40) or kind
     if not kind:
         return jsonify(error="Choose a monster first"), 400
-    scores = (_ints(",".join(str(x) for x in b.get("abilities", []))) + [10] * 6)[:6]
     with lock:
         root = _load(cid)
-        ex = _extra()
-        mine = ex.setdefault(cid, {})
-        creatures = mine.setdefault("creatures", [])
-        if len(creatures) >= 20:
-            return jsonify(error="A character can have 20 creatures; remove one first"), 400
-        mon = ET.Element("monster")
-        _sub(mon, "label", kind)
-        _sub(mon, "name", name)
-        _sub(mon, "size", str(SIZE_CODE.get(_text(b.get("size"), 20).lower(), 2)))
-        _sub(mon, "type", kind)
-        _sub(mon, "abilities", "".join(f"{v}," for v in scores))
-        _sub(mon, "hd", _text(b.get("hd"), 20))
+        if len(root.findall("monster")) >= 20:
+            return jsonify(error="A character can have 20 companions; remove one first"), 400
+        mon = fcmonster.make(name, kind, _text(b.get("size"), 20), _ints(",".join(str(x) for x in b.get("abilities", []))), _text(b.get("hd"), 20),
+                             hp=int(_num(b.get("hp"))), ac=int(_num(b.get("ac"))), speed=int(_num(b.get("speed"))))
         _append(root, root, mon, ("monster",), ("slots", "slotsCurrent", "money"))
         _write(cid, root)
-        hp = max(0, min(10 ** 4, int(_num(b.get("hp")))))
-        creatures.append({"id": uuid.uuid4().hex[:8], "name": name, "hp": hp, "hpMax": hp, "ac": max(0, int(_num(b.get("ac")))), "notes": kind})
-        _save_extra(ex)
         return jsonify(summary(cid, root))
 
 
@@ -976,3 +965,38 @@ def download_collection():
     for p in sorted(BASE.glob("FightClub5eXML*.zip")):
         return _stream_download(open(p, "rb"), "FightClub5eXML.zip")
     abort(404)
+
+
+def migrate_creatures():
+    """Earlier versions kept a companion's hit points and AC in the sidecar file (party_extra.json, "creatures"). They now live in the character's own
+    <monster> (hpMax, hpCurrent, armor), where Fight Club keeps them too. Move any old entries over (a creature with no <monster> gets one) and drop
+    them from the sidecar. Runs once when the server starts; harmless to run again."""
+    with lock:
+        ex = _extra()
+        changed = False
+        for cid, rec in list(ex.items()):
+            old = rec.pop("creatures", None)
+            if old is None:
+                continue
+            changed = True
+            path = DIR / f"{cid}.xml"
+            if not old or not path.exists():
+                continue
+            root = SafeET.parse(path).getroot()
+            mons = root.findall("monster")
+            for c in old:
+                mon = next((x for x in mons if _t(x, "name") == c.get("name")), None)
+                if mon is None:
+                    mon = fcmonster.make(str(c.get("name", "Creature")), str(c.get("notes") or c.get("name", "Creature")), "", [], "")
+                    _append(root, root, mon, ("monster",), ("slots", "slotsCurrent", "money"))
+                    mons.append(mon)
+                fcmonster.set_vitals(mon, hp=c.get("hp"), hp_max=c.get("hpMax"), ac=c.get("ac"))
+            _write(cid, root)
+        if changed:
+            _save_extra(ex)
+
+
+try:
+    migrate_creatures()
+except Exception:   # never stop the server over old companion data
+    pass

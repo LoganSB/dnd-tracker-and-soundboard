@@ -46,7 +46,7 @@ rejects a character-only file, the next experiment is to bundle the library obje
 | `item` | `name`, `detail`, `text`, `type` (code), `magic`, `slot`, `value`, `weight`, `ac`, `strength`, `stealth`, `roll`, `damage1H`, `damage2H`, `damageType` (code), `weaponProperty` (a number that combines flags), `weaponRange`, `weaponLongRange`, `quantity`, `mod` |
 | `mod` | `category`, `type`, `value` (and sometimes `name`): a bonus the item, feat or class gives |
 | `note` | `name`, `text`, `expanded`, `archived` |
-| `monster` | a companion: `label`, `name`, `size`, `type`, `abilities`, `hd` |
+| `monster` | a companion: `label`, `name`, `size`, `type`, `alignment`, `abilities`, `hd`, `hpMax`, `hpCurrent`, `armor`, `speed`, `cr`, `savingThrow`s, `skill`s, `vulnerable`, `resist`, `immune`, `conditionImmune`, `senses`, `languages`, `trait` / `action` / `reaction` / `legendary` sections, `text`, `environment` | see "Companions" below. A companion picked from Fight Club's own list has only `label`, `name`, `size`, `type`, `abilities`, `hd` |
 | `slots`, `slotsCurrent`, `money` | spell slots (maximum, remaining) as comma lists; `money` as a decimal number |
 
 Numbers are written the way Java writes them: `65.0`, `2.0`, `1.5E7`. Tags that do not apply to a character are left out
@@ -83,3 +83,17 @@ Found by comparing the codes in the sample characters with what the game says ab
 | class or background `proficiency` | 100-117 | a skill, in alphabetical order: 100 Acrobatics, 101 Animal Handling, 102 Arcana, 103 Athletics, 104 Deception, 105 History, 106 Insight, 107 Intimidation, 108 Investigation, 109 Medicine, 110 Nature, 111 Perception, 112 Performance, 113 Persuasion, 114 Religion, 115 Sleight of Hand, 116 Stealth, 117 Survival |
 | class `autolevel` | one per level, with a `<level>` child | the class's whole level table, including EVERY subclass option (marked `optional`); the character's own `class/feat` list is already just what they have, so features come from there |
 | `monster` | `label`, `name`, `size`, `type`, `abilities`, `hd` (e.g. `1d8`) | a companion; no hit points are stored. Seen in ONE file (a squirrel named Floofy: label and type "Squirrel", size 0). "Add companion" writes these same six fields (`party.add_companion`): label and type = the monster's name, `size` 0-5 = Tiny..Gargantuan (only 0 and 1 are confirmed), `hd` = the monster's hit dice. Unconfirmed: whether Fight Club needs more, or matches label/type against its own monster list |
+
+## Companions (`<monster>`) and class trackers
+
+Confirmed from `FightClub5_Lynius_Creature.backup` (a custom creature with everything filled in, a companion with hit points set, a compendium companion) and the file's owner. Code: `fcmonster.py`.
+
+* **Picked from Fight Club's monster list** (Buggy's Aalpamac): `label` and `type` are the monster's name (not its creature type), `abilities` are the monster's own six scores, `hd` its full hit dice (`13d12+52`), `size` 4 = Huge. "Add companion" writes exactly this, plus `hpMax`, `hpCurrent`, `armor` and `speed`.
+* **Hit points and AC** live on the monster: `hpMax`, `hpCurrent`, `armor`. Fight Club writes them once somebody sets them (Logan's "Mana" is 7 of 11).
+* `size`: 0 Tiny, 1 Small, 2 Medium, 3 Large, 4 Huge, 5 Gargantuan (4 and 5 confirmed). `speed`: feet. `cr`: the challenge rating itself (6 = CR 6).
+* `savingThrow`: `ability` 0-5 = STR..CHA, `modifier`. `skill`: `id` 0-17 = the skills in alphabetical order (as `charcalc.SKILLS`), `modifier`.
+* `environment`: a bit mask: Arctic 1, Forest 2, Mountain 4, Underwater 8, Coastal 16, Grassland 32, Swamp 64, Urban 128, Desert 256, Hill 512, Underdark 1024 (all = 2047). Display only.
+* Sections `trait`, `action`, `reaction`, `legendary`: `name`, `text`, `recharge`, `charges`, and any number of `attack` (`name`, `type` 1 melee / 2 ranged / 3 magic, `attackBonus`, `damage`, `damageType`).
+  * `recharge`: 0 none, 1 "#/day" (then `charges` is the number), 2-5 "Recharge N-6", 6 "Recharge 6", 7 after a short rest, 8 after a long rest. A section this app writes would always use 1 with `charges` 1 (the app writes no sections today).
+  * `damage`: dice such as `1d20`; `1n55` is ONE die of 55 sides (shown as 1d55). `attackBonus` and `damage` may be Fight Club formulas with `%` tokens (`%3+%4+%2`, `1w+1o`): nobody knows what they mean, so they are shown as written and never calculated. Damage type codes beyond 1-3 are unknown (shown as "type 12").
+* **Class trackers**: `<class><tracker>` (`label`, `type`, `resetType`, `value` = left now, `formula` = the most) and `<autolevel><tracker>` giving the `formula` from that level on (Channel Divinity: 1, 2 at level 6, 3 at level 18). `resetType` 1 is the only value seen; it is read as "returns on a short rest" (unconfirmed); every tracker returns on a long rest.

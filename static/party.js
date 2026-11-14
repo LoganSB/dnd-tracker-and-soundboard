@@ -166,7 +166,7 @@ async function renderDetail(id) {
           fields: [{ key: "name", label: "Name", value: f.name, placeholder: "What does the character call it?" }],
           save: async v => {
             try {
-              await post("companions", { name: v.name.trim() || f.name, kind: f.name, size: f.size, hd: f.hit_dice, hp: f.hit_points, ac: f.armor_class,
+              await post("companions", { name: v.name.trim() || f.name, kind: f.name, size: f.size, hd: f.hit_dice, hp: f.hit_points, ac: f.armor_class, speed: f.speed?.walk,
                 abilities: [f.strength, f.dexterity, f.constitution, f.intelligence, f.wisdom, f.charisma] });
               Object.assign(m, await get("/api/party/" + id));
               extras?.redraw();

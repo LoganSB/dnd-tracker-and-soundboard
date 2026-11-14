@@ -2002,6 +2002,13 @@ body.partypage > header {
 /* Phones: the header is only the banner (brand) and the log-out button; the page links fold into a hamburger menu that drops down
    under it (shell.html toggles .menu-open on the header). On wider screens the hamburger and the menu-only entries do not exist. */
 .hamburger, .appnav-links .menuonly { display: none; }
+/* The toolbar button exists on phones only (shell.html). With body.hidebar the page's own toolbar is hidden. */
+.barToggle { display: none; }
+@media (max-width: 600px) {
+  .barToggle { display: inline-block; }
+  .barToggle.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  body.hidebar > header { display: none; }
+}
 @media (max-width: 600px) {
   .appnav { position: relative; gap: .5rem; padding: .35rem .5rem; flex-wrap: nowrap; }
   .appnav .brand { font-size: 1rem; margin-right: 0; }
@@ -2605,6 +2612,7 @@ button.gsi:focus-visible, a.gsi:focus-visible { outline: 3px solid #a8c7fa; outl
 .boxbody[hidden] { display: none; }
 /* dataTable: search box, filter menus and the "3 of 10" count above the table. */
 .dtable .dbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
+.dtable .dbar[hidden] { display: none; }   /* a list of one page has no search box or filters (ui.js dataTable) */
 .dtable .dsearch { flex: 1 1 200px; min-width: 160px; }
 .dtable .dsearch.badre { outline: 2px solid var(--bad); }   /* typed text is not a valid regular expression: matched as plain text */
 .dtable .dcount { margin-left: auto; }
@@ -2821,6 +2829,16 @@ h1 .brandicon { width: 1.15em; height: 1.15em; margin-right: .35rem; }
 .condinfo b { color: var(--text); }
 .condfx { color: var(--warn); }
 .chip.custom { background: #ffffff12; border-color: #ffffff40; }
+/* Short rest / Long rest, inline with the character's name (vitals.js rest). The popover for the short rest opens under the buttons. */
+.pc > header .right { display: inline-flex; align-items: center; gap: .5rem; flex-wrap: wrap; justify-content: flex-end; }
+.restbtns { position: relative; display: inline-flex; gap: .3rem; }
+.restpop { position: absolute; right: 0; top: 100%; z-index: 30; margin-top: .3rem; width: min(22rem, 80vw); padding: .6rem; background: var(--panel2, #1d1a29); border: 1px solid var(--accent); border-radius: 8px; box-shadow: 0 8px 20px #000a; }
+.restpop[hidden] { display: none; }
+.restnote { font-size: .8rem; }
+.cstat { text-align: left; padding: .4rem 0; }
+.cstat h4 { margin: .6rem 0 .2rem; }
+.cstat .stats.compact { margin: .4rem 0; }
+.cstat .sbitem { margin: .25rem 0; }
 hr.thin { border: 0; border-top: 1px solid #ffffff22; margin: 1rem 0 0; }
 
 /* The shared pop-up (nodes.js): the roomy version holds a search panel. */

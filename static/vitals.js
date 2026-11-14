@@ -13,7 +13,9 @@
 //   Vitals.hitDice(m, patch)     one row per class: "Cleric d8  [-] 11 / 13 [+]" plus a long-rest button.   patch({ hitDice: [..] })
 //   Vitals.conditions(m, patch)  the condition chips (✕ removes one), an "+ Add" button that opens a menu of the 5e conditions plus a box for anything
 //                                else, and under them what each condition does (conditions.js).   patch({ conditions: "Prone, Poisoned" })
-//   Vitals.slots(m, patch)       the spell-slot rows (one per level, a clickable pip per slot) and a long-rest button; [] for a non-caster.   patch({ slotsCurrent })
+//   Vitals.slots(m, patch)       the spell-slot rows (one per level, a clickable pip per slot); [] for a non-caster.   patch({ slotsCurrent })
+//   Vitals.rest(m, patch)        the Short rest and Long rest buttons (the tracker puts them by the character's name); Vitals.restNote[id] is the
+//                                line saying what the last rest did.   patch({ hpCurrent, hitDice, slotsCurrent, conditions, trackers, deaths })
 //   Vitals.CONDITIONS            the standard condition names (conditions.js has the rules; Conditions.parse reads the stored text).
 //
 // `m` is a party summary (see party.summary in party.py): hp, hpMax, hitDice [{name, hd, level, left}], conditions (one text, the names
@@ -49,12 +51,81 @@ const Vitals = (() => {
       el("button", { textContent: "−", title: "Spend a hit die", onclick: () => set(i, d.left - 1) }),
       el("b", { textContent: `${d.left} / ${d.level}` }),
       el("button", { textContent: "+", title: "Regain a hit die", onclick: () => set(i, d.left + 1) })));
-    rows.push(el("button", { className: "tiny", textContent: "Long rest: regain half", title: "Regain half your total hit dice (at least one), spread over your classes",
-      onclick: () => {
-        let back = Math.max(1, Math.floor(dice.reduce((n, d) => n + d.level, 0) / 2));
-        patch({ hitDice: dice.map(d => { const add = Math.min(back, d.level - d.left); back -= add; return d.left + add; }) });
-      } }));
     return el("div", {}, rows);
+  }
+
+  // rest(m, patch): the SHORT REST and LONG REST buttons. Rules (5e SRD):
+  //   Short rest (at least an hour): you may spend hit dice, up to the number you have left. For each one spent, roll the die and add your
+  //   Constitution modifier (not below 0) and regain that many hit points, never above your maximum. The popover asks how many of each class's
+  //   dice to spend and rolls them for you. A Warlock also gets their Pact Magic spell slots back. (Other things that return on a short rest, such
+  //   as Ki, Action Surge or Second Wind, are only handled when the character file has a class counter for them (Channel Divinity does; the file marks
+  //   its reset with resetType 1, read here as a short rest) or you made a tracker for them.)
+  //   Long rest (at least 8 hours): regain all lost hit points; regain spent hit dice up to half your total (at least 1), spread over your
+  //   classes; all spell slots come back; exhaustion goes down by 1; death saves clear. Your own trackers (Mana, Ki, Rage ...) are set back to full.
+  // Returns an element (the two buttons and the popover). The result is remembered in Vitals.restNote[m.id] for the card to show.
+  const restNote = {};
+  function rest(m, patch) {
+    const dice = m.hitDice || [];
+    const box = el("span", { className: "restbtns" });
+    const pop = el("div", { className: "restpop", hidden: true });
+    const con = m.mods?.[2] ?? 0, sign = n => (n >= 0 ? "+" : "") + n;
+
+    const shortRest = () => {
+      pop.replaceChildren();
+      const inputs = [];
+      dice.forEach((d, i) => {
+        if (!d.left || !d.hd) return;
+        const n = el("input", { type: "number", min: 0, max: d.left, value: 0, className: "inum", title: `Hit dice to spend (you have ${d.left})` });
+        inputs[i] = n;
+        pop.append(el("label", { className: "resrow" }, el("span", { className: "lbl", textContent: `${d.name} d${d.hd}` }), "spend ", n, ` of ${d.left}`));
+      });
+      pop.prepend(el("p", { className: "muted", textContent: `Short rest. Spend hit dice to heal: each is rolled with your Constitution modifier (${sign(con)}).` + (dice.some(d => /warlock/i.test(d.name)) ? " Your Pact Magic slots come back." : "") + ((m.classTrackers || []).some(t => t.reset === 1) ? " Class counters that recharge on a short rest are refilled." : "") }));
+      pop.append(el("div", { className: "row" },
+        el("button", { className: "primary tiny", textContent: "Take the short rest", onclick: () => {
+          const parts = [], left = dice.map(d => d.left);
+          let healed = 0;
+          dice.forEach((d, i) => {
+            const n = Math.max(0, Math.min(d.left, Math.floor(+inputs[i]?.value || 0)));
+            for (let k = 0; k < n; k++) { const r = 1 + Math.floor(Math.random() * d.hd), got = Math.max(0, r + con); healed += got; parts.push(`d${d.hd} ${r}${sign(con)}`); }
+            left[i] -= n;
+          });
+          const hp = Math.min(m.hpMax, m.hp + healed), body = { hitDice: left };
+          if (parts.length) body.hpCurrent = hp;
+          const pact = dice.some(d => /warlock/i.test(d.name)) && m.slots.some(Boolean);
+          if (pact) body.slotsCurrent = m.slots;
+          // the class's own counters that come back on a short rest (Channel Divinity ...): resetType 1 in the file (unconfirmed reading)
+          const back = (m.classTrackers || []).filter(t => t.reset === 1 && t.max != null && t.cur < t.max);
+          if (back.length) body.classTrackers = back.map(t => ({ label: t.label, cur: t.max }));
+          restNote[m.id] = `Short rest: ` + (parts.length ? `spent ${parts.length} hit di${parts.length === 1 ? "e" : "ce"} (${parts.join(", ")}), healed ${hp - m.hp} HP (now ${hp}/${m.hpMax}).` : "no hit dice spent.") + (pact ? " Pact Magic slots restored." : "") + (back.length ? ` ${back.map(t => t.label).join(", ")} restored.` : "");
+          pop.hidden = true;
+          patch(body);
+        } }),
+        el("button", { className: "tiny", textContent: "Cancel", onclick: () => { pop.hidden = true; } })));
+      pop.hidden = false;
+    };
+
+    const longRest = () => {
+      if (!confirm(`Long rest for ${m.name}?\nRestores all hit points, spell slots and half your hit dice, lowers exhaustion by 1, clears death saves and sets your trackers back to full.`)) return;
+      const total = dice.reduce((n, d) => n + d.level, 0);
+      let back = Math.max(1, Math.floor(total / 2));
+      const body = { hpCurrent: m.hpMax, deaths: { s: 0, f: 0 } }, notes = ["all hit points"];
+      if (dice.length) { body.hitDice = dice.map(d => { const add = Math.min(back, d.level - d.left); back -= add; return d.left + add; }); notes.push("hit dice"); }
+      if (m.slots.some(Boolean)) { body.slotsCurrent = m.slots; notes.push("spell slots"); }
+      const have = Conditions.parse(m.conditions);
+      if (have.some(e => e.key === "Exhaustion")) {
+        body.conditions = have.map(e => (e.key === "Exhaustion" ? { ...e, text: `Exhaustion ${e.level - 1}`, level: e.level - 1 } : e)).filter(e => e.key !== "Exhaustion" || e.level > 0).map(e => e.text).join(", ");
+        notes.push("1 level of exhaustion");
+      }
+      if ((m.trackers || []).length) { body.trackers = m.trackers.map(t => ({ ...t, cur: t.max })); notes.push("trackers"); }
+      const counters = (m.classTrackers || []).filter(t => t.max != null);
+      if (counters.length) { body.classTrackers = counters.map(t => ({ label: t.label, cur: t.max })); notes.push(counters.map(t => t.label).join(", ")); }
+      restNote[m.id] = "Long rest: restored " + notes.join(", ") + ".";
+      patch(body);
+    };
+
+    box.append(el("button", { className: "tiny", textContent: "Short rest", title: "Spend hit dice to heal", onclick: () => (pop.hidden ? shortRest() : (pop.hidden = true)) }),
+      el("button", { className: "tiny", textContent: "Long rest", title: "Restore hit points, spell slots, hit dice and trackers", onclick: longRest }), pop);
+    return box;
   }
 
   // conditions: chips for the conditions on the character, an Add button, and under them what each condition DOES (the 5e rules text from
@@ -110,9 +181,8 @@ const Vitals = (() => {
       }
       rows.push(el("div", { className: "slotrow" }, el("span", { className: "lbl", textContent: "L" + (i + 1) }), pips));
     });
-    if (rows.length) rows.push(el("button", { className: "tiny", textContent: "Long rest: restore slots", onclick: () => patch({ slotsCurrent: m.slots }) }));
     return rows;
   }
 
-  return { hp, hitDice, conditions, slots, CONDITIONS };
+  return { hp, hitDice, conditions, slots, rest, restNote, CONDITIONS };
 })();

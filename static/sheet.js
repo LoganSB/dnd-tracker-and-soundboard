@@ -6,9 +6,11 @@
 // party.js builds the page (header, the row of sub-menu buttons, loading the character); this file builds what is INSIDE each
 // sub-menu page. Every panel is a function of the character record (GET /api/party/<id>) and returns an element:
 //
-//   Sheet.stats(m, patch)       Skills and Stats: Health (HP, hit dice, conditions), Statistics, Abilities and saves, Attacks, Skills,
-//                               Creatures. `patch(body)` sends a change (PATCH /api/party/<id>) and must return a promise; the page
-//                               then redraws the panel.
+//   Sheet.trackerExtras(m, patch, addCompanion)  the Tracker page, under the live tracker: Hit dice, then Conditions (chips with an Add menu and what
+//                               each does), Statistics, Attacks and Creatures, each under a thin line. Built from the character's own Fight Club data.
+//   Sheet.stats(m, patch)       Skills and Stats: Abilities and saving throws, and every Skill.
+//                               `patch(body)` (both panels) sends a change (PATCH /api/party/<id>) and must return a promise; each panel
+//                               then redraws itself.
 //   Sheet.inventory(m, add)     every item, carried or in a bag, as one searchable table (click an item for its description)
 //   Sheet.spells(m, add, patch) the spell slots (pips, with a long-rest button) above every spell as one table (filter by level, school; click for the text)
 //   Sheet.features(m, add)      race / background / class features, feats and notes as one table (filter by source)
@@ -158,7 +160,7 @@ const Sheet = (() => {
     });
   }
 
-  // ---- the Skills and Stats page: Statistics, Abilities and saving throws, and every Skill.
+  // ---- the Skills and Stats page: Abilities and saving throws, and every Skill (the Statistics are on the Tracker page).
   function stats(m, patch) {
     return panel(m, patch, run => {
       const abilities = card("Abilities and saving throws", h("div", { className: "stats" }, m.abilities.map((a, i) => {
@@ -172,29 +174,59 @@ const Sheet = (() => {
           { label: "Modifier", text: k => sgn(k.mod) }, { label: "Proficient", text: k => (k.proficient ? "Proficient" : ""), filter: true }],
         rowClass: k => (k.proficient ? "equipped" : ""),
       }));
-      return h("div", { className: "sheetstats" }, card("Statistics", statistics(m, run)), abilities, skills);
+      return h("div", { className: "sheetstats" }, abilities, skills);
     });
   }
 
-  // creatures: companions, familiars and summons. Two kinds share one table: the creatures added with "+ Add companion" (m.creatures: name, hit
-  // points, armor class, the monster it is; the hp buttons change one and the whole list is saved, because Fight Club has no hit points for them;
-  // the server also wrote each as a Fight Club companion) and any companion that only exists in the imported file (m.companions: name, kind, hit
-  // dice, ability scores; read-only here). `addCompanion` opens the monster search (party.js); the page redraws after it.
+  // statBlock(p, c): a companion's whole record from the Fight Club file as a stat block (p = m.companions[i], c = the creature row with its current
+  // hit points). Everything the file holds is shown; formulas with % are Fight Club's own and are shown as written.
+  const signed = n => (n >= 0 ? "+" : "") + n;
+  function statBlock(p, c) {
+    const line = (label, value) => (value ? h("div", {}, h("b", { textContent: label + " " }), value) : null);
+    const rechargeText = x => (x.recharge ? ` (${x.recharge})` : "");
+    return h("div", { className: "cstat" },
+      h("div", { className: "muted", textContent: [p.size, p.kind, p.alignment && ", " + p.alignment].filter(Boolean).join(" ").replace(" ,", ",") }),
+      line("Armor class", c.ac != null ? String(c.ac) : ""), line("Hit points", c.hp != null ? `${c.hp}/${c.hpMax}${p.hd ? " (" + p.hd + ")" : ""}` : p.hd ? `(${p.hd})` : ""),
+      line("Speed", p.speed != null ? `${p.speed} ft` : ""), line("Challenge", p.cr),
+      h("div", { className: "stats compact" }, p.abilities.map((v, i) => h("div", { className: "stat" }, h("div", { className: "muted", textContent: ["STR", "DEX", "CON", "INT", "WIS", "CHA"][i] }), h("b", { textContent: v }), h("div", { textContent: signed(p.mods[i]) })))),
+      line("Saving throws", p.saves.map(x => `${x.ability} ${signed(x.mod)}`).join(", ")), line("Skills", p.skills.map(x => `${x.name} ${signed(x.mod)}`).join(", ")),
+      line("Damage vulnerabilities", p.vulnerable), line("Damage resistances", p.resist), line("Damage immunities", p.immune), line("Condition immunities", p.conditionImmune),
+      line("Senses", p.senses), line("Languages", p.languages), line("Environment", p.environment.join(", ")),
+      p.text ? h("p", { textContent: p.text }) : null,
+      p.sections.map(sec => h("div", {}, h("h4", { textContent: sec.title }), sec.items.map(x => h("div", { className: "sbitem" }, h("b", { textContent: x.name + rechargeText(x) + ". " }), x.text,
+        x.attacks.map(a => h("div", { className: "muted", textContent: `${a.type || "Attack"}: ${a.name || "attack"} · bonus ${a.bonus || "—"} · damage ${a.damage || "—"}${a.damageType ? " (type " + a.damageType + ")" : ""}` })))))));
+  }
+
+  // creatures: the character's companions, straight from the Fight Club file (m.creatures: name, kind, hit points, AC; m.companions: the whole record).
+  // The hp buttons and the Edit form write the hit points and AC back into the file's <monster>, so they show in the phone app too. Click a row for
+  // the whole stat block. `addCompanion` opens the monster search (party.js); the page redraws after it. Removing one takes it out of the file.
   function creatures(m, run, addCompanion) {
     const list = m.creatures || [];
-    const have = new Set(list.map(c => c.name));
-    const fromFile = (m.companions || []).filter(c => !have.has(c.name)).map(c => ({ name: c.name, hp: null, ac: "", file: true,
-      notes: [c.kind, c.hd && c.hd + " hit dice", c.abilities.length && "STR/DEX/CON/INT/WIS/CHA " + c.abilities.join("/")].filter(Boolean).join(" · ") }));
-    const save = next => run({ creatures: next });
-    const change = (c, fields) => save(list.map(x => (x === c ? { ...x, ...fields } : x)));
+    // payload(changes, drop): the whole list as the server wants it (it removes any companion not listed): [{ i, hp, hpMax, ac }]
+    const payload = (changes = {}, drop = -1) => list.filter(c => c.i !== drop).map(c => ({ i: c.i, hp: c.hp, hpMax: c.hpMax, ac: c.ac, ...(changes[c.i] || {}) }));
+    const hpNow = (c, hp) => run({ creatures: payload({ [c.i]: { hp } }) });
+    const edit = c => Nodes.form({
+      title: `Edit ${c.name}`,
+      fields: [{ key: "hp", label: "Hit points now", type: "number", min: 0, value: c.hp ?? "" }, { key: "hpMax", label: "Hit point maximum", type: "number", min: 0, value: c.hpMax ?? "" },
+        { key: "ac", label: "Armor class", type: "number", min: 0, max: 99, value: c.ac ?? "" }],
+      save: async v => {
+        const ch = {};
+        if (v.hpMax != null) ch.hpMax = v.hpMax;
+        if (v.hp != null) ch.hp = v.hp;
+        if (v.ac != null) ch.ac = v.ac;
+        await run({ creatures: payload({ [c.i]: ch }) });
+      },
+    });
     return h("div", {}, dataTable({
-      key: `sheet.${m.id}.creatures`, rows: [...fromFile, ...list], empty: "No creatures yet. Add a familiar, pet or summon from the monster list.",
-      columns: [{ label: "Name", text: c => c.name },
-        { label: "HP", text: c => (c.file ? "" : `${c.hp}/${c.hpMax}`), show: c => c.file ? "" : h("span", { className: "nowrap" },
-          h("button", { className: "tiny", textContent: "−", onclick: () => change(c, { hp: Math.max(0, c.hp - 1) }) }), ` ${c.hp}/${c.hpMax} `,
-          h("button", { className: "tiny", textContent: "+", onclick: () => change(c, { hp: Math.min(c.hpMax || 1e4, c.hp + 1) }) })) },
-        { label: "AC", text: c => String(c.ac || "") }, { label: "Notes", text: c => c.notes }],
-      actions: c => (c.file ? [] : [h("button", { className: "tiny danger", textContent: "✕", title: "Remove", onclick: () => { if (confirm(`Remove ${c.name}?`)) save(list.filter(x => x !== c)); } })]),
+      key: `sheet.${m.id}.creatures`, rows: list, empty: "No companions yet. Add a familiar, pet or summon from the monster list.",
+      columns: [{ label: "Name", text: c => c.name }, { label: "Kind", text: c => c.kind },
+        { label: "HP", text: c => (c.hp != null ? `${c.hp}/${c.hpMax}` : ""), show: c => (c.hp == null ? "—" : h("span", { className: "nowrap" },
+          h("button", { className: "tiny", textContent: "−", onclick: () => hpNow(c, Math.max(0, c.hp - 1)) }), ` ${c.hp}/${c.hpMax} `,
+          h("button", { className: "tiny", textContent: "+", onclick: () => hpNow(c, Math.min(c.hpMax || 1e4, c.hp + 1)) }))) },
+        { label: "AC", text: c => (c.ac != null ? String(c.ac) : "") }],
+      detail: c => (m.companions?.[c.i] ? statBlock(m.companions[c.i], c) : null),
+      actions: c => [h("button", { className: "tiny", textContent: "✎", title: "Edit hit points and armor class", onclick: () => edit(c) }),
+        h("button", { className: "tiny danger", textContent: "✕", title: "Remove", onclick: () => { if (confirm(`Remove ${c.name}?`)) run({ creatures: payload({}, c.i) }); } })],
     }), addCompanion ? h("div", { className: "row addbar" }, h("button", { className: "primary", textContent: "+ Add companion", onclick: addCompanion })) : null);
   }
 

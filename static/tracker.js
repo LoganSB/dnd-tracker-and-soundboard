@@ -207,6 +207,15 @@
     // slotRows(m) - the spell-slot rows: the shared Vitals.slots (vitals.js, also on the character sheet's Spells page), changes sent through patch().
     const slotRows = m => Vitals.slots(m, body => patch(m, body));
 
+    // classTrackerRows(m) - one row per COUNTER OF THE CLASS in the Fight Club file (Channel Divinity ...): name, - / + around "left / most", the same
+    // look as the personal trackers. A change is saved into the class's <tracker> (PATCH classTrackers). A counter whose maximum the file does not
+    // give as a plain number has no upper limit here.
+    const classTrackerRows = m => (m.classTrackers || []).map(t => h("div", { className: "resrow" },
+      h("span", { className: "lbl", textContent: t.label, title: `${t.cls} counter` }),
+      h("button", { textContent: "−", onclick: () => patch(m, { classTrackers: [{ label: t.label, cur: t.cur - 1 }] }) }),
+      h("b", { textContent: t.max != null ? `${t.cur} / ${t.max}` : String(t.cur) }),
+      h("button", { textContent: "+", onclick: () => patch(m, { classTrackers: [{ label: t.label, cur: t.cur + 1 }] }) })));
+
     // setTrackers(m, list) - saves a new list of personal trackers for character `m` (the server
     // replaces the whole list, see PATCH /api/party/<id>).
     const setTrackers = (m, list) => patch(m, { trackers: list });
@@ -348,9 +357,11 @@
         root.append(h("article", { className: "pc" },
           h("header", {},
             h("a", { href: "/party/" + m.id, target: "_blank", textContent: m.name, title: "Open full character page", onclick: ev => openParty(ev, m.id) }),
-            h("span", { className: "muted", textContent: m.class })),
+            // the class, and the Short rest / Long rest buttons inline on the right (Vitals.rest, vitals.js)
+            h("span", { className: "right" }, h("span", { className: "muted", textContent: m.class }), Vitals.rest(m, body => patch(m, body)))),
+          ...(Vitals.restNote[m.id] ? [h("div", { className: "muted restnote", textContent: Vitals.restNote[m.id] })] : []),
           // The death-save row only appears while the character is at 0 HP.
-          hpBar(m), ...(m.hp === 0 ? [deathSaves(m)] : []), ...trackerRows(m), ...(opts.inspiration === false ? [] : [inspiration(m)]), ...slotRows(m), addTrackerRow(m), ...(opts.conditions === false ? [] : [cond])));
+          hpBar(m), ...(m.hp === 0 ? [deathSaves(m)] : []), ...trackerRows(m), ...classTrackerRows(m), ...(opts.inspiration === false ? [] : [inspiration(m)]), ...slotRows(m), addTrackerRow(m), ...(opts.conditions === false ? [] : [cond])));
       });
     }
 

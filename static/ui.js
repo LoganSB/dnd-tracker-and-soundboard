@@ -9,7 +9,8 @@
 //   api(url, method, body)     JSON request; resolves to the answer or throws Error(the server's message).
 //   status()                   a small line of text that can show progress or an error (red when `bad`).
 //   box(key, title, ...body)   a titled panel that can be collapsed; the choice is remembered per `key`.
-//   dataTable(opts)            a table with a search box and a filter menu per filtered column (needs finder.js). Rows can expand.
+//   dataTable(opts)            a table with a search box and a filter menu per filtered column (needs finder.js; they show only when the list is longer
+//                              than one page of the selected size). Rows can expand.
 //   tabs(opts)                 a row of buttons that shows one panel at a time (the sub-menus on a character's page, the tracker's
 //                              Party / Initiative switch); the chosen tab is remembered.
 //
@@ -90,25 +91,31 @@ function dataTable({ key, columns, rows, actions, detail, rowClass, empty = "Not
     return sel;
   });
   const count = h("span", { className: "muted dcount" });
+  const bar = h("div", { className: "dbar" }, search, filters.filter(Boolean), count);
   const body = h("tbody");
   // How many rows to list at a time: the same 10 / 20 / 50 / 100 choice as the monster and item searches (Finder.pageSize). The
   // buttons at the bottom left only offer sizes smaller than the list; the chosen one is highlighted.
   const opened = new Set();   // rows whose description is open
   const pager = Finder.pageSize.pager(() => draw());   // sizes, pages and the "1-20 of 28" counter: one shared component (finder.js)
   const draw = () => {
+    // The search box and the filter menus only exist for a list longer than one page of the selected size (Finder.pageSize): a short list is
+    // just read. While they are hidden they do nothing (a search typed earlier is not applied), and they come back if the list grows or the
+    // size is lowered.
+    const searchable = rows.length > Finder.pageSize.get();
+    bar.hidden = !searchable;
     store(`q.${key}`, search.value);
     search.classList.toggle("badre", Finder.isBadRegex(search.value));
     // Two kinds of match, regular-expression matches first. (1) The old behaviour: the WHOLE typed text as one regular
     // expression over the row's text (case does not matter), so patterns with spaces such as "^Aria  Fighter" work; an
     // invalid expression is matched as plain text. (2) Finder's generous matching (every word somewhere, typos allowed),
     // which adds the rows the first kind missed.
-    const q = search.value;
+    const q = searchable ? search.value : "";
     let re = null;
     if (q) { try { re = new RegExp(q, "i"); } catch (_) { /* matched as plain text below */ } }
     const exact = !q ? [] : prepared.filter(p => (re ? re.test(p.name) : p.lname.includes(q.toLowerCase())));
     const generous = Finder.find(prepared, { q }, { keepOrder: true });
     const list = (q ? [...new Set([...exact, ...generous])] : generous)
-      .map(p => p.ref).filter(r => !filters.some((f, i) => f && f.value && !(columns[i].tags ? columns[i].tags(r).includes(f.value) : columns[i].text(r) === f.value)));
+      .map(p => p.ref).filter(r => !searchable || !filters.some((f, i) => f && f.value && !(columns[i].tags ? columns[i].tags(r).includes(f.value) : columns[i].text(r) === f.value)));
     const span = columns.length + (actions ? 1 : 0);
     body.replaceChildren(...pager.show(list, rows.length).flatMap(r => {
       const info = detail ? detail(r) : null;
@@ -131,7 +138,7 @@ function dataTable({ key, columns, rows, actions, detail, rowClass, empty = "Not
   search.oninput = () => { pager.reset(); draw(); };
   filters.forEach((f, i) => f && (f.onchange = () => { store(`f.${key}.${i}`, f.value); pager.reset(); draw(); }));
   draw();
-  wrap.append(h("div", { className: "dbar" }, search, filters.filter(Boolean), count),
+  wrap.append(bar,
     h("table", { className: "loot" }, h("thead", {}, h("tr", {}, columns.map(c => h("th", { textContent: c.label })), actions ? h("th") : null)), body), pager.el);
   return wrap;
 }
