@@ -88,9 +88,9 @@ Found by comparing the codes in the sample characters with what the game says ab
 
 Confirmed from `FightClub5_Lynius_Creature.backup` (a custom creature with everything filled in, a companion with hit points set, a compendium companion) and the file's owner. Code: `fcmonster.py`.
 
-* **Picked from Fight Club's monster list** (Buggy's Aalpamac): `label` and `type` are the monster's name (not its creature type), `abilities` are the monster's own six scores, `hd` its full hit dice (`13d12+52`), `size` 4 = Huge. "Add companion" writes exactly this, plus `hpMax`, `hpCurrent`, `armor` and `speed`.
+* **What "Add companion" writes.** Buggy's Aalpamac was made by THIS app (an earlier version, six fields), downloaded and imported into Fight Club without trouble, so Fight Club does not need more than `label`, `name`, `size`, `type`, `abilities` and `hd`, and everything else is optional. It is not a sample of what Fight Club itself writes: only Floofy (label and type "Squirrel") is that. The app writes label and type = the monster's name, the monster's own six scores and its full hit dice (`13d12+52`), plus `hpMax`, `hpCurrent`, `armor` and `speed`.
 * **Hit points and AC** live on the monster: `hpMax`, `hpCurrent`, `armor`. Fight Club writes them once somebody sets them (Logan's "Mana" is 7 of 11).
-* `size`: 0 Tiny, 1 Small, 2 Medium, 3 Large, 4 Huge, 5 Gargantuan (4 and 5 confirmed). `speed`: feet. `cr`: the challenge rating itself (6 = CR 6).
+* `size`: 0 Tiny, 1 Small, 2 Medium, 3 Large, 4 Huge, 5 Gargantuan (Fight Club's own files give 0 Tiny, 1 Small, and 5 as the largest option, so 2-4 follow in order). `speed`: feet. `cr`: the challenge rating itself (6 = CR 6).
 * `savingThrow`: `ability` 0-5 = STR..CHA, `modifier`. `skill`: `id` 0-17 = the skills in alphabetical order (as `charcalc.SKILLS`), `modifier`.
 * `environment`: a bit mask: Arctic 1, Forest 2, Mountain 4, Underwater 8, Coastal 16, Grassland 32, Swamp 64, Urban 128, Desert 256, Hill 512, Underdark 1024 (all = 2047). Display only.
 * Sections `trait`, `action`, `reaction`, `legendary`: `name`, `text`, `recharge`, `charges`, and any number of `attack` (`name`, `type` 1 melee / 2 ranged / 3 magic, `attackBonus`, `damage`, `damageType`).
