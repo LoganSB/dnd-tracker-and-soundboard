@@ -119,6 +119,24 @@ function linkFooter(me) {
 }
 
 // passwordBox(): change your own password.
+// cookiesBox() (DM): YouTube cookies for the soundboard's YouTube downloads. YouTube often answers a server with "sign in to confirm you're not a bot"; a cookies.txt exported from a signed-in
+// browser answers it. The file is kept on the server (data/cookies.txt) and never shown again.
+function cookiesBox() {
+  const msg = status(), state = h("p", { className: "muted", textContent: "Checking…" }), file = h("input", { type: "file", accept: ".txt,text/plain" });
+  const show = c => { state.textContent = c.present ? `Cookies are set up (${Math.round(c.bytes / 1024)} KB, saved ${new Date(c.updated * 1000).toLocaleString()}).` : c.browser ? `No cookies file; the server reads them from ${c.browser} on this computer.` : "No cookies yet."; };
+  api("/api/cookies").then(show).catch(() => { state.textContent = ""; });
+  return box("cookies", "YouTube cookies", h("p", { className: "muted", textContent: "Some YouTube links fail with \"Sign in to confirm you're not a bot\". Fix: upload a cookies.txt from a signed-in YouTube (an account you do not mind risking); the failed sounds then try again." }),
+    h("details", {}, h("summary", { textContent: "How to get a cookies.txt" }),
+      h("p", { className: "muted", textContent: "A. A separate browser profile (best): make a new Chrome profile, install the extension \"Get cookies.txt LOCALLY\" in it, sign in to youtube.com, export the cookies, then do not open YouTube in that profile again (YouTube changes the cookies of a session that stays open). A private window works only if you allow the extension there (Chrome: chrome://extensions > Details > Allow in Incognito; Firefox: the add-on's page > Run in Private Windows)." }),
+      h("p", { className: "muted", textContent: "B. With no extension, on your own computer, in a terminal: yt-dlp --cookies-from-browser chrome --cookies cookies.txt --skip-download \"https://www.youtube.com/\"  (use firefox or safari for those browsers). It reads that browser's cookies, so use a browser signed in with the spare account." }),
+      h("p", { className: "muted", textContent: "C. Running the server on your own computer, you can skip the file: start it with DND_COOKIES_FROM_BROWSER=chrome (or firefox, safari ...)." })),
+    state, h("div", { className: "row" }, file, h("button", { className: "primary", textContent: "Upload cookies.txt", onclick: async () => {
+      if (!file.files[0]) return msg.say("Choose a cookies.txt first", true);
+      const f = new FormData(); f.append("file", file.files[0]);
+      try { const r = await fetch("/api/cookies", { method: "POST", body: f }); const j = await r.json(); if (!r.ok) throw new Error(j.error || r.statusText); show(await api("/api/cookies")); msg.say("Saved: YouTube downloads will use them"); file.value = ""; } catch (e) { msg.say(e.message, true); }
+    } }), h("button", { className: "danger", textContent: "Remove", onclick: async () => { try { await api("/api/cookies", "DELETE"); show(await api("/api/cookies")); msg.say("Removed"); } catch (e) { msg.say(e.message, true); } } })), msg);
+}
+
 function passwordBox() {
   const oldPw = h("input", { type: "password", placeholder: "Current password", autocomplete: "current-password" });
   const newPw = h("input", { type: "password", placeholder: "New password (8+ characters)", autocomplete: "new-password" });
@@ -182,6 +200,7 @@ async function dmView(me) {
         h("button", { textContent: "Open", onclick: () => openSheet(c.id) })],
     })),
     playersBox(users),
+    cookiesBox(),
     invitesBox(invites),
     box("upload", "Upload a character", uploadBox(users)),
     // Search and browse the campaign's encounters and loot tables (Open jumps to that tab with the record selected).

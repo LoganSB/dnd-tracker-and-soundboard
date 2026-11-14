@@ -228,8 +228,11 @@ def recompute_slots(root, rules):
         row = cls["levels"][lvl]["slots"]
         cantrips += row[0]
         own = "".join(f"{v}," for v in row)
+        old_own = fcedit.slot_list(c, "slots")
+        old_own_cur = fcedit.slot_list(c, "slotsCurrent")
         put(c, "slots", own)
-        put(c, "slotsCurrent", own)
+        # (as the Fight Club app does on a level-up, checked against a character it levelled: the maximum rises and the slots left are as they were; a class with no slots yet starts full)
+        put(c, "slotsCurrent", own if not any(old_own) else "".join(f"{min(row[i], old_own_cur[i])}," for i in range(10)))
         kind = cls["caster"]
         if kind == "full":
             full += lvl
@@ -247,7 +250,8 @@ def recompute_slots(root, rules):
     else:
         ordinary = [0] * 9
     new = [cantrips] + [ordinary[i] + pact[i + 1] for i in range(9)]
-    cur = [new[0]] + [min(new[i], max(0, old_cur[i] + max(0, new[i] - old_max[i]))) for i in range(1, 10)]
+    # a level-up raises the maximum and leaves the slots left as they were, as Fight Club's own level-up does (it does not hand out the new slot at once); a character who had no slots starts full
+    cur = [new[0]] + (new[1:] if not any(old_max[1:]) else [min(new[i], old_cur[i]) for i in range(1, 10)])
     put(root, "slots", "".join(f"{v}," for v in new))
     put(root, "slotsCurrent", "".join(f"{v}," for v in cur))
 
@@ -316,6 +320,16 @@ def _order_class(c):
             c.insert(at + n, e)
 
 
+def _set_xp(root, xp):
+    """<xp> sits right after <hpCurrent> in Fight Club's files (it is absent on a new level-1 character)."""
+    e = root.find("xp")
+    if e is None:
+        e = ET.Element("xp")
+        kids = list(root)
+        root.insert(next((i for i, k in enumerate(kids) if k.tag == "hpCurrent"), len(kids) - 1) + 1, e)
+    e.text = str(xp)
+
+
 def apply_level(root, cls, rules, *, roll=None, asi=None, choices=None, feats=None):
     """Raise the character one level in the parsed class `cls` (codex.parse_class). A class the character does not have yet is added (multiclassing). `rules` = {class name: parsed class}
     for every class the character has (for the slots). roll = the die rolled for hit points (None = the average); asi = a validated decision for this level's ability score improvement (or
@@ -355,7 +369,7 @@ def apply_level(root, cls, rules, *, roll=None, asi=None, choices=None, feats=No
     all_rules[cls["name"]] = cls
     recompute_slots(root, all_rules)
     if new_total > 1 or _t(root, "xp"):
-        put(root, "xp", max(int(_num(_t(root, "xp"), 0)), C.XP_FOR_LEVEL[new_total - 1]))
+        _set_xp(root, max(int(_num(_t(root, "xp"), 0)), C.XP_FOR_LEVEL[new_total - 1]))
     return {"level": new_total, "classLevel": level, "hpGain": gain, "features": names}
 
 

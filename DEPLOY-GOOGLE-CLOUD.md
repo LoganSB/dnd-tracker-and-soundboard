@@ -293,6 +293,7 @@ to build a monster list (saved in the bucket's `data/` folder, rebuilt monthly) 
   one-instance limit above also protects the accounts. Back the bucket up as described in "Everyday tasks".
 - **The bucket is a network disk,** so file access is a little slower than a local disk. A long soundtrack may
   hesitate the first time it plays.
+- **YouTube may ask the cloud copy to "sign in to confirm you're not a bot"** (it distrusts hosted servers). Fix: on Home, as the DM, upload a YouTube `cookies.txt` under **YouTube cookies** (export it from a separate browser profile with a cookies.txt extension, or with `yt-dlp --cookies-from-browser chrome --cookies cookies.txt --skip-download https://www.youtube.com/`) (kept in the bucket as `data/cookies.txt`; use an account you do not mind risking, and keep yt-dlp current by redeploying with the newest `requirements.txt`).
 - **Character creation needs the rule book in the bucket.** It is Fight Club's compendium, kept from a Fight Club backup you import (the container image has no backup in it): after the first deploy, sign in as the DM and import a Fight Club backup made after you imported the collection into the app. Home then says which rule book is in use.
 - **The Fight Club expansion download** (`/download/collection.zip`) is deliberately not in the image (it is
   123 MB); that one link says "not found" in the cloud copy.

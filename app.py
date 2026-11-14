@@ -61,6 +61,7 @@ process from outside) configure it:
   PORT           the port gunicorn listens on (Cloud Run sets it; see gunicorn.conf.py).
 """
 import argparse
+import contextlib
 import hashlib
 import json
 import logging
@@ -70,6 +71,7 @@ import re
 import select
 import shutil
 import sys
+import tempfile
 import threading
 import time
 from datetime import datetime
@@ -114,6 +116,7 @@ log = logging.getLogger("dnd")
 # Some sites reject requests without a browser-like User-Agent header.
 UA = {"User-Agent": "Mozilla/5.0 (DM-Soundboard)"}
 MAX_BYTES = 150 * 1024 * 1024  # download size cap: 150 MiB per sound
+COOKIES = DATA / "cookies.txt"   # YouTube sign-in cookies (Netscape cookies.txt), uploaded by the DM: see the cookie routes below
 AUDIO_EXT = (".mp3", ".ogg", ".wav", ".m4a", ".webm", ".opus", ".aac", ".flac")
 
 # The Flask application object: owns the route table and the HTTP machinery.
@@ -492,6 +495,87 @@ def stream_to_file(url, dest_base, referer=None):
         return final
 
 
+@contextlib.contextmanager
+def youtube_cookies(opts):
+    """Give yt-dlp the DM's YouTube cookies for one download, when there are any (or the browser named in DND_COOKIES_FROM_BROWSER, for running on your own computer).
+
+    YouTube asks many servers, a hosted one above all, to "sign in to confirm you're not a bot"; cookies from a signed-in session answer that. yt-dlp REWRITES the cookie file when it
+    finishes (YouTube rotates them), so it works on a private copy, and the copy is put back afterwards when it changed, so the cookies stay fresh. The file is never logged or sent
+    to the page."""
+    tmp = None
+    if COOKIES.exists():
+        tmp = Path(tempfile.mkstemp(suffix=".txt", prefix="yt-cookies-")[1])
+        shutil.copyfile(COOKIES, tmp)
+        os.chmod(tmp, 0o600)
+        opts["cookiefile"] = str(tmp)
+    elif os.environ.get("DND_COOKIES_FROM_BROWSER"):
+        opts["cookiesfrombrowser"] = (os.environ["DND_COOKIES_FROM_BROWSER"].strip(),)
+    try:
+        yield
+    finally:
+        if tmp is not None:
+            try:
+                if tmp.exists() and tmp.stat().st_size and tmp.read_bytes() != COOKIES.read_bytes():
+                    with lock:
+                        shutil.copyfile(tmp, COOKIES)
+            except Exception:
+                pass
+            tmp.unlink(missing_ok=True)
+
+
+def check_cookies(text):
+    """Is `text` a Netscape cookies.txt that holds YouTube / Google cookies? Returns the text with plain line ends; ValueError with a message the page shows when not."""
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    rows = [ln.split("\t") for ln in text.split("\n") if ln.strip() and not ln.startswith("#") or ln.startswith("#HttpOnly_")]
+    rows = [r for r in rows if len(r) >= 7]
+    if not rows:
+        raise ValueError("That is not a cookies.txt file (a Netscape-format export: seven tab-separated columns a line)")
+    if not any(("youtube.com" in r[0] or "google.com" in r[0]) for r in rows):
+        raise ValueError("That cookies.txt has no youtube.com cookies: export it while signed in on youtube.com")
+    return text if text.endswith("\n") else text + "\n"
+
+
+@app.get("/api/cookies")
+def cookies_status():
+    """GET /api/cookies -> {present, bytes, updated (seconds since 1970), browser}: whether YouTube cookies are set up. The DM only; the cookies themselves are never sent."""
+    if COOKIES.exists():
+        st = COOKIES.stat()
+        return jsonify(present=True, bytes=st.st_size, updated=int(st.st_mtime), browser=os.environ.get("DND_COOKIES_FROM_BROWSER", ""))
+    return jsonify(present=False, browser=os.environ.get("DND_COOKIES_FROM_BROWSER", ""))
+
+
+@app.post("/api/cookies")
+def cookies_upload():
+    """POST /api/cookies (multipart field "file", a YouTube cookies.txt) -> {present: true}: keep it for YouTube downloads (data/cookies.txt, readable only by the app). The DM only. Sounds
+    that failed with the sign-in message are tried again when they are next asked for."""
+    f = request.files.get("file")
+    if not f:
+        return jsonify(error="Choose a cookies.txt file"), 400
+    raw = f.read(2_000_001)
+    if len(raw) > 2_000_000:
+        return jsonify(error="That file is too large for a cookies.txt"), 400
+    try:
+        text = check_cookies(raw.decode("utf-8", "replace"))
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    DATA.mkdir(parents=True, exist_ok=True)
+    tmp = COOKIES.with_suffix(".tmp")
+    tmp.write_text(text)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, COOKIES)
+    for k, j in list(jobs.items()):   # sounds that failed on the bot check start again when asked for
+        if j.get("status") == "error" and "YouTube wants a sign-in" in j.get("error", ""):
+            jobs.pop(k, None)
+    return jsonify(present=True)
+
+
+@app.delete("/api/cookies")
+def cookies_remove():
+    """DELETE /api/cookies: forget the YouTube cookies. The DM only."""
+    COOKIES.unlink(missing_ok=True)
+    return jsonify(present=False)
+
+
 def do_fetch(key, kind, url):
     """Download one sound and record the outcome in `jobs[key]`. Runs on a background thread.
 
@@ -530,10 +614,11 @@ def do_fetch(key, kind, url):
                 # download failed, such as YouTube asking for a sign-in).
                 "logger": log,
             }
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(url, download=True)  # blocks until the file is saved
-                title = info.get("title", "")
-                meta = {"title": title, "duration": info.get("duration")}
+            with youtube_cookies(opts):
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(url, download=True)  # blocks until the file is saved
+                    title = info.get("title", "")
+                    meta = {"title": title, "duration": info.get("duration")}
         elif kind == "myinstants":
             html = requests.get(url, headers=UA, timeout=20).text
             # Regex: a quote (' or "), then a path starting /media/sounds/ , any characters
@@ -561,7 +646,11 @@ def do_fetch(key, kind, url):
         log.info("download done: %s (%s) %.0fs, %s", url, key, time.time() - started, media_file(key))
     except Exception as e:  # report to UI rather than die in a thread
         log.exception("download failed after %.0fs: %s (%s)", time.time() - started, url, key)
-        jobs[key] = {"status": "error", "error": str(e)[:300]}
+        msg = str(e)
+        if re.search(r"sign in to confirm|not a bot|cookies", msg, re.I):   # YouTube's bot check: say what to do about it
+            msg = ("YouTube wants a sign-in (it is checking this server is not a bot). The DM can fix it on the Home page: YouTube cookies. "
+                   + ("The cookies uploaded there were refused or have expired: upload fresh ones." if COOKIES.exists() else "Upload a cookies.txt from a signed-in YouTube there."))
+        jobs[key] = {"status": "error", "error": msg[:300]}
 
 
 def ensure_media(url):

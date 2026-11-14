@@ -17,3 +17,7 @@ FightClub5eXML*/
 __pycache__/
 *.pyc
 .DS_Store
+
+# YouTube sign-in cookies: a live session, never commit (uploaded on Home, kept in data/).
+cookies.txt
+*cookies*.txt
