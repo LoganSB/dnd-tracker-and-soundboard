@@ -119,3 +119,7 @@ Fight Club's own files hold **no empty element at all** (none of the 1.8 MB samp
 ## Slots and what the app keeps beside the file
 
 Fight Club's `<slot>` only covers armor (5), the off hand (4) and the main hand (2); 1 is the pack's main list. It has no place for a belt, boots or attunement, so this app keeps the worn kind and attunement in the extras (see `GLOAN5E-FORMAT.md`), and the Fight Club file is unchanged by them. New items the app adds have no `<slot>` (stowed).
+
+## The "GM" export (`<characters version="5"><pc>`)
+
+Fight Club can also export a monster-style summary: `<characters>` holding one `<pc>` per character with `label` (the name), `name` ("Dwarf (Mountain) Barbarian 8" = race, class, level), final ability scores, `hp` ("101/101 (8d12)"), `save`/`skill` bonuses, `ac`, `speed` and `action`s. It has no inventory, spells or features. `party._from_statblock` turns each `<pc>` into a bare `<character>` on import (abilities, race, class, level, hit points, saves and skills as proficiencies); `ac` and `action`s are dropped because armor class comes from worn armor.

@@ -562,10 +562,52 @@ def _characters_from(data: bytes, adopt=False):
     root = SafeET.fromstring(data)
     if root.tag == "character":
         return [root], {}
+    if root.tag == "characters":   # the "GM" export: a stat block per <pc> (see _from_statblock), not a full character
+        return [c for c in (_from_statblock(p) for p in root.findall("pc")) if c is not None], {}
     if adopt:   # a backup that also holds Fight Club's rule book becomes the rule book character creation copies from (codex.py)
         codex.adopt_root(root)
     images = {(i.findtext("uid") or "").strip(): "".join((i.findtext("encoded") or "").split()) for i in root.findall("imageData") if i.find("encoded") is not None}
     return root.findall("character"), images
+
+
+def _from_statblock(pc):
+    """Turn one <pc> of Fight Club's "GM" export into a <character>, or None if it has no ability scores.
+
+    That export is a monster-style summary: label (the character's name), name ("Dwarf (Mountain) Barbarian 8" = race, class, level), final
+    ability scores, hp "101/101 (8d12)", saving throw and skill bonuses. It holds NO inventory, spells, features or backstory, so the result is
+    a bare character: abilities, race and class names, level, hit points, and the saves and skills the bonuses imply as proficiencies. Armor
+    class and the attack actions in the file have nowhere to live (AC comes from worn armor), so they are dropped. Scores are the final ones,
+    so no race modifiers are added."""
+    ab = [(pc.findtext(k) or "").strip() for k in ("str", "dex", "con", "int", "wis", "cha")]
+    if not all(a.lstrip("-").isdigit() for a in ab):
+        return None
+    label = (pc.findtext("label") or "").strip() or "Character"
+    m = re.match(r"^(.*?)\s+([A-Za-z' -]+?)\s+(\d+)\s*$", (pc.findtext("name") or "").strip())
+    race_name, cls_name, level = (m.group(1), m.group(2), int(m.group(3))) if m else ((pc.findtext("name") or "").strip(), "Fighter", int(_num(pc.findtext("level"), 1)) or 1)
+    hp = re.match(r"\s*(\d+)\s*/\s*(\d+)\s*(?:\((\d+)d(\d+)\))?", pc.findtext("hp") or "")
+    ch = ET.Element("character")
+    for tag, val in (("version", "5"), ("uid", re.sub(r"\W", "", label).lower()[:12] or "gm"), ("name", label), ("abilities", "".join(f"{a}," for a in ab)),
+                     ("hpMax", hp.group(2) if hp else "0"), ("hpCurrent", hp.group(1) if hp else "0"), ("money", "0.0")):
+        ET.SubElement(ch, tag).text = val
+    race = ET.SubElement(ch, "race")
+    ET.SubElement(race, "name").text = race_name
+    if (pc.findtext("size") or "").strip():
+        ET.SubElement(race, "size").text = pc.findtext("size").strip()
+    if (pc.findtext("speed") or "").strip():
+        ET.SubElement(race, "speed").text = (re.search(r"\d+", pc.findtext("speed")) or re.search(r"", "")).group() or "30"
+    cl = ET.SubElement(ch, "class")
+    ET.SubElement(cl, "name").text = cls_name
+    if hp and hp.group(4):
+        ET.SubElement(cl, "hd").text = hp.group(4)
+    ET.SubElement(cl, "level").text = str(level)
+    names = [n for n, _ in charcalc.SKILLS]
+    abil = ["Strength", "Dexterity", "Constitution", "Intelligence", "Wisdom", "Charisma"]
+    for tag, table in (("save", abil), ("skill", names)):
+        for e in pc.findall(tag):
+            nm = re.sub(r"\s*[+-]\d+\s*$", "", e.text or "").strip()
+            if nm in table:
+                ET.SubElement(cl, "proficiency").text = str(table.index(nm) + (charcalc.SKILL_CODE0 if tag == "skill" else 0))
+    return ch
 
 
 def _read_upload(f, adopt=False):

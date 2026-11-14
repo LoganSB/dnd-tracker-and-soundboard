@@ -48,11 +48,10 @@ const Maps = (() => {
       onChange?.();
     }
 
-    // Load: this map becomes THE map on the Map page; the page then switches there to show it (the shell hears "goto").
+    // Load: this map becomes THE map on the Map page; the tab does not change (the Map page fetches the map when opened).
     async function load(m) {
       await UI.api("/api/map", "PUT", { enc: enc.id, map: m.id });
       msg.say(`"${m.name}" is on the Map page`);
-      parent.postMessage({ type: "goto", page: "map" }, location.origin);
     }
 
     function draw(note) {
