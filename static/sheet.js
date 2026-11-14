@@ -82,12 +82,12 @@ const Sheet = (() => {
           show: i => h("span", {}, i.name.trim() + (i.magic ? " ✦" : ""),
             unattuned(i) ? h("div", { className: "attunenote" }, "⚠ Not attuned: its bonuses do not count yet. ", hooks.attune ? btn("Attune", "Attune to it (3 items at most)", () => hooks.attune(i, true), "primary") : null) : null,
             i.gift ? h("div", { className: "giftnote" }, `Given to you by ${i.gift.from}`, i.gift.qty > 1 ? ` (${i.gift.qty})` : "", " ", hooks.ack ? btn("Acknowledge", "Keep it: end the highlight", () => hooks.ack(i.gift), "primary") : null) : null) },
-        { label: "Count", text: i => (i.quantity > 1 ? String(i.quantity) : ""), num: true },
-        { label: "Type", text: i => i.type || i.detail, filter: true },
-        { label: "Where", text: i => i.where, filter: true },
-        { label: "Worn", text: wornText, filter: true },
-        { label: "Stats", text: itemStats },
-        { label: "Value", text: i => gp(i.value) },
+        { label: "Count", text: i => (i.quantity > 1 ? String(i.quantity) : ""), wide: true },
+        { label: "Type", text: i => i.type || i.detail, filter: true, wide: true },
+        { label: "Where", text: i => i.where, filter: true, wide: true },
+        { label: "Worn", text: wornText, filter: true, wide: true },
+        { label: "Stats", text: itemStats, wide: true },
+        { label: "Value", text: i => gp(i.value), wide: true },
       ],
       detail: i => i.text || i.detail || null, rowClass: i => [isOn(i) && i.active !== false ? "equipped" : "", unattuned(i) ? "unattuned" : "", i.gift ? "gift" : ""].filter(Boolean).join(" "),
       actions: i => [
@@ -110,12 +110,12 @@ const Sheet = (() => {
       columns: [
         { label: "Spell", text: s => s.name },
         { label: "Level", text: s => (s.level === 0 ? "Cantrip" : String(s.level)), filter: true },
-        { label: "School", text: s => s.school, filter: true },
-        { label: "Prepared", text: s => (s.prepared ? "Prepared" : ""), filter: true },
-        { label: "Cast", text: s => s.time },
-        { label: "Range", text: s => s.range },
-        { label: "Duration", text: s => s.duration },
-        { label: "Comp.", text: s => s.components },
+        { label: "School", text: s => s.school, filter: true, wide: true },
+        { label: "Prepared", text: s => (s.prepared ? "Prepared" : ""), filter: true, wide: true },
+        { label: "Cast", text: s => s.time, wide: true },
+        { label: "Range", text: s => s.range, wide: true },
+        { label: "Duration", text: s => s.duration, wide: true },
+        { label: "Comp.", text: s => s.components, wide: true },
       ],
       detail: s => ((s.materials ? `Materials: ${s.materials}\n\n` : "") + s.text) || null, rowClass: s => (s.prepared ? "equipped" : ""),
     })));
@@ -156,7 +156,7 @@ const Sheet = (() => {
   // statistics(m, run): the tiles AC, Initiative, Speed, Passive Perception, Proficiency and Inspiration (with - / +).
   function statistics(m, run) {
     const s = m.stats;
-    // The conditions change some numbers (conditions.js): speed 0 or half, passive Perception -5. A changed tile shows the new number, the old one
+    // The conditions change some numbers (conditions.js): speed 0 or half. A changed tile shows the new number, the old one
     // struck through, a badge and the reason (the conditions that caused it), so it is plain WHY it differs from the sheet.
     const fx = Conditions.effects(Conditions.parse(m.conditions));
     const changed = (label, now, was, why, title) => {
@@ -169,8 +169,9 @@ const Sheet = (() => {
       const now = Conditions.speed(s.speedFeet, fx.speed);
       return changed("Speed", `${now} ft`, s.speed, `${fx.speed.kind === "zero" ? "0" : "halved"} by ${fx.speed.why.join(", ")}`, s.speedNote);
     };
-    const percTile = () => (!fx.perception ? tile("Passive Perception", s.passivePerception, s.passiveWhy || "10 + Perception")
-      : changed("Passive Perception", s.passivePerception + fx.perception.delta, s.passivePerception, `-5 (disadvantage on checks) from ${fx.perception.why.join(", ")}`, "10 + Perception"));
+    // Disadvantage does not change the number (the dice are rolled twice), so the tile only says so.
+    const percTile = () => tile("Passive Perception", s.passivePerception, s.passiveWhy || "10 + Perception",
+      ...(fx.checks.length ? [h("div", { className: "why", textContent: `⚠ Disadvantage on checks (${fx.checks.join(", ")})` })] : []));
     const insp = h("div", { className: "stat", title: "Inspiration" }, h("div", { className: "muted", textContent: "Inspiration" }), h("b", { textContent: m.inspiration }),
       h("div", { className: "row" }, h("button", { className: "tiny", textContent: "−", onclick: () => run({ inspiration: m.inspiration - 1 }) }),
         h("button", { className: "tiny", textContent: "+", onclick: () => run({ inspiration: m.inspiration + 1 }) })));

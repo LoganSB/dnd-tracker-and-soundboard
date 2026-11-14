@@ -2877,3 +2877,25 @@ hr.thin { border: 0; border-top: 1px solid #ffffff22; margin: 1rem 0 0; }
 .editbtn { margin-left: .6rem; }
 .hint { cursor: help; text-decoration: underline dotted; text-decoration-color: var(--muted, #888); text-underline-offset: 3px; }
 .spellcast { margin-top: .6rem; }
+
+/* pull to refresh (templates/shell.html): the bar that grows under the header while a page is pulled down from the top */
+#ptr { height: 0; overflow: hidden; text-align: center; color: var(--muted, #888); font-size: .85rem; line-height: 56px; transition: height .15s; }
+#ptr.show { transition: none; }
+#ptr.go { color: var(--accent, #9b6cff); }
+
+/* Wider character sheet, and on a phone: lists show only the name (and level) with the buttons; the other columns move into the row's drop-down
+   (ui.js dataTable: a column with wide: true) */
+.partypage #view { max-width: 1400px; }
+.mobinfo { display: none; }
+@media (max-width: 600px) {
+  .partypage #view { padding: .5rem .35rem; }
+  .partypage .card { padding: .6rem .5rem; }
+  .dtable .wideonly { display: none; }
+  .dtable .mobinfo { display: block; margin-bottom: .5rem; color: var(--muted); }
+  .dtable td.acts { white-space: normal; }
+  .dtable tr.mobonly.expandable { cursor: pointer; }
+}
+@media (min-width: 601px) {
+  .dtable tr.mobonly.expandable { cursor: default; }
+  .dtable tr.mobonly.expandable > td:first-child::before { content: ""; }
+}

@@ -82,6 +82,7 @@
 {% endif %}
 
 <!-- Every page this user may use is loaded immediately. allow="autoplay" lets the soundboard frame start audio. -->
+<div id="ptr" aria-hidden="true">↓ Pull to refresh</div>
 <div id="frames">
   <iframe id="f-home" data-page="home" title="Home" src="/_/home"></iframe>
   {% if role == 'dm' %}
@@ -126,6 +127,34 @@
   }
   barBtn.onclick = () => { barsHidden = !barsHidden; try { localStorage.setItem("shell.hidebar", barsHidden ? "1" : "0"); } catch (_) { /* ignore */ } applyBars(); };
   document.querySelectorAll("#frames iframe").forEach(f => f.addEventListener("load", applyBars));
+
+  // PULL TO REFRESH. A phone browser only refreshes when the OUTER page is pulled down, and this page never scrolls (each tab is an iframe that scrolls
+  // inside it), so the gesture is built here: pulling down from the top of a page that is scrolled to the top shows an indicator and, past PULL px, reloads that
+  // page on release. The Soundboard and Campaign canvases are left out (a drag there moves the board), as is a touch that starts in a text box or a menu.
+  const PULL = 80, ptr = document.getElementById("ptr");
+  function pullToRefresh(f) {
+    let doc, y0 = null, dy = 0;
+    try { doc = f.contentDocument; } catch (_) { return; }
+    if (!doc || ["sound", "campaign"].includes(f.dataset.page)) return;
+    const top = () => (doc.scrollingElement || doc.documentElement).scrollTop <= 0;
+    const reset = () => { y0 = null; dy = 0; ptr.classList.remove("show", "go"); ptr.style.height = ""; };
+    doc.addEventListener("touchstart", ev => {
+      const el = ev.target;
+      y0 = ev.touches.length === 1 && top() && !el.closest?.("input, textarea, select, dialog, .restpop") ? ev.touches[0].clientY : null;
+    }, { passive: true });
+    doc.addEventListener("touchmove", ev => {
+      if (y0 === null) return;
+      dy = ev.touches[0].clientY - y0;
+      if (dy <= 8 || !top()) { if (dy <= 0) reset(); return; }
+      ptr.classList.add("show");
+      ptr.classList.toggle("go", dy >= PULL);
+      ptr.textContent = dy >= PULL ? "↑ Release to refresh" : "↓ Pull to refresh";
+      ptr.style.height = Math.min(dy * 0.6, 56) + "px";
+    }, { passive: true });
+    doc.addEventListener("touchend", () => { const go = y0 !== null && dy >= PULL; reset(); if (go) f.contentWindow.location.reload(); }, { passive: true });
+    doc.addEventListener("touchcancel", reset, { passive: true });
+  }
+  document.querySelectorAll("#frames iframe").forEach(f => f.addEventListener("load", () => pullToRefresh(f)));
 
   // show(page, push): make `page` the visible tab. Highlights its link, shows its frame and hides the
   // others, gives its frame keyboard focus (so hotkeys and arrow keys reach the soundboard), tells it it

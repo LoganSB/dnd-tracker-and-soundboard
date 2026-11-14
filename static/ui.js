@@ -65,7 +65,8 @@ function box(key, title, ...body) {
 // dataTable({ key, columns, rows, actions, empty }) -> element   (lists 20 rows at a time; the buttons and page arrows under it choose the size and the page)
 //   columns  [{ label, text(row) -> string used for searching and filtering, show(row) -> node or text (optional;
 //            defaults to the text), filter: true to give the column a menu of its distinct values,
-//            tags(row) -> array: with filter, a row belongs to every value in its list (a row in two campaigns shows up under both) }]
+//            tags(row) -> array: with filter, a row belongs to every value in its list (a row in two campaigns shows up under both),
+//            wide: true = a column that only shows on a wide screen: on a phone it is hidden and its text goes at the top of the row's drop-down instead }]
 //   actions  (row) -> array of buttons for the last column (omit for none)
 //   detail   (row) -> text or a node shown under the row when it is clicked (omit, or return nothing for a row, and that row does not
 //            expand). This is the "drop-down" rows: an inventory item's description, a spell's text. Open rows stay open while you search.
@@ -118,14 +119,18 @@ function dataTable({ key, columns, rows, actions, detail, rowClass, empty = "Not
       .map(p => p.ref).filter(r => !searchable || !filters.some((f, i) => f && f.value && !(columns[i].tags ? columns[i].tags(r).includes(f.value) : columns[i].text(r) === f.value)));
     const span = columns.length + (actions ? 1 : 0);
     body.replaceChildren(...pager.show(list, rows.length).flatMap(r => {
-      const info = detail ? detail(r) : null;
-      const tr = h("tr", { className: (rowClass?.(r) || "") + (info ? " expandable" + (opened.has(r) ? " open" : "") : "") }, columns.map(c => h("td", {}, c.show ? c.show(r) : c.text(r))),
-        actions ? h("td", { className: "acts" }, actions(r)) : null);
+      const text = detail ? detail(r) : null;
+      // the wide-only columns' text, as lines for the drop-down (shown on a phone only: .mobinfo)
+      const more = columns.filter(c => c.wide).map(c => [c.label, c.text(r)]).filter(x => x[1]);
+      const info = more.length ? h("div", {}, h("div", { className: "mobinfo" }, more.map(([l, t]) => h("div", {}, h("b", { textContent: l + ": " }), t))), text) : text;
+      const tr = h("tr", { className: (rowClass?.(r) || "") + (info ? " expandable" + (opened.has(r) ? " open" : "") + (!text ? " mobonly" : "") : "") },
+        columns.map(c => h("td", { className: c.wide ? "wideonly" : "" }, c.show ? c.show(r) : c.text(r))), actions ? h("td", { className: "acts" }, actions(r)) : null);
       if (!info) return [tr];
       // The description sits in its own row right under this one; clicking anywhere on the row (except its buttons) opens or closes it.
       const drow = h("tr", { className: "drow", hidden: !opened.has(r) }, h("td", { colSpan: span, className: "dtext" }, info));
       tr.onclick = ev => {
         if (ev.target.closest("button, a, input, select")) return;
+        if (!text && !matchMedia("(max-width: 600px)").matches) return;   // only the hidden columns to show, and they are not hidden here
         const open = drow.hidden;
         drow.hidden = !open; tr.classList.toggle("open", open);
         if (open) opened.add(r); else opened.delete(r);
@@ -139,7 +144,7 @@ function dataTable({ key, columns, rows, actions, detail, rowClass, empty = "Not
   filters.forEach((f, i) => f && (f.onchange = () => { store(`f.${key}.${i}`, f.value); pager.reset(); draw(); }));
   draw();
   wrap.append(bar,
-    h("table", { className: "loot" }, h("thead", {}, h("tr", {}, columns.map(c => h("th", { textContent: c.label })), actions ? h("th") : null)), body), pager.el);
+    h("table", { className: "loot" }, h("thead", {}, h("tr", {}, columns.map(c => h("th", { textContent: c.label, className: c.wide ? "wideonly" : "" })), actions ? h("th") : null)), body), pager.el);
   return wrap;
 }
 

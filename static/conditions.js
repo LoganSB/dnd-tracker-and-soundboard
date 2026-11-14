@@ -13,13 +13,13 @@
 //   Conditions.describe(entry)        { text, lines } what it does, and the lines naming what it changes on the stats
 //   Conditions.effects(entries)       what all the conditions together do to the numbers:
 //                                       { speed: null | { kind: "zero" | "half", why: [names] },
-//                                         perception: null | { delta: -5, why: [names] },       (disadvantage on ability checks)
+//                                         checks: [names],                                        (disadvantage on ability checks; no number changes)
 //                                         attacks: [names],                                       (disadvantage on your attack rolls)
 //                                         saves: [names],                                         (disadvantage on saving throws)
 //                                         noActions: [names], hpMax: [names] }
 //   Conditions.speed(base, speedEffect)  the speed once an effect is applied (halved is rounded down to a multiple of 5)
 //
-// What is applied to the numbers: speed 0 or half, passive Perception -5 (disadvantage on ability checks is -5 to a passive score), and flags
+// What is applied to the numbers: speed 0 or half, and flags
 // for disadvantage on attack rolls and saves, no actions, and halved hit point maximum. Advantage others get against you, automatic failures
 // and the like are in the description only.
 const Conditions = (() => {
@@ -74,7 +74,7 @@ const Conditions = (() => {
     }
     if (d.speed === "zero") out.push("Speed 0");
     if (d.speed === "half") out.push("Speed halved" + (d.note ? ` (${d.note})` : ""));
-    if (d.checks) out.push("Disadvantage on ability checks (passive Perception -5)" + (d.note && !d.speed ? ` ${d.note}` : ""));
+    if (d.checks) out.push("Disadvantage on ability checks" + (d.note && !d.speed ? ` ${d.note}` : ""));
     if (d.attacks) out.push("Disadvantage on your attack rolls");
     if (d.saves) out.push("Disadvantage on Dexterity saving throws");
     if (d.noActions) out.push("No actions or reactions");
@@ -84,13 +84,13 @@ const Conditions = (() => {
 
   // effects(entries): everything the conditions do to the numbers, with the names that cause it (for the "why" shown on the stat).
   function effects(entries) {
-    const out = { speed: null, perception: null, attacks: [], saves: [], noActions: [], hpMax: [] };
+    const out = { speed: null, checks: [], attacks: [], saves: [], noActions: [], hpMax: [] };
     const addSpeed = (kind, why) => {
       if (!out.speed) out.speed = { kind, why: [why] };
       else if (kind === "zero" && out.speed.kind === "half") out.speed = { kind: "zero", why: [why] };   // zero beats half
       else if (kind === out.speed.kind) out.speed.why.push(why);
     };
-    const addCheck = why => { (out.perception ||= { delta: -5, why: [] }).why.push(why); };
+    const addCheck = why => { out.checks.push(why); };
     for (const e of entries) {
       if (!e.def) continue;
       if (e.key === "Exhaustion") {
