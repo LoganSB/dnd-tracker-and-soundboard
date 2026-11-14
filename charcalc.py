@@ -74,7 +74,7 @@ def armor_class(d, mods, equipped):
         extra, how = (mods[2], "Unarmored Defense (Con)") if "barbarian" in names else (mods[4], "Unarmored Defense (Wis)") if "monk" in names else (0, "no armor")
         ac = 10 + dex + extra
     ac += sum(int(float(s.get("ac") or 0)) + s.get("bonus", {}).get("ac", 0) for s in shields)
-    ac += sum(i.get("bonus", {}).get("ac", 0) for i in equipped if i not in shields)
+    ac += sum(i.get("bonus", {}).get("ac", 0) for i in d.get("items", []) + [x for c in d.get("containers", []) for x in c["items"]] if i.get("active") and i not in shields)
     if shields:
         how += " + " + ", ".join(s["name"].strip() for s in shields)
     return ac, how

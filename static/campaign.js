@@ -202,9 +202,8 @@ async function adoptServerState(st) {
 $("#campSel").onchange = async () => {
   const name = $("#campSel").value;
   if (!name) return;
-  if (!confirm(`Load campaign "${name}"?\nThe tracker, party and combat change; the soundboard on screen stays. The campaign on screen is saved as a version first, but only "Save campaign" writes it to its own file.`)) { refreshCampaignBar(); return; }
   try {
-    await flushAllPages();   // everything on screen reaches the server first
+    await flushAllPages();   // everything on screen reaches the server first (the campaign on screen is also kept as a version)
     await adoptServerState(await api(`/api/campaigns/${encodeURIComponent(name)}/load?soundboard=keep`, "POST"));
   } catch (e) { alert(e.message); refreshCampaignBar(); }
 };

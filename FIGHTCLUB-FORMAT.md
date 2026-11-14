@@ -84,6 +84,12 @@ Found by comparing the codes in the sample characters with what the game says ab
 | class `autolevel` | one per level, with a `<level>` child | the class's whole level table, including EVERY subclass option (marked `optional`); the character's own `class/feat` list is already just what they have, so features come from there |
 | `monster` | `label`, `name`, `size`, `type`, `abilities`, `hd` (e.g. `1d8`) | a companion; no hit points are stored. Seen in ONE file (a squirrel named Floofy: label and type "Squirrel", size 0). "Add companion" writes these same six fields (`party.add_companion`): label and type = the monster's name, `size` 0-5 = Tiny..Gargantuan (only 0 and 1 are confirmed), `hd` = the monster's hit dice. Unconfirmed: whether Fight Club needs more, or matches label/type against its own monster list |
 
+## Ability scores, item slots and mods
+
+* `<abilities>` holds the BASE scores. The score Fight Club shows is the base plus every `<mod>` with `category` 1 in the race (and its features), background, class, character feats and active items: `type` is the ability (0 STR ... 5 CHA; **absent means 0**) and `value` the amount. Each level-up's Ability Score Improvement is one such `mod` on the `<class>`. Lynius: WIS 17 + race 1 + two level-ups = 20 (checked against the phone app).
+* An item's `<slot>`: 1 or none = carried, 2 = main hand, 4 = off hand (a shield or a second weapon), 5 = body armor. Where a ring, amulet or boots go is unknown (none worn in any sample), so the app cannot equip those. An item `mod` with `type` 10 and a `value` is an AC bonus; `type` 1 / 2 with a `value` are attack / damage bonuses. **Which items' bonuses count** (checked on a phone: Lynius shows STR 23): armor, shields and weapons only when equipped; any other item when it has a slot at all. Slot 1 (the pack's main list) counts, so his Belt of Stone Giant Strength (slot 1, +9) applies; an item with NO slot (stowed) does not, so his Gauntlets of Ogre Power (+5) do not. Both the score bonuses and armor class bonuses follow this rule (`fcedit.is_active`).
+* Quantity is `<quantity>` (none = 1).
+
 ## Companions (`<monster>`) and class trackers
 
 Confirmed from `FightClub5_Lynius_Creature.backup` (a custom creature with everything filled in, a companion with hit points set, a compendium companion) and the file's owner. Code: `fcmonster.py`.
@@ -97,3 +103,7 @@ Confirmed from `FightClub5_Lynius_Creature.backup` (a custom creature with every
   * `recharge`: 0 none, 1 "#/day" (then `charges` is the number), 2-5 "Recharge N-6", 6 "Recharge 6", 7 after a short rest, 8 after a long rest. A section this app writes would always use 1 with `charges` 1 (the app writes no sections today).
   * `damage`: dice such as `1d20`; `1n55` is ONE die of 55 sides (shown as 1d55). `attackBonus` and `damage` may be Fight Club formulas with `%` tokens (`%3+%4+%2`, `1w+1o`): nobody knows what they mean, so they are shown as written and never calculated. Damage type codes beyond 1-3 are unknown (shown as "type 12").
 * **Class trackers**: `<class><tracker>` (`label`, `type`, `resetType`, `value` = left now, `formula` = the most) and `<autolevel><tracker>` giving the `formula` from that level on (Channel Divinity: 1, 2 at level 6, 3 at level 18). `resetType` 1 is the only value seen; it is read as "returns on a short rest" (unconfirmed); every tracker returns on a long rest.
+
+## Slots and what the app keeps beside the file
+
+Fight Club's `<slot>` only covers armor (5), the off hand (4) and the main hand (2); 1 is the pack's main list. It has no place for a belt, boots or attunement, so this app keeps the worn kind and attunement in the extras (see `GLOAN5E-FORMAT.md`), and the Fight Club file is unchanged by them. New items the app adds have no `<slot>` (stowed).

@@ -11,7 +11,8 @@
 //   Sheet.stats(m, patch)       Skills and Stats: Abilities and saving throws, and every Skill.
 //                               `patch(body)` (both panels) sends a change (PATCH /api/party/<id>) and must return a promise; each panel
 //                               then redraws itself.
-//   Sheet.inventory(m, add)     every item, carried or in a bag, as one searchable table (click an item for its description)
+//   Sheet.inventory(m, hooks)   every item, carried or in a bag, as one searchable table (click an item for its description) with count -/+, Equip, Give,
+//                               remove and the Add buttons (hooks: see inventory below; the page decides what each does)
 //   Sheet.spells(m, add, patch) the spell slots (pips, with a long-rest button) above every spell as one table (filter by level, school; click for the text)
 //   Sheet.features(m, add)      race / background / class features, feats and notes as one table (filter by source)
 //                               `add` (each of the three, optional): called by the + Add loot / + Add spell / + Add note button above the table;
@@ -31,26 +32,50 @@ const Sheet = (() => {
   // flatItems(m): the loose items and every container's items as one list, each marked with where it is. Equipped first.
   function flatItems(m) {
     const all = [...m.items.map(i => ({ ...i, where: "Carried" })), ...m.containers.flatMap(c => c.items.map(i => ({ ...i, where: c.name })))];
-    return all.map((i, n) => [i, n]).sort((a, b) => b[0].equipped - a[0].equipped || a[1] - b[1]).map(x => x[0]);
+    return all.map((i, n) => [i, n]).sort((a, b) => isOn(b[0]) - isOn(a[0]) || a[1] - b[1]).map(x => x[0]);
   }
   const itemStats = i => [i.ac && "AC " + i.ac, i.damage && `${i.damage}${i.damage2h ? " (" + i.damage2h + " two-handed)" : ""} ${i.damageType}`.trim(), i.property,
     i.range && "range " + i.range + (i.longRange ? "/" + i.longRange : ""), i.weight && i.weight * i.quantity + " lb"].filter(Boolean).join(" · ");
 
-  // withAdd(label, add, table): the list with its Add button above it (no button when the page gave no `add`).
-  const withAdd = (label, add, table) => h("div", {}, add ? h("div", { className: "row addbar" }, h("button", { className: "primary", textContent: label, onclick: add })) : null, table);
+  // What is an item doing: on = worn or held (armor, shields and weapons by Fight Club's own slot, anything else by the worn kind the server keeps).
+  const WORN = { head: "headwear", neck: "amulet", cloak: "cloak", hands: "gloves", wrists: "bracers", belt: "belt", feet: "footwear", ring: "ring" };
+  const isOn = i => (i.fcSlot ? i.equipped : !!i.worn);
+  const wornText = i => [isOn(i) ? (i.fcSlot ? "Equipped" : `Worn (${WORN[i.worn] || i.worn})`) : "", i.needsAttune ? (i.attuned ? "attuned" : "needs attunement") : ""].filter(Boolean).join(", ");
 
-  function inventory(m, add) {
-    return withAdd("+ Add loot", add, dataTable({
-      key: `sheet.${m.id}.items`, rows: flatItems(m), empty: "No items.",
+  // withAdd(adds, table): the list with its purple Add buttons above it. `adds` = [[label, fn], ...]; a button whose fn the page did not give is left out.
+  const withAdd = (adds, table) => {
+    const btns = adds.filter(a => a[1]).map(([label, fn]) => h("button", { className: "primary", textContent: label, onclick: fn }));
+    return h("div", {}, btns.length ? h("div", { className: "row addbar" }, ...btns) : null, table);
+  };
+
+  // inventory(m, hooks): every item as one table. hooks (all optional, the page decides what they do): addLoot() and addItem() open the two Add
+  // pop-ups; setQty(item, n) changes the count (0 removes it); equip(item, on); attune(item, on); give(item); remove(item); ack(gift) acknowledges a gift.
+  // An item another player gave this character is highlighted with "Given to you by <player>" and an Acknowledge button until it is acknowledged.
+  function inventory(m, hooks = {}) {
+    const gifts = new Map((m.gifts || []).map(g => [g.name, g]));   // item name -> the pending gift of that name
+    const rows = flatItems(m).map(i => ({ ...i, gift: i.ref.startsWith("i") ? gifts.get(i.name) : undefined }));   // a gift always lands among the loose items
+    const btn = (label, title, fn, cls = "") => h("button", { className: "tiny " + cls, textContent: label, title, onclick: fn });
+    return withAdd([["+ Add loot", hooks.addLoot], ["+ Add item", hooks.addItem]], dataTable({
+      key: `sheet.${m.id}.items`, rows, empty: "No items.",
       columns: [
-        { label: "Item", text: i => (i.quantity > 1 ? `${i.quantity}× ` : "") + i.name.trim() + (i.magic ? " ✦" : "") },
+        { label: "Item", text: i => (i.quantity > 1 ? `${i.quantity}× ` : "") + i.name.trim() + (i.magic ? " ✦" : ""),
+          show: i => h("span", {}, (i.quantity > 1 ? `${i.quantity}× ` : "") + i.name.trim() + (i.magic ? " ✦" : ""),
+            i.gift ? h("div", { className: "giftnote" }, `Given to you by ${i.gift.from}`, i.gift.qty > 1 ? ` (${i.gift.qty})` : "", " ", hooks.ack ? btn("Acknowledge", "Keep it: end the highlight", () => hooks.ack(i.gift), "primary") : null) : null) },
         { label: "Type", text: i => i.type || i.detail, filter: true },
         { label: "Where", text: i => i.where, filter: true },
-        { label: "Worn", text: i => (i.equipped ? "Equipped" : ""), filter: true },
+        { label: "Worn", text: wornText, filter: true },
         { label: "Stats", text: itemStats },
         { label: "Value", text: i => gp(i.value) },
       ],
-      detail: i => i.text || i.detail || null, rowClass: i => (i.equipped ? "equipped" : ""),
+      detail: i => i.text || i.detail || null, rowClass: i => [isOn(i) && i.active !== false ? "equipped" : "", i.gift ? "gift" : ""].filter(Boolean).join(" "),
+      actions: i => [
+        hooks.setQty ? btn("−", "One fewer (the last one removes the item)", () => hooks.setQty(i, i.quantity - 1)) : null,
+        hooks.setQty ? btn("+", "One more", () => hooks.setQty(i, i.quantity + 1)) : null,
+        hooks.equip && i.canEquip ? btn(isOn(i) ? "Unequip" : "Equip", isOn(i) ? "Take it off: it stops counting" : "Wear or hold it (one belt, one pair of gloves ... the limits are checked)", () => hooks.equip(i, !isOn(i))) : null,
+        hooks.attune && i.needsAttune ? btn(i.attuned ? "End attunement" : "Attune", i.attuned ? "End your attunement to it: its bonuses stop" : "Attune to it (3 items at most)", () => hooks.attune(i, !i.attuned)) : null,
+        hooks.give ? btn("Give", "Give it to another player", () => hooks.give(i)) : null,
+        hooks.remove ? btn("✕", "Remove it from the character", () => hooks.remove(i), "danger") : null,
+      ],
     }));
   }
 
@@ -59,7 +84,7 @@ const Sheet = (() => {
     const rows = [...m.spells].sort((a, b) => a.level - b.level || b.prepared - a.prepared || a.name.localeCompare(b.name));
     // The spell slot tracker (the same pips as the Tracker page: Vitals.slots), above the list; nothing for a character with no slots.
     const slots = patch && panel(m, patch, run => { const pips = Vitals.slots(m, run); return pips.length ? h("div", { className: "spellslots" }, h("h3", { textContent: "Spell slots" }), ...pips) : h("span"); });
-    return h("div", {}, slots, withAdd("+ Add spell", add, dataTable({
+    return h("div", {}, slots, withAdd([["+ Add spell", add]], dataTable({
       key: `sheet.${m.id}.spells`, rows, empty: "No spells.",
       columns: [
         { label: "Spell", text: s => s.name },
@@ -83,7 +108,7 @@ const Sheet = (() => {
       ...m.notes.map(n => ({ ...n, source: "Note" }))];
   }
   function features(m, add) {
-    return withAdd("+ Add note", add, dataTable({
+    return withAdd([["+ Add note", add]], dataTable({
       key: `sheet.${m.id}.features`, rows: featureRows(m), empty: "No features, feats or notes.",
       columns: [{ label: "Name", text: f => f.name }, { label: "Source", text: f => f.source, filter: true }],
       detail: f => f.text || null,
@@ -165,7 +190,8 @@ const Sheet = (() => {
     return panel(m, patch, run => {
       const abilities = card("Abilities and saving throws", h("div", { className: "stats" }, m.abilities.map((a, i) => {
         const sv = m.saves[i];
-        return h("div", { className: "stat" }, h("div", { className: "muted", textContent: a.name }), h("b", { textContent: sgn(a.mod) }), h("div", { textContent: a.score }),
+        return h("div", { className: "stat", title: a.why.length ? `Base ${a.base}: ` + a.why.map(w => `${w.value >= 0 ? "+" : ""}${w.value} ${w.source}`).join(", ") : "" }, h("div", { className: "muted", textContent: a.name }), h("b", { textContent: sgn(a.mod) }), h("div", { textContent: a.score }),
+          a.score !== a.base ? h("div", { className: "muted", textContent: `base ${a.base}` }) : null,
           h("div", { className: "muted" + (sv.proficient ? " prof" : ""), textContent: `Save ${sgn(sv.mod)}${sv.proficient ? " ●" : ""}`, title: sv.proficient ? "Proficient" : "" }));
       })));
       const skills = card("Skills", dataTable({

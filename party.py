@@ -50,6 +50,7 @@ import json
 import os
 import re
 import threading
+import time
 import uuid
 import zipfile
 from pathlib import Path
@@ -59,8 +60,11 @@ from flask import Blueprint, Response, abort, jsonify, request, send_file
 
 import auth
 import charcalc
+import fcedit
 import fcformat
 import fcmonster
+import gear
+import gloan5e
 
 try:  # hardened parser if available (entity-expansion attacks), stdlib otherwise
     # defusedxml is a third-party drop-in for ElementTree's parsing functions that refuses
@@ -131,6 +135,13 @@ def _trackers(ex):
     if r.get("max", 0) > 0 or r.get("cur", 0) > 0:
         return [{"id": "legacy", "label": r.get("label", "Mana"), "cur": r.get("cur", 0), "max": r.get("max", 0)}]
     return []
+
+
+def _gifts(cid, root):
+    """The pending gifts of one character: items another player gave them, not yet acknowledged. A gift whose item no longer exists (it was used up or
+    given on) is not listed. Kept in the sidecar file as {id, name, qty, from, at}: the highlight on the sheet, never part of the Fight Club file."""
+    names = {_t(i, "name") for i in root.findall("item")}
+    return [g for g in _extra().get(cid, {}).get("gifts", []) if g.get("name") in names]
 
 
 def _save_extra(d):
@@ -233,7 +244,7 @@ def _feats(parent):
     return [{"name": _t(f, "name"), "text": _t(f, "text")} for f in parent.findall("feat")]
 
 
-def _item(it):
+def _item(it, ref="", st=None):
     """Convert one Fight Club <item> element into a flat dict for the page.
 
     Field meanings: type = numeric code (see ITEM_TYPES); magic = "1" means magical;
@@ -241,7 +252,7 @@ def _item(it):
     weapon properties are decoded from their numeric codes (DAMAGE_TYPES, WEAPON_PROPS).
     `bonus` = the item's own numbers from its <mod> children: atk and dmg (a +2 weapon) and ac
     (a +2 armor); a name that starts "+1 " counts as +1/+1 when the item has no valued mod.
-    `equipped` is derived: only armor/shield/weapon/ring/wondrous types can be worn, and
+    `equipped` is derived (fcedit.is_equipped): only armor/shield/weapon/ring/wondrous types can be worn, and
     Fight Club's <slot> is "" or "1" when the item is not in an equipment slot (so any
     other slot value means it is equipped).
     """
@@ -268,8 +279,16 @@ def _item(it):
         "property": ", ".join(label for bit, label in WEAPON_PROPS if code & bit), "propCode": code,
         "range": _t(it, "weaponRange"), "longRange": _t(it, "weaponLongRange"),
         "bonus": bonus,
-        "equipped": _t(it, "type") in ("1", "2", "3", "4", "5", "6", "11", "14")
-        and _t(it, "slot") not in ("", "1"),
+        "equipped": fcedit.is_equipped(it),
+        # what the item is doing (gear.states): its key for the extras, the kind it is worn as ("" if not worn) and the kind its name says, whether it needs
+        # attunement and is attuned, and whether its own bonuses (score, armor class) count
+        "key": st["key"] if st else "", "kind": st["kind"] if st else None, "worn": st["worn"] if st else "",
+        "needsAttune": st["needs"] if st else False, "attuned": st["attuned"] if st else False, "active": st["active"] if st else fcedit.is_equipped(it),
+        "fcSlot": _t(it, "type") in gear.FC_SLOT_TYPES,
+        # where the item is in the file ("i3", "c1.2"): how the page names it when it changes, equips, gives or removes it (see fcedit.py)
+        "ref": ref,
+        # whether Equip / Unequip makes sense for it: loose armor, shields and weapons, rings, wondrous items, and anything whose name says what it is
+        "canEquip": ref.startswith("i") and (_t(it, "type") in gear.FC_SLOT_TYPES + ("11", "14") or bool(st and st["kind"])),
     }
 
 
@@ -356,7 +375,10 @@ def summary(cid, root):
         # death saving throws, kept in the sidecar file (Fight Club has no field for them)
         "deaths": ex.get("deaths", {"s": 0, "f": 0}),
         # <abilities> is "STR,DEX,CON,INT,WIS,CHA" scores; [:6] keeps just those six.
-        "mods": [_mod(v) for v in _ints(_t(root, "abilities"))[:6]],
+        # the six ability modifiers of the SHOWN scores: base plus the race, level-up, feat and equipped-item bonuses (fcedit.ability_scores)
+        "mods": [_mod(v) for v in fcedit.ability_scores(root, ex)[1]],
+        # items other players gave this character that have not been acknowledged yet ({id, name, qty, from, at}); one whose item is gone is not listed
+        "gifts": _gifts(cid, root),
     }
 
 
@@ -365,9 +387,9 @@ def detail(cid, root):
     background, classes (with features), spells, notes, items, containers and total weight.
     Pure read; used by GET /api/party/<cid> for the full character page."""
     d = summary(cid, root)
-    scores = _ints(_t(root, "abilities"))[:6]
-    # zip pairs names with scores in order, stopping at the shorter list.
-    d["abilities"] = [{"name": n, "score": s, "mod": _mod(s)} for n, s in zip(ABILITIES, scores)]
+    base, scores, why = fcedit.ability_scores(root, _extra().get(cid, {}))
+    # score = what Fight Club shows (base + bonuses); `why` lists the bonuses (race, level-ups ...) so the page can explain it
+    d["abilities"] = [{"name": n, "score": s, "base": b0, "mod": _mod(s), "why": w} for n, s, b0, w in zip(ABILITIES, scores, base, why)]
     d["xp"] = _t(root, "xp")
     d["money"] = _t(root, "money")
     d["unarmed"] = _t(root, "unarmed")
@@ -413,11 +435,12 @@ def detail(cid, root):
     d["companions"] = [fcmonster.parse(i, m) for i, m in enumerate(root.findall("monster"))]
     d["feats"] = _feats(root)
     d["notes"] = [{"name": _t(n, "name"), "text": _t(n, "text")} for n in root.findall("note")]
-    d["items"] = [_item(i) for i in root.findall("item")]
+    st = gear.states(root, _extra().get(cid, {}), fcedit.is_equipped)
+    d["items"] = [_item(i, f"i{n}", st[i]) for n, i in enumerate(root.findall("item"))]
     d["containers"] = [
         {"name": _t(c, "name"), "weight": _num(_t(c, "weight")), "value": _num(_t(c, "value")),
-         "items": [_item(i) for i in c.findall("item")]}
-        for c in root.findall("container")
+         "items": [_item(i, f"c{j}.{k}", st[i]) for k, i in enumerate(c.findall("item"))]}
+        for j, c in enumerate(root.findall("container"))
     ]
     # Carried weight: loose items (weight x quantity) plus each container's own weight and
     # the items inside it; rounded to one decimal place.
@@ -427,7 +450,7 @@ def detail(cid, root):
               for c in d["containers"]),
         1)
     # Proficiency codes (see charcalc): the classes' and the background's <proficiency> numbers, saves below 100 and skills from 100.
-    codes = [int(_num(p.text)) for e in [*root.findall("class"), *( [bg] if bg is not None else [] )] for p in e.findall("proficiency") if p.text]
+    codes = [int(_num(p.text)) for e in [*root.findall("class"), *([bg] if bg is not None else []), *([race] if race is not None else [])] for p in e.findall("proficiency") if p.text]
     d["profs"] = {"saves": sorted({c for c in codes if c < 6}), "skills": sorted({c for c in codes if c >= 100})}
     d.update(charcalc.derive(d))
     return d
@@ -449,17 +472,20 @@ def _characters_from(data: bytes):
 
 
 def _read_upload(f):
-    """Extract ([<character> elements], {portrait uid: base64}) from an uploaded file object `f`.
+    """Read an uploaded file object `f` of EITHER kind -> ([<character> elements], {portrait uid: base64}, {character uid: extras}).
 
-    Fight Club's own .backup files are PLAIN XML; a zip (older exports from this app, or one the user made) containing
-    one is accepted too. zipfile.is_zipfile() sniffs the content; io.BytesIO wraps the in-memory bytes so the zip library
-    can treat them as a file. For zips, every entry ending .xml/.backup is parsed; directories, entries over 200 MiB
-    uncompressed (a "zip bomb" guard) and unparsable entries are skipped.
-    """
-    raw = f.read()  # whole upload as a bytes object
-    if zipfile.is_zipfile(io.BytesIO(raw)):
+    The kind is told from the file itself (gloan5e.load): a Gloan5e file brings its extras; a Fight Club file is converted to the same record with
+    no extras. Fight Club's own .backup files are PLAIN XML; a zip (older exports, or one the user made) containing one is accepted too:
+    zipfile.is_zipfile() sniffs the content, every entry ending .xml/.backup is parsed, and directories, entries over 200 MiB uncompressed (a "zip
+    bomb" guard) and unparsable entries are skipped."""
+    raw, name = f.read(), getattr(f, "filename", "") or ""   # whole upload as a bytes object
+    fc, extras, kind = gloan5e.load(raw, name)
+    if kind == "gloan5e":
+        chars, images = _characters_from(fc)
+        return chars, images, extras
+    if zipfile.is_zipfile(io.BytesIO(fc)):
         chars, images = [], {}
-        with zipfile.ZipFile(io.BytesIO(raw)) as z:
+        with zipfile.ZipFile(io.BytesIO(fc)) as z:
             for info in z.infolist():
                 if info.is_dir() or info.file_size > 200 * 1024 * 1024:
                     continue
@@ -470,8 +496,9 @@ def _read_upload(f):
                         images.update(i)
                     except ET.ParseError:
                         continue
-        return chars, images
-    return _characters_from(raw)
+        return chars, images, {}
+    chars, images = _characters_from(fc)
+    return chars, images, {}
 
 
 def _cid_for(ch, taken):
@@ -487,6 +514,24 @@ def _cid_for(ch, taken):
     return base
 
 
+def _clean_extras(got):
+    """The extras of one character from an uploaded file, cut down to the right shapes (a file is data, never trusted): trackers [{id, label, cur, max}], conditions
+    text, deaths {s, f}, worn {item key: kind or "off"}, attuned {item key: bool}."""
+    out = {}
+    if isinstance(got.get("trackers"), list):
+        out["trackers"] = [{"id": str(t.get("id") or uuid.uuid4().hex[:8])[:12], "label": str(t.get("label", "Tracker"))[:30] or "Tracker", "max": max(0, int(_num(t.get("max")))),
+                            "cur": max(0, min(int(_num(t.get("cur"))), max(0, int(_num(t.get("max"))))))} for t in got["trackers"][:12] if isinstance(t, dict)]
+    if isinstance(got.get("conditions"), str):
+        out["conditions"] = got["conditions"][:200]
+    if isinstance(got.get("deaths"), dict):
+        out["deaths"] = {"s": max(0, min(3, int(_num(got["deaths"].get("s"))))), "f": max(0, min(3, int(_num(got["deaths"].get("f")))))}
+    if isinstance(got.get("worn"), dict):
+        out["worn"] = {str(k)[:20]: v for k, v in got["worn"].items() if v == "off" or v in gear.WORN_KINDS}
+    if isinstance(got.get("attuned"), dict):
+        out["attuned"] = {str(k)[:20]: bool(v) for k, v in got["attuned"].items()}
+    return out
+
+
 @bp.post("/api/party/preview")
 def preview_import():
     """POST /api/party/preview : look inside an upload (multipart form field "file") WITHOUT saving anything.
@@ -499,7 +544,7 @@ def preview_import():
     if not f:
         return jsonify(error="No file uploaded"), 400
     try:
-        chars, images = _read_upload(f)
+        chars, images, _ = _read_upload(f)
     except Exception as e:
         return jsonify(error=f"Could not read file: {e}"), 400
     if not chars:
@@ -533,7 +578,7 @@ def import_party():
     if not f:
         return jsonify(error="No file uploaded"), 400
     try:
-        chars, images = _read_upload(f)
+        chars, images, extras = _read_upload(f)
     except Exception as e:
         return jsonify(error=f"Could not read file: {e}"), 400
     if not chars:
@@ -563,6 +608,14 @@ def import_party():
                 if ref in images and images[ref]:
                     IMG.mkdir(parents=True, exist_ok=True)
                     (IMG / f"{cid}.b64").write_text(images[ref])
+                # The extras that came in a Gloan5e file (trackers, conditions, death saves, worn and attuned items) replace this character's; a
+                # Fight Club file has none, and then the extras the character already has are kept.
+                got = extras.get(_t(ch, "uid"))
+                if got:
+                    mine = ex.setdefault(cid, {})
+                    for k in gloan5e.EXTRA_KEYS:
+                        mine.pop(k, None)
+                    mine.update(_clean_extras(got))
                 if owner:
                     ex.setdefault(cid, {})["owner"] = owner
                 imported.append(cid)
@@ -639,6 +692,8 @@ def update_member(cid):
       creatures    [{i, hp, hpMax, ac}]  the companions (Fight Club <monster>) to KEEP, i = position in the file; those not listed are removed. Hit points and
                    AC are written into the monster itself (hpCurrent, hpMax, armor).
       classTrackers [{label, cur}]  the class's own counters (Channel Divinity ...): the value left now -> the <tracker> in the class
+      name, xp, unarmed, abilities [6 base scores], race {name, speed, age, height, weight, eyes, skin, hair}, background {name}, classes [{name, level, hd,
+                   armor, weapons, tools}], slots [9 maximums], profs {saves, skills}   the Edit character form (see fcedit.edit_character)
     Response: the updated summary() JSON. 404 if unknown id. A non-numeric value makes
     int() raise, which Flask turns into an HTTP 500 error.
     Side effects: rewrites data/party/<cid>.xml (always) and data/party_extra.json (only if
@@ -695,6 +750,12 @@ def update_member(cid):
         if "classTrackers" in body:
             for t in body["classTrackers"]:
                 fcmonster.set_class_tracker(root, str(t.get("label", "")), int(_num(t.get("cur"))))
+        edit = {k: body[k] for k in ("name", "xp", "unarmed", "abilities", "race", "background", "classes", "slots", "profs") if k in body}
+        if edit:   # the Edit character form (fcedit.edit_character)
+            try:
+                fcedit.edit_character(root, edit)
+            except (ValueError, TypeError, AttributeError) as err:
+                return jsonify(error=str(err) or "That is not a valid character change"), 400
         if "hitDice" in body:
             for c, v in zip(root.findall("class"), body["hitDice"]):
                 e = c.find("hdCurrent")
@@ -740,13 +801,8 @@ def _text(v, n):
 
 
 def _append(root, parent, elem, after, before=()):
-    """Put `elem` inside `parent` after the last child tagged one of `after`, else just before the first tagged one of `before`, else last.
-    Keeps Fight Club's own order (items, containers, feats, notes, then the slots and money) so the file still looks the way it writes it."""
-    kids = list(parent)
-    last = max((i for i, k in enumerate(kids) if k.tag in after), default=None)
-    if last is None:
-        last = next((i - 1 for i, k in enumerate(kids) if k.tag in before), len(kids) - 1)
-    parent.insert(last + 1, elem)
+    """Put `elem` inside `parent` in Fight Club's own order (see fcedit.append_after). (`root` is unused: kept so the calls read the same.)"""
+    fcedit.append_after(parent, elem, after, before)
 
 
 def _sub(parent, tag, text):
@@ -757,28 +813,179 @@ def _sub(parent, tag, text):
 
 @bp.post("/api/party/<cid>/items")
 def add_item(cid):
-    """POST /api/party/<id>/items {name, type, rarity, text, attunement} -> {"ok": true, "name"}: add a magic item (from the item search) to the
-    character's loose items. `type` is Open5e's ("Wondrous item"); it is turned into Fight Club's type code and shown in the detail line."""
+    """POST /api/party/<id>/items -> {"ok": true, "name"}: add an item to the character's loose items (the same item again just raises its count).
+    Two kinds of body:
+      from the magic item search {name, type (Open5e's: "Wondrous item"), rarity, text, attunement}
+      from the Add item form      {name, typeCode, detail, text, quantity, weight, value, magic, ac, damage, damageType}
+      a bag                       {name, bag: true, weight, value, text}   (a <container>; 2 at most)
+    """
     _guard(cid)
     b = request.get_json(force=True, silent=True) or {}
     name = _text(b.get("name"), 80)
     if not name:
         return jsonify(error="The item needs a name"), 400
-    kind, rarity = _text(b.get("type"), 60), _text(b.get("rarity"), 20)
     with lock:
         root = _load(cid)
-        it = ET.Element("item")
-        _sub(it, "name", name)
-        _sub(it, "detail", ", ".join(x for x in (kind, rarity, "requires attunement" if b.get("attunement") else "") if x))
-        _sub(it, "text", _text(b.get("text"), 6000))
-        _sub(it, "type", next((c for p, c in ITEM_CODE_BY_TYPE if kind.lower().startswith(p)), "15"))
-        _sub(it, "magic", "1")
-        _sub(it, "weight", "0.0")
-        _sub(it, "value", "0.0")
-        _sub(it, "quantity", "1")
-        _append(root, root, it, ("item", "container"), ("feat", "note", "slots", "slotsCurrent", "money"))
+        if b.get("bag"):   # a bag, pack or chest: a <container>, two at most
+            try:
+                fcedit.add_bag(root, fcedit.make_bag(b))
+            except ValueError as err:
+                return jsonify(error=str(err)), 400
+            _write(cid, root)
+            return jsonify(ok=True, name=name)
+        if "typeCode" in b:
+            try:
+                it = fcedit.make_item(b, ITEM_TYPES)
+            except ValueError as err:
+                return jsonify(error=str(err)), 400
+        else:
+            kind, rarity = _text(b.get("type"), 60), _text(b.get("rarity"), 20)
+            it = ET.Element("item")
+            _sub(it, "name", name)
+            _sub(it, "detail", ", ".join(x for x in (kind, rarity, "requires attunement" if b.get("attunement") else "") if x))
+            _sub(it, "text", _text(b.get("text"), 6000))
+            _sub(it, "type", next((c for p, c in ITEM_CODE_BY_TYPE if kind.lower().startswith(p)), "15"))
+            _sub(it, "magic", "1")
+            _sub(it, "weight", "0.0")
+            _sub(it, "value", "0.0")
+            _sub(it, "quantity", "1")
+        fcedit.add_to(root, it)
         _write(cid, root)
     return jsonify(ok=True, name=name)
+
+
+def _forget(mine, key):
+    """An item left the character: drop what the extras said about it (worn kind, attunement)."""
+    for field in ("worn", "attuned"):
+        mine.get(field, {}).pop(key, None)
+
+
+@bp.patch("/api/party/<cid>/items/<ref>")
+def change_item(cid, ref):
+    """PATCH /api/party/<id>/items/<ref> -> {"ok": true, "removed": bool}. Body, any of:
+      quantity   n            how many; 0 removes the item
+      equip      true|false   wear / hold it or take it off. Armor, shields and weapons use Fight Club's own slots (two hands, one suit of armor: fcedit.equip).
+                              Any other item is worn as a `kind` (gear.WORN_KINDS: belt, feet, ring ...: the one its name says, else the `kind` sent) if the limit
+                              for that kind allows (gear.can_wear); the worn kind is kept in the extras beside the file
+      attune     true|false   attune to it or end it; at most 3 items at once (gear.can_attune); only for items that need attunement
+    Refused with 400 and a message that names the item in the way."""
+    _guard(cid)
+    b = request.get_json(force=True, silent=True) or {}
+    with lock:
+        root, ex = _load(cid), _extra()
+        mine = ex.setdefault(cid, {})
+        try:
+            parent, it = fcedit.item_at(root, ref)
+            sts = gear.states(root, mine, fcedit.is_equipped)
+            st = sts[it]
+            removed = False
+            if "quantity" in b:
+                removed = fcedit.set_quantity(root, ref, int(_num(b["quantity"])))
+                if removed:
+                    _forget(mine, st["key"])
+            if "equip" in b:
+                if st["fc"]:
+                    fcedit.equip(root, ref, bool(b["equip"]))
+                elif parent is not root:
+                    raise ValueError("Take it out of the bag first: only loose items can be worn")
+                elif b["equip"]:
+                    kind = str(b.get("kind") or st["kind"] or "")
+                    gear.can_wear(sts, it, kind)
+                    mine.setdefault("worn", {})[st["key"]] = kind
+                    if not _t(it, "slot"):
+                        fcedit.put(it, "slot", "1")   # Fight Club's own rule counts an item with a slot as carried and active
+                else:
+                    mine.setdefault("worn", {})[st["key"]] = "off"
+            if "attune" in b:
+                if b["attune"]:
+                    gear.can_attune(sts, it)
+                elif not st["needs"]:
+                    raise ValueError("That item does not need attunement")
+                mine.setdefault("attuned", {})[st["key"]] = bool(b["attune"])
+        except ValueError as err:
+            return jsonify(error=str(err)), 400
+        _write(cid, root)
+        _save_extra(ex)
+    return jsonify(ok=True, removed=removed)
+
+
+@bp.delete("/api/party/<cid>/items/<ref>")
+def delete_item(cid, ref):
+    """DELETE /api/party/<id>/items/<ref> : take the whole stack out of the character."""
+    _guard(cid)
+    with lock:
+        root, ex = _load(cid), _extra()
+        try:
+            _, it = fcedit.item_at(root, ref)
+            _forget(ex.setdefault(cid, {}), gear.states(root, ex.get(cid, {}), fcedit.is_equipped)[it]["key"])
+            fcedit.remove_item(root, ref)
+        except ValueError as err:
+            return jsonify(error=str(err)), 400
+        _write(cid, root)
+        _save_extra(ex)
+    return jsonify(ok=True)
+
+
+# ---- giving an item to another player. The item moves between the two characters' files (a stack is split); the receiver's sheet highlights it
+# "Given to you by <player>" until they acknowledge it. The note lives in the sidecar file under the receiver (gifts), not in the Fight Club file.
+def _recipients():
+    """The characters the signed-in user may give items to: the DM, any other character; a player, the other players' characters in the loaded
+    campaign's party (never their own). [{id, name, owner}]"""
+    user = auth.current_user()
+    if not user:
+        return []
+    ids = _ids() if user["role"] == "dm" else [i for i in (active_ids() or []) if (DIR / f"{i}.xml").exists() and not _may_use(i)]
+    ex = _extra()
+    return [{"id": i, "name": _t(_load(i), "name"), "owner": ex.get(i, {}).get("owner", "")} for i in ids]
+
+
+@bp.get("/api/party/recipients")
+def list_recipients():
+    """GET /api/party/recipients -> [{id, name, owner}]: who the signed-in user can give an item to (see _recipients)."""
+    return jsonify(_recipients())
+
+
+@bp.post("/api/party/<cid>/items/<ref>/give")
+def give_item(cid, ref):
+    """POST /api/party/<id>/items/<ref>/give {to: character id, quantity} -> {"ok": true, "name"}: move that many of the item to another character.
+    The receiver gets a "Given to you by <you>" note until they acknowledge it."""
+    _guard(cid)
+    b = request.get_json(force=True, silent=True) or {}
+    to = str(b.get("to") or "")
+    if to == cid or to not in {r["id"] for r in _recipients()}:
+        return jsonify(error="You cannot give items to that character"), 400
+    user = auth.current_user()
+    with lock:
+        src, dst = _load(cid), _load(to)
+        ex = _extra()
+        try:
+            _, it0 = fcedit.item_at(src, ref)
+            key0, have0 = gear.states(src, ex.get(cid, {}), fcedit.is_equipped)[it0]["key"], fcedit.quantity(it0)
+            name = fcedit.give(src, ref, dst, int(_num(b.get("quantity"), 1)))
+        except ValueError as err:
+            return jsonify(error=str(err)), 400
+        if int(_num(b.get("quantity"), 1)) == have0:
+            _forget(ex.setdefault(cid, {}), key0)   # the whole stack left: what the extras said about it goes too
+        _write(cid, src)
+        _write(to, dst)
+        giver = user["name"] if user["name"] != "local" else (ex.get(cid, {}).get("owner") or _t(src, "name"))
+        gifts = ex.setdefault(to, {}).setdefault("gifts", [])
+        gifts.append({"id": uuid.uuid4().hex[:8], "name": name, "qty": max(1, int(_num(b.get("quantity"), 1))), "from": giver, "at": int(time.time())})
+        del gifts[:-50]
+        _save_extra(ex)
+    return jsonify(ok=True, name=name)
+
+
+@bp.delete("/api/party/<cid>/gifts/<gid>")
+def acknowledge_gift(cid, gid):
+    """DELETE /api/party/<id>/gifts/<gift id> : the receiver acknowledges a gift, which ends its highlight."""
+    _guard(cid)
+    with lock:
+        ex = _extra()
+        mine = ex.get(cid, {})
+        mine["gifts"] = [g for g in mine.get("gifts", []) if g.get("id") != gid]
+        _save_extra(ex)
+    return jsonify(ok=True)
 
 
 @bp.post("/api/party/<cid>/spells")
@@ -905,19 +1112,24 @@ def _stream_download(source, filename, mimetype="application/zip"):
 
 
 def _backup_download(ids, download_name):
-    """Send the characters `ids` as a Fight Club backup. By default that is Fight Club's own format: ONE PLAIN XML FILE named
-    <something>.backup (see fcformat.py for the rules). "?format=zip" gives the old form, the same file inside a zip, in case the
-    plain file is not accepted. The caller has already checked the user may use every id. The sidecar-only data (mana,
-    conditions) is NOT included."""
+    """Send the characters `ids` as a download in the format chosen by ?as= : "fightclub5e" (the default) or "gloan5e".
+
+    ONE path builds both: the characters become a Gloan5e file (Fight Club backup + the extras kept beside it, gloan5e.pack), and a Fight Club download is
+    that file STRIPPED back to the Fight Club backup inside it (gloan5e.strip): plain XML named <something>.backup (see fcformat.py), byte for byte what
+    Fight Club reads. "?format=zip" (Fight Club only) gives the same backup inside a zip. The caller has already checked the user may use every id."""
     with lock:
         chars = [_load(i) for i in ids]
-        images = {}
+        images, extras, ex = {}, {}, _extra()
         for cid, ch in zip(ids, chars):
             ref = (ch.findtext("imageData/uid") or "").strip()
             b64 = _image_b64(cid, ch) if ref else ""
             if ref and b64 and not (ch.findtext("imageData") or "").strip():   # the picture is held outside the character
                 images[ref] = b64
-        xml = fcformat.encode(chars, images)
+            extras[_t(ch, "uid")] = {k: ex.get(cid, {}).get(k) for k in gloan5e.EXTRA_KEYS}
+        blob = gloan5e.pack(fcformat.encode(chars, images), extras)
+    if request.args.get("as") == "gloan5e":
+        return _stream_download(io.BytesIO(blob), download_name.replace("FightClub5", "Gloan5e") + gloan5e.EXT, "application/octet-stream")
+    xml = gloan5e.strip(blob)
     if request.args.get("format") == "zip":
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:

@@ -57,13 +57,13 @@ function characterTable(key, rows, { users, buttons, empty }) {
       { label: "HP", text: r => (r.present === false ? "waiting for upload" : `${r.hp}/${r.hpMax}`) },
     ],
     // Every row that has a sheet here also gets a download (a Fight Club zip of just that character).
-    actions: r => [...buttons(r), r.present === false ? null : h("button", { className: "btn", onclick: () => safeDownload(`/api/party/${r.id}/export.zip`), textContent: "⬇", title: "Download this character (Fight Club backup)" })],
+    actions: r => [...buttons(r), r.present === false ? null : h("button", { className: "btn", onclick: () => safeDownload(fmtUrl(`/api/party/${r.id}/export.zip`)), textContent: "⬇", title: "Download this character (in the format chosen beside the download-all button)" })],
   });
 }
 
 // uploadBox(users): the Fight Club import form. A DM also gets a drop-down to choose whose character it is.
 function uploadBox(users) {
-  const file = h("input", { type: "file", accept: ".backup,.xml,.zip" });
+  const file = h("input", { type: "file", accept: ".backup,.xml,.zip,.gloan5e" });
   const owner = users && h("select", {}, h("option", { value: "", textContent: "(no owner)" }),
     users.map(u => h("option", { value: u.name, textContent: u.name })));
   const msg = status();
@@ -77,7 +77,7 @@ function uploadBox(users) {
     } });
     msg.say(res ? `Imported ${res.imported.length} character(s)` : "Nothing imported");
   } });
-  return h("div", {}, h("p", { className: "muted", textContent: "Fight Club 5 backup (.backup / .xml) or a zip containing one. You choose which characters in it to import; characters with the same id are updated." }),
+  return h("div", {}, h("p", { className: "muted", textContent: "A Fight Club 5 backup (.backup / .xml), a Gloan5e file (.gloan5e: a backup plus worn items, attunement, conditions and trackers) or a zip containing a backup. The type is recognised from the file. You choose which characters in it to import; characters with the same id are updated." }),
     h("div", { className: "row" }, file, owner, btn), msg,
     // The Fight Club 5e collection zip (a button, not a link: safeDownload prints a failure beside the button). "Download all characters" is in the
     // Characters box above.
@@ -127,7 +127,7 @@ async function playerView(me) {
   const inParty = new Set(camps.myCharactersInParty);
   const msg = status();
   return [
-    box("mine", "Your characters", h("div", { className: "row" }, h("button", { onclick: () => safeDownload("/api/party/export.zip"), textContent: "⬇ Download all my characters", title: "One Fight Club backup file holding every character assigned to you" })), characterTable("mine", mine.map(c => ({ ...c, class: c.class })), {
+    box("mine", "Your characters", h("div", { className: "row" }, formatPicker(), h("button", { onclick: () => safeDownload(fmtUrl("/api/party/export.zip")), textContent: "⬇ Download all my characters", title: "One Fight Club backup file holding every character assigned to you" })), characterTable("mine", mine.map(c => ({ ...c, class: c.class })), {
       empty: "You have not uploaded a character yet.",
       buttons: c => [inParty.has(c.id) ? h("span", { className: "ok", textContent: `In ${camps.loaded}` }) : null,
         h("button", { textContent: "Open sheet", onclick: () => openSheet(c.id) })],
@@ -165,7 +165,7 @@ async function dmView(me) {
       buttons: p => [p.present ? h("button", { textContent: "Open", onclick: () => openSheet(p.id) }) : null,
         h("button", { className: "danger", textContent: "Remove from campaign", onclick: () => setParty([...inParty].filter(id => id !== p.id)) })],
     })),
-    box("roster", "Characters", h("div", { className: "row" }, h("button", { onclick: () => safeDownload("/api/party/export.zip"), textContent: "⬇ Download all characters", title: "One Fight Club backup file holding every character" })), characterTable("roster", rosterRows, {
+    box("roster", "Characters", h("div", { className: "row" }, formatPicker(), h("button", { onclick: () => safeDownload(fmtUrl("/api/party/export.zip")), textContent: "⬇ Download all characters", title: "One Fight Club backup file holding every character" })), characterTable("roster", rosterRows, {
       users, empty: chars.length ? "Every uploaded character is in the campaign." : "No characters uploaded yet.",
       buttons: c => [h("button", { className: "primary", textContent: "Add to campaign", onclick: () => setParty([...inParty, c.id]) }),
         h("button", { textContent: "Open", onclick: () => openSheet(c.id) })],

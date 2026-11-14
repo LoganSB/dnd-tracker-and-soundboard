@@ -44,6 +44,21 @@
   // a message from a timer, the normal alert box is used.)
   window.alert = message => { if (recent(30000)) show(String(message), last); else nativeAlert(message); };
 
+  // The character download comes in two formats: "Fight Club 5e" (the plain backup, what the Fight Club app reads) and "Gloan5e" (the same backup plus this
+  // app's extras in one file; see gloan5e.py). formatPicker() is the drop-down (the choice is remembered); fmtUrl(url) adds the choice to a character
+  // download address.
+  const FORMATS = [["fightclub5e", "Fight Club 5e"], ["gloan5e", "Gloan5e"]];
+  const fmtGet = () => { try { const v = localStorage.getItem("dl.format"); return FORMATS.some(f => f[0] === v) ? v : "fightclub5e"; } catch (_) { return "fightclub5e"; } };
+  window.fmtUrl = url => url + (url.includes("?") ? "&" : "?") + "as=" + fmtGet();
+  window.formatPicker = () => {
+    const s = document.createElement("select");
+    s.title = "File format for character downloads: Fight Club 5e is the plain backup; Gloan5e also carries this app's extras (worn items, attunement, conditions, trackers)";
+    FORMATS.forEach(([v, l]) => s.append(Object.assign(document.createElement("option"), { value: v, textContent: l })));
+    s.value = fmtGet();
+    s.onchange = () => { try { localStorage.setItem("dl.format", s.value); } catch (_) { /* not remembered */ } };
+    return s;
+  };
+
   window.safeDownload = async url => {
     const ctl = new AbortController();
     let r;

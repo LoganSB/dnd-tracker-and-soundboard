@@ -14,7 +14,7 @@
 //   GET    /api/active-party        (DM) which of them are in the loaded campaign's party: listed first in the picker
 //   GET    /api/party/<id>          one full character (sheet.js reads the fields: see party.detail in party.py)
 //   GET    /api/party/<id>/portrait image, used directly as an <img src>
-//   GET    /api/party/<id>/export.zip  download one character (the DM: any; a player: their own)
+//   GET    /api/party/<id>/export.zip[?as=gloan5e]  download one character (the DM: any; a player: their own); plain Fight Club backup unless as=gloan5e
 //   PATCH  /api/party/<id>          HP, hit dice, conditions, inspiration, creatures (sheet.js; tracker.js sends the same)
 //
 // HOW THE PIECES FIT
@@ -69,8 +69,8 @@ async function renderDetail(id) {
   // Two downloads: this character, and ALL of them in one Fight Club backup (the server only includes the characters this user may see: the DM
   // gets every character, a player only the ones assigned to them).
   const isDM = document.body.dataset.role === "dm";
-  bar.append(picker, h("button", { className: "btn", onclick: () => safeDownload(`/api/party/${id}/export.zip`), textContent: "⬇ Download this character" }),
-    h("button", { className: "btn", onclick: () => safeDownload("/api/party/export.zip"), textContent: isDM ? "⬇ Download all characters" : "⬇ Download all my characters",
+  bar.append(picker, formatPicker(), h("button", { className: "btn", onclick: () => safeDownload(fmtUrl(`/api/party/${id}/export.zip`)), textContent: "⬇ Download this character" }),
+    h("button", { className: "btn", onclick: () => safeDownload(fmtUrl("/api/party/export.zip")), textContent: isDM ? "⬇ Download all characters" : "⬇ Download all my characters",
       title: "One Fight Club backup file holding " + (isDM ? "every character" : "every character assigned to you") }));
   fillPicker(picker, id);
   const m = await get("/api/party/" + id);
@@ -92,6 +92,9 @@ async function renderDetail(id) {
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
     Object.assign(m, await res.json());
   };
+  // The Edit character button (editchar.js): the form's changes are saved with one PATCH, then the page loads again with the new numbers.
+  bar.append(h("button", { className: "btn", textContent: "✎ Edit character", title: "Change the scores, race, class, spell slots and proficiencies",
+    onclick: () => EditCharacter.open(m, async changes => { await patch(changes); location.reload(); }) }));
   // The Skills and Stats page is rebuilt every time it is opened (the Tracker page may have changed things meanwhile), so it loads the
   // character again first.
   const statsPanel = () => {
@@ -112,7 +115,8 @@ async function renderDetail(id) {
   // below show them) and, under it, hit dice, conditions, statistics, attacks and creatures (sheet.js).
   const trackerPanel = () => {
     const live = h("div", { className: "trackerlist" });
-    mountTracker(live, { only: id, initiative: false, conditions: false, inspiration: false });
+    mountTracker(live, { only: id, initiative: false, conditions: false, inspiration: false,
+      onChange: async () => { try { Object.assign(m, await get("/api/party/" + id)); extras?.redraw(); } catch (_) { /* next change tries again */ } } });
     extras = Sheet.trackerExtras(m, patch, addCompanion);
     return h("section", { className: "card sheetcard" }, live, extras);
   };
@@ -140,6 +144,69 @@ async function renderDetail(id) {
       const f = await api("/api/items/" + encodeURIComponent(row.slug));
       await post("items", { name: f.name, type: f.type, rarity: f.rarity, text: (f.desc || "").replace(/\*\*/g, ""), attunement: !!(f.requires_attunement || "").trim() });
     }, "inv").add;
+  };
+  // ---- the Inventory page's hooks (sheet.js inventory): every change goes to the server, then the character is loaded again and the Inventory (and
+  // the Tracker page's statistics and attacks, which depend on what is worn) are drawn again.
+  const ITEM_TYPES = [["15", "Gear / Treasure"], ["5", "Melee Weapon"], ["6", "Ranged Weapon"], ["7", "Ammunition"], ["1", "Light Armor"], ["2", "Medium Armor"], ["3", "Heavy Armor"],
+    ["4", "Shield"], ["12", "Potion"], ["13", "Scroll"], ["11", "Ring"], ["14", "Wondrous Item"], ["9", "Staff"], ["10", "Wand"], ["8", "Rod"], ["bag", "Bag / container (2 at most)"]];
+  const call = async (method, path, body) => {
+    const res = await fetch(`/api/party/${id}/${path}`, { method, headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
+  };
+  const changed = async () => { Object.assign(m, await get("/api/party/" + id)); extras?.redraw(); sheet.show("inv"); };
+  const itemCall = (method, ref, body) => call(method, `items/${ref}`, body).then(changed).catch(e => alert(e.message));
+  const addItem = () => Nodes.form({
+    title: "Add an item", saveLabel: "Add item",
+    note: "Adding the same item again raises its count. New items start carried, not worn: use Equip to wear or hold them (and Attune for items that need it).",
+    fields: [{ key: "name", label: "Name", placeholder: "e.g. Rope (50 ft)" }, { key: "typeCode", label: "Kind", type: "select", value: "15", options: ITEM_TYPES.map(([value, label]) => ({ value, label })) },
+      { key: "quantity", label: "How many", type: "number", min: 1, max: 9999, value: 1 }, { key: "weight", label: "Weight each (lb)", type: "number", min: 0, step: "any", value: 0 },
+      { key: "value", label: "Value each (gp)", type: "number", min: 0, step: "any", value: 0 },
+      { key: "ac", label: "Armor class (armor and shields)", type: "number", min: 0, max: 30, value: 0 },
+      { key: "damage", label: "Damage dice (weapons)", placeholder: "e.g. 1d8" },
+      { key: "damageType", label: "Damage type (weapons)", type: "select", value: "", options: [{ value: "", label: "(none)" }, { value: "1", label: "bludgeoning" }, { value: "2", label: "piercing" }, { value: "3", label: "slashing" }] },
+      { key: "magic", label: "Magical", type: "checkbox", value: false }, { key: "text", label: "Description", type: "textarea", rows: 4, max: 6000 }],
+    save: async v => {
+      if (!v.name.trim()) return "Give the item a name";
+      try { await call("POST", "items", v.typeCode === "bag" ? { bag: true, name: v.name.trim(), weight: v.weight, value: v.value, text: v.text } : { ...v, name: v.name.trim() }); } catch (e) { return e.message; }
+      await changed();
+    },
+  });
+  const giveItem = async i => {
+    let who;
+    try { who = (await api("/api/party/recipients")).filter(w => w.id !== id); } catch (e) { alert(e.message); return; }
+    if (!who.length) { Nodes.popup({ title: `Give ${i.name.trim()}`, body: h("p", { className: "muted", textContent: "There is nobody to give it to. A player can give to the other players' characters in the loaded campaign's party." }) }); return; }
+    Nodes.form({
+      title: `Give ${i.name.trim()}`, saveLabel: "Give",
+      note: "It moves to their inventory, highlighted with your name until they acknowledge it. An equipped item has to be unequipped first.",
+      fields: [{ key: "to", label: "Give to", type: "select", value: who[0].id, options: who.map(w => ({ value: w.id, label: w.name + (w.owner ? ` (${w.owner})` : "") })) },
+        { key: "quantity", label: `How many (you have ${i.quantity})`, type: "number", min: 1, max: i.quantity, value: 1 }],
+      save: async v => {
+        try { await call("POST", `items/${i.ref}/give`, { to: v.to, quantity: v.quantity || 1 }); } catch (e) { return e.message; }
+        await changed();
+      },
+    });
+  };
+  const invHooks = {
+    addLoot: () => addLoot(), addItem,
+    setQty: (i, n) => itemCall("PATCH", i.ref, { quantity: n }),
+    // Equip: armor, shields and weapons go to Fight Club's slots. Anything else is worn as the kind its name says (a "Belt of ...", "Winged Boots"); only
+    // when nothing in it says, the wearer is asked where it goes.
+    equip: (i, on) => {
+      if (!on || i.fcSlot || i.kind) return itemCall("PATCH", i.ref, { equip: on });
+      Nodes.form({
+        title: `Wear ${i.name.trim()}`, saveLabel: "Wear it",
+        note: "Nothing in its name says where it is worn. Pick the place: only one belt, one pair of gloves and so on can be worn at once (up to 10 rings).",
+        fields: [{ key: "kind", label: "Worn as", type: "select", value: "neck", options: [["head", "Headwear"], ["neck", "Amulet / necklace"], ["cloak", "Cloak"], ["hands", "Gloves / gauntlets"], ["wrists", "Bracers"], ["belt", "Belt"], ["feet", "Footwear"], ["ring", "Ring"]].map(([value, label]) => ({ value, label })) }],
+        save: async v => {
+          try { await call("PATCH", `items/${i.ref}`, { equip: true, kind: v.kind }); } catch (e) { return e.message; }
+          await changed();
+        },
+      });
+    },
+    attune: (i, on) => itemCall("PATCH", i.ref, { attune: on }),
+    remove: i => { if (confirm(`Remove ${i.quantity > 1 ? i.quantity + "× " : ""}${i.name.trim()} from ${m.name}?`)) itemCall("DELETE", i.ref); },
+    give: giveItem,
+    ack: g => call("DELETE", `gifts/${g.id}`).then(changed).catch(e => alert(e.message)),
   };
   const addSpell = () => {
     let add;
@@ -191,7 +258,7 @@ async function renderDetail(id) {
   const sheet = UI.tabs({ key: "sheet", first: "tracker", tabs: [
     { id: "tracker", label: "Tracker", render: trackerPanel },
     { id: "stats", label: "Skills and Stats", render: statsPanel, fresh: true },
-    { id: "inv", label: () => `Inventory (${counts().items})`, render: () => Sheet.inventory(m, addLoot), fresh: true },
+    { id: "inv", label: () => `Inventory (${counts().items})`, render: () => Sheet.inventory(m, invHooks), fresh: true },
     { id: "spells", label: () => `Spells (${counts().spells})`, render: spellsPanel, fresh: true },
     { id: "feats", label: () => `Feats, Features and Notes (${counts().features})`, render: () => Sheet.features(m, addNote), fresh: true },
   ] });

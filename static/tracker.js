@@ -153,6 +153,7 @@
 
   // window.mountTracker(host, opts) - the public entry point.
   //   opts.only       : a character id. Show just that one character (used on a character's page).
+  //   opts.onChange   : called after this widget saved a change or redrew from the server (the character's page uses it to refresh the parts below the tracker: hit dice ...).
   //   opts.initiative : false = leave out the Initiative tab and its tab bar (default: show both tabs).
   //   opts.conditions : false = leave out the conditions chips;  opts.inspiration : false = leave out the Insp counter (a page that shows them elsewhere).
   // Assigning to `window` creates a global, which is how the HTML page (outside this IIFE) can call
@@ -197,6 +198,7 @@
         Object.assign(m, u);
         lastJson = JSON.stringify(members);
         draw();
+        opts.onChange?.();
       } catch (e) { alert(e.message); }
     }
 
@@ -608,7 +610,7 @@
         // data under a half-typed number). The skipped initiative update is
         // picked up on a later tick because initJson is not updated yet.
         if (j !== lastJson || (ij !== initJson && !(a && initRoot.contains(a)))) {
-          members = next; lastJson = j; init = ini; initJson = ij; draw();
+          members = next; lastJson = j; init = ini; initJson = ij; draw(); opts.onChange?.();
         }
       } catch (_) { /* server restarting; try again next tick */ }
     }

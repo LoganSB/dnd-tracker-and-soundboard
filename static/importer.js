@@ -9,6 +9,7 @@
 //      character individually, so one that fails does not stop the others. The pop-up lists any that failed and why.
 //   owner   optional user name (the DM's "whose character" menu), sent along as the import's owner
 //   onDone  called with the server's answer ({imported, failed}) after the pop-up closes
+// The file may be a Fight Club backup (.backup/.xml/.zip) or a Gloan5e file (.gloan5e); the server tells which from the file itself.
 // A failure to read the file is thrown, so the button that started it shows the message beside itself (errors.js).
 const Importer = (() => {
   const h = (tag, props = {}, ...kids) => {

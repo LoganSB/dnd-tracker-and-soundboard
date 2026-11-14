@@ -2839,6 +2839,16 @@ h1 .brandicon { width: 1.15em; height: 1.15em; margin-right: .35rem; }
 .cstat h4 { margin: .6rem 0 .2rem; }
 .cstat .stats.compact { margin: .4rem 0; }
 .cstat .sbitem { margin: .25rem 0; }
+/* An item given by another player: highlighted until acknowledged (sheet.js inventory). */
+.dtable tr.gift > td { background: #f0b4291f; }
+.giftnote { color: var(--warn); font-size: .8rem; margin-top: .15rem; }
+/* The Edit character pop-up (editchar.js). */
+.editchar .efset { border: 1px solid #ffffff22; border-radius: 8px; margin: .6rem 0; padding: .5rem .7rem; }
+.editchar legend { padding: 0 .4rem; color: var(--muted); }
+.editchar .efgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr)); gap: .4rem .8rem; }
+.editchar .ef { display: flex; flex-direction: column; gap: .15rem; }
+.editchar input[type=text], .editchar input[type=number], .editchar select { width: 100%; box-sizing: border-box; }
+.editchar .ef .nowrap input { width: 5rem; }
 hr.thin { border: 0; border-top: 1px solid #ffffff22; margin: 1rem 0 0; }
 
 /* The shared pop-up (nodes.js): the roomy version holds a search panel. */
@@ -2847,3 +2857,8 @@ hr.thin { border: 0; border-top: 1px solid #ffffff22; margin: 1rem 0 0; }
 /* The soundboard and campaign drop-downs in the toolbars (index.html, campaign.html). */
 .bar label.inline { display: inline-flex; align-items: center; gap: .3rem; color: var(--muted); font-size: .85rem; }
 .bar #boardSel, .bar #campSel, .bar #defBoardSel { max-width: 14rem; }
+
+/* The purple "+ Add loot / spell / note / companion" buttons on the character sheet (sheet.js): room around them so they do not touch the table, the
+   pager or the next section. */
+.addbar { margin: .7rem 0; padding: .15rem 0; gap: .5rem; }
+.addbar button.primary { padding: .4rem .9rem; }
