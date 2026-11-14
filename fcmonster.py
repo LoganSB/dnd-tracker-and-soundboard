@@ -10,7 +10,7 @@ WHAT A <monster> HOLDS (worked out from real files, see FIGHTCLUB-FORMAT.md; the
   savingThrow (ability, modifier), skill (id, modifier), vulnerable, resist, immune, conditionImmune, senses, languages, text, environment,
   and the sections trait / action / reaction / legendary: each name, text, recharge, charges and any number of attacks (name, type,
   attackBonus, damage, damageType).
-  size             0 Tiny, 1 Small, 2 Medium, 3 Large, 4 Huge, 5 Gargantuan        (4 and 5 confirmed; 2 and 3 follow in order)
+  size             0 Tiny, 1 Small, 2 Medium, 3 Large, 4 Huge, 5 Gargantuan        (Fight Club's own files give 0, 1 and 5 as the largest; 2-4 follow in order)
   recharge *       0 none, 1 "#/day" (then `charges` says how many), 2-5 "Recharge N-6", 6 "Recharge 6", 7 after a short rest, 8 after a long rest
   attack type *    1 melee, 2 ranged, 3 magic
   speed *          feet
@@ -19,8 +19,8 @@ WHAT A <monster> HOLDS (worked out from real files, see FIGHTCLUB-FORMAT.md; the
   savingThrow      ability 0-5 = STR..CHA;  skill id 0-17 = the skills in alphabetical order (as charcalc.SKILLS)
   damage           dice such as "1d20"; Fight Club also writes "1n55" for ONE die of 55 sides (shown as 1d55); formulas with % are shown as written
   attackBonus      a number or a Fight Club formula ("%3+%4+%2": not decoded, shown as written)
-  Fight Club leaves out what it can look up: a companion picked from its own monster list has only label, name, size, type, abilities and hd; the
-  hit points and AC appear (hpMax, hpCurrent, armor) once somebody sets them.
+  Everything after the first six is optional: a companion with only label, name, size, type, abilities and hd imports into Fight Club fine (the
+  Aalpamac this app wrote did), and Fight Club writes hpMax / hpCurrent / armor once somebody sets them.
 
 CLASS TRACKERS: a <class> can hold <tracker> (label, type, resetType, value = left now, formula = the most) and each <autolevel> a <tracker> giving the
   `formula` from that level on (Channel Divinity: 1, then 2 at level 6, then 3 at level 18). resetType 1 is read as "comes back on a short rest"
@@ -121,9 +121,8 @@ def set_vitals(m, hp=None, hp_max=None, ac=None):
 
 
 def make(name, kind, size, scores, hd, hp=None, ac=None, speed=None):
-    """A new <monster> as Fight Club writes a companion picked from its monster list: label and type are the monster's name, the six scores are the
-    monster's own, hd is its full hit dice. Hit points, AC and speed are added too (Fight Club keeps hpMax / hpCurrent / armor / speed on the
-    companion once they are set)."""
+    """A new <monster> for a companion chosen from the monster list: label and type are the monster's name (as in Floofy, the squirrel Fight Club
+    wrote), the six scores are the monster's own, hd is its full hit dice. Hit points, AC and speed are added too; all are optional in Fight Club."""
     m = ET.Element("monster")
     for tag, val in (("label", kind), ("name", name), ("size", SIZE_CODE.get((size or "").lower(), 2)), ("type", kind),
                      ("abilities", "".join(f"{v}," for v in (list(scores) + [10] * 6)[:6]))):
