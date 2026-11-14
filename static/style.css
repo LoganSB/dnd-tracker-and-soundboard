@@ -2948,6 +2948,11 @@ body.mappage { margin: 0; height: 100vh; display: flex; flex-direction: column; 
 body.mappage #map { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .maphead { padding: .4rem .8rem; display: flex; gap: .6rem; align-items: center; flex: none; }
 .mapscroll { flex: 1; min-height: 0; overflow: auto; text-align: center; }
+.mapscroll { position: relative; }
+.mapgrid { position: absolute; pointer-events: none; display: none; }
+.gridctl { display: inline-flex; gap: .4rem; align-items: center; }
+.gridctl input[type=range] { width: 6rem; }
+.gridctl input[type=color] { width: 1.8rem; height: 1.5rem; padding: 0; border: 0; background: none; }
 .mapimg { cursor: zoom-in; }
 .mapimg.fit { max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; }
 .mapscroll:has(.mapimg.fit) { display: flex; align-items: center; justify-content: center; }
