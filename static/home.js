@@ -61,6 +61,17 @@ function characterTable(key, rows, { users, buttons, empty }) {
   });
 }
 
+// ruleBookNote(): one line on where character creation gets its rule book (the compendium of an imported Fight Club backup; see codex.py), filled in when the answer arrives.
+function ruleBookNote() {
+  const p = h("p", { className: "muted", textContent: "Rule book: checking…" });
+  api("/api/codex").then(c => {
+    p.textContent = c.available ? `Rule book for creating and levelling characters: Fight Club's own (${c.counts.races} races, ${c.counts.classes} classes, ${c.counts.backgrounds} backgrounds, ${c.counts.spells} spells, ${c.counts.items} items) from ${c.source}. Importing a newer Fight Club backup updates it.`
+      : "No rule book yet: import a Fight Club backup made after you imported its collection (it holds the rule book), and creating and levelling characters will use it.";
+    if (!c.available) p.className = "bad";
+  }).catch(() => { p.textContent = ""; });
+  return p;
+}
+
 // uploadBox(users): the Fight Club import form. A DM also gets a drop-down to choose whose character it is.
 function uploadBox(users) {
   const file = h("input", { type: "file", accept: ".backup,.xml,.zip,.gloan5e" });
@@ -165,7 +176,7 @@ async function dmView(me) {
       buttons: p => [p.present ? h("button", { textContent: "Open", onclick: () => openSheet(p.id) }) : null,
         h("button", { className: "danger", textContent: "Remove from campaign", onclick: () => setParty([...inParty].filter(id => id !== p.id)) })],
     })),
-    box("roster", "Characters", h("div", { className: "row" }, h("button", { className: "primary", onclick: () => Creator.open({ isDM: true, onCreated: id => openSheet(id) }), textContent: "＋ New character", title: "Build a character: race, class, background, ability scores, equipment and spells, at any level" }), h("button", { onclick: () => downloadCharacters("/api/party/export.zip", "all characters"), textContent: "⬇ Download all characters", title: "One Fight Club backup file holding every character" })), characterTable("roster", rosterRows, {
+    box("roster", "Characters", ruleBookNote(), h("div", { className: "row" }, h("button", { className: "primary", onclick: () => Creator.open({ isDM: true, onCreated: id => openSheet(id) }), textContent: "＋ New character", title: "Build a character: race, class, background, ability scores, equipment and spells, at any level" }), h("button", { onclick: () => downloadCharacters("/api/party/export.zip", "all characters"), textContent: "⬇ Download all characters", title: "One Fight Club backup file holding every character" })), characterTable("roster", rosterRows, {
       users, empty: chars.length ? "Every uploaded character is in the campaign." : "No characters uploaded yet.",
       buttons: c => [h("button", { className: "primary", textContent: "Add to campaign", onclick: () => setParty([...inParty, c.id]) }),
         h("button", { textContent: "Open", onclick: () => openSheet(c.id) })],

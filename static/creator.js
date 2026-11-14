@@ -2,15 +2,15 @@
 // =============================================================================
 // creator.js - making a new character and levelling one up, as pop-ups.
 //
-//   Creator.open({ onCreated(id), isDM })   the character creation wizard: Basics, Race, Class, Background, Abilities, Level choices (hit points and ability score
-//                                           improvements, when the level is above 1), Equipment, Spells, Review. onCreated(id) is called with the new character's id.
-//   LevelUp.open(m, { onDone(character), onFinish(), addSpells() })   the level-up pop-up for the character record `m`: pick the class (a multiclass shows why it is refused), see what the level
-//                                           brings, choose hit points (average or roll), an ability score improvement or feat, a sub-class; then it applies.
+//   Creator.open({ onCreated(id, character), isDM })   the character creation wizard: Basics, Race, Class, Background, Abilities, Choices (class features to choose, ability score
+//                                           improvements, hit points: shown only when there is something to choose), Equipment, Spells (only for a class that gets some), Review.
+//   LevelUp.open(m, { onDone(character), onFinish(), addSpells() })   the level-up pop-up for the character record `m`: pick the class (a multiclass shows why it is refused), see
+//                                           what the level brings, choose the features it asks for, an ability score improvement or feat, then the hit points; then it applies.
 //
-// ALL THE RULES ARE ON THE SERVER (creation.py, charbuild.py, rules5e.py); this file asks for the rule book (GET /api/rules/...), gathers the choices and sends them
-// (POST /api/party/create, POST /api/party/<id>/levelup). It checks what it can as you go (a standard array used once, 27 points of point buy, the right number of skills)
-// so that most mistakes are caught before Create, but the server checks everything again and its message is shown.
-// Needs ui.js, nodes.js, finder.js and spells.js loaded first.
+// THE RULE BOOK IS FIGHT CLUB'S OWN (codex.py): races, classes, backgrounds, feats, spells and items are the ones in the Fight Club compendium (GET /api/rules/...), and a character
+// is made by COPYING them, as Fight Club does. All the rules are on the server (creation.py, charbuild.py); this file gathers the choices and sends them
+// (POST /api/party/create, POST /api/party/<id>/levelup). It checks what it can as you go so most mistakes are caught before Create, but the server checks everything again.
+// Needs ui.js and nodes.js loaded first.
 // =============================================================================
 const Creator = (() => {
   const { h, api } = UI;
@@ -22,66 +22,96 @@ const Creator = (() => {
   const sgn = n => (n >= 0 ? "+" : "") + n;
   const d = n => 1 + Math.floor(Math.random() * n);
   const cache = {};
-  const load = (url) => (cache[url] ||= api(url).catch(e => { delete cache[url]; throw e; }));
+  const load = url => (cache[url] ||= api(url).catch(e => { delete cache[url]; throw e; }));
   const label = (text, ...kids) => h("label", { className: "ef" }, h("span", { className: "muted", textContent: text }), ...kids);
   const select = (options, value, onchange) => { const s = h("select", { onchange: () => onchange?.(s.value) }, options.map(([v, t]) => h("option", { value: v, textContent: t }))); if (value != null) s.value = value; return s; };
-  const abilityOptions = (skip = []) => ABIL.map((a, i) => [String(i), ABIL_NAMES[i]]).filter(([v]) => !skip.includes(+v));
+  const abilityOptions = () => ABIL.map((a, i) => [String(i), ABIL_NAMES[i]]);
+  // a text box that brings up the keyboard on a phone: sixteen pixel text (the phone does not zoom), a hint of what Enter does, and a tap on it focuses it even when the pop-up has redrawn
+  const textbox = (props, onenter) => {
+    const i = h("input", { enterKeyHint: "next", autocomplete: "off", autocapitalize: "words", ...props, onkeydown: ev => { if (ev.key === "Enter") { ev.preventDefault(); onenter?.(); } } });
+    i.addEventListener("touchend", () => setTimeout(() => i.focus(), 0), { passive: true });
+    return i;
+  };
 
   // ---------------------------------------------------------------- the ability score improvement chooser (creation and level-up share it)
-  // asiChooser(title) -> { el, get() }: get() returns the decision the server takes ({type: "asi", inc: [i, j]} or {type: "feat", feat}) or throws Error when it is not complete.
-  function asiChooser(title) {
+  // asiChooser(title, onChange) -> { el, get() }: get() returns the decision the server takes ({type: "asi", inc: [i, j]}, {type: "feat", id}, {type: "feat", feat: {...}}) or throws Error
+  // when it is not complete.
+  function asiChooser(title, onChange) {
     const kind = select([["two", "+2 to one ability"], ["one", "+1 to two abilities"], ["feat", "A feat instead"]], "two", () => draw());
-    const body = h("div", { className: "row" });
+    const body = h("div", { className: "stack" });
     const a = select(abilityOptions(), "0"), b = select(abilityOptions(), "1"), c = select(abilityOptions(), "0");
-    const featSel = select([["", "(a feat from the list…)"]], "", v => {
-      const f = (list.find(x => x.slug === v)); if (f) { name.value = f.name; text.value = (f.prerequisite ? f.prerequisite + "\n\n" : "") + f.text; }
-    });
-    const name = h("input", { placeholder: "Feat name", className: "grow" }), text = h("textarea", { rows: 4, placeholder: "What the feat does (kept on the sheet)" });
+    let feats = [];
+    const blurb = h("p", { className: "muted" });
+    const featSel = select([["", "(a feat from the rule book…)"]], "", v => { const f = feats.find(x => String(x.id) === v); blurb.textContent = f ? f.text : ""; custom.hidden = !!f; });
+    const name = textbox({ placeholder: "Feat name" }), text = h("textarea", { rows: 3, placeholder: "What it does (kept on the sheet)" });
     const plus = select([["", "no ability point"], ...abilityOptions()], "");
-    let list = [];
-    load("/api/rules/feats").then(l => { list = l; featSel.append(...l.map(f => h("option", { value: f.slug, textContent: `${f.name}${f.prerequisite ? " (" + f.prerequisite.replace(/^Prerequisite:\s*/i, "") + ")" : ""}` }))); }).catch(() => { /* a feat can still be typed */ });
+    const custom = h("div", { className: "stack" }, label("Or write your own: name", name), label("Text", text), label("It also gives +1 to", plus));
+    load("/api/rules/feats").then(l => { feats = l; featSel.append(...l.map(f => h("option", { value: String(f.id), textContent: f.name }))); }).catch(() => { /* a feat can still be written */ });
     const draw = () => {
-      body.replaceChildren(...(kind.value === "two" ? [label("Raise", c)] : kind.value === "one" ? [label("Raise", a), label("and", b)]
-        : [h("div", { className: "stack" }, label("From the list", featSel), label("Name", name), label("Text", text), label("It also gives +1 to", plus))]));
+      body.replaceChildren(...(kind.value === "two" ? [label("Raise", c)] : kind.value === "one" ? [label("Raise", a), label("and", b)] : [label("From the rule book", featSel), blurb, custom]));
     };
     draw();
-    return { el: h("fieldset", { className: "efset" }, h("legend", { textContent: title }), label("Choose", kind), body),
+    const el = h("fieldset", { className: "efset" }, h("legend", { textContent: title }), label("Choose", kind), body);
+    el.addEventListener("change", () => onChange?.());   // (changes bubble up from every box inside)
+    el.addEventListener("input", () => onChange?.());
+    return { el,
       get() {
         if (kind.value === "two") return { type: "asi", inc: [+c.value, +c.value] };
         if (kind.value === "one") { if (a.value === b.value) throw new Error("Pick two different abilities for +1 each"); return { type: "asi", inc: [+a.value, +b.value] }; }
-        if (!name.value.trim()) throw new Error("Name the feat you take");
+        if (featSel.value !== "") return { type: "feat", id: +featSel.value };
+        if (!name.value.trim()) throw new Error("Choose a feat, or write one");
         return { type: "feat", feat: { name: name.value.trim(), text: text.value, ability: plus.value === "" ? null : +plus.value } };
       } };
   }
 
+  // choiceBoxes(groups, picked, onChange) -> elements: one select per pick of every choice group {key, head, picks, options [{name, label, text}]}; `picked` ({key: [names]}) is
+  // filled in as they change
+  function choiceBoxes(groups, picked, onChange) {
+    return groups.map(g => {
+      picked[g.key] = (picked[g.key] || []).slice(0, g.picks);
+      const text = h("p", { className: "muted blurb" });
+      const boxes = Array.from({ length: g.picks }, (_, i) => {
+        const s = select([["", `(choose ${g.picks > 1 ? "#" + (i + 1) : "one"})`], ...g.options.map(o => [o.name, o.label])], picked[g.key][i] || "", () => {
+          picked[g.key] = boxes.map(x => x.value).filter(Boolean);
+          text.textContent = (g.options.find(o => o.name === s.value) || {}).text || "";
+          onChange?.();
+        });
+        return s;
+      });
+      return h("fieldset", { className: "efset" }, h("legend", { textContent: g.head }), ...boxes, text);
+    });
+  }
+
   // ---------------------------------------------------------------- the creation wizard
   function open({ onCreated, isDM } = {}) {
-    const S = { name: "", level: 1, owner: "", race: null, raceSlug: "", subrace: "", raceChoices: [], looks: {}, cls: null, clsSlug: "", subclass: "", skills: [], bg: null, bgSlug: "", bgSkills: [],
-      method: "standard", abilities: [15, 14, 13, 12, 10, 8], hpMode: "average", hpRolls: [], asis: [], equipMode: "package", picks: [], gold: 0, equip: null, cantrips: [], spells: [] };
+    const S = { name: "", level: 1, owner: "", raceId: "", race: null, looks: {}, clsId: "", cls: null, skills: [], bgId: "", bg: null, method: "standard", abilities: [15, 14, 13, 12, 10, 8],
+      hpMode: "average", hpRolls: [], asis: [], choices: {}, gold: 0, items: [], cantrips: [], spells: [] };
     const body = h("div", { className: "creator" });
     const err = h("p", { className: "bad" });
     const steps = [["Basics", basics], ["Race", race], ["Class", klass], ["Background", background], ["Abilities", abilities], ["Choices", choices], ["Equipment", equipment], ["Spells", spells], ["Review", review]];
-    let at = 0, dlg = null, busy = false;
+    const groupsNow = () => (S.cls ? S.cls.groups.filter(g => g.level <= S.level).map(g => ({ ...g, key: `${g.level}:${g.head}` })) : []);
+    // a step with nothing to choose is left out: Choices needs a feature to choose or a level above 1; Spells needs a class that gets spells at this level
+    const needed = name => name === "Choices" ? !!S.cls && (S.level > 1 || groupsNow().length > 0) : name === "Spells" ? (() => { const a = allowance(); return !!a && (a.cantrips > 0 || a.spells > 0); })() : true;
+    const visible = () => steps.filter(([n]) => needed(n));
+    let at = "Basics", dlg = null, busy = false;
     const nav = h("div", { className: "row creatornav" });
 
-    // the ability scores as the sheet will show them (base + race + the improvements chosen so far)
-    const raceBonus = () => { const out = [0, 0, 0, 0, 0, 0]; if (!S.race) return out;
-      const sub = S.race.subraces.find(s => s.slug === S.subrace);
-      for (const [k, v] of Object.entries(S.race.bonuses)) out[+k] += v;
-      if (sub) for (const [k, v] of Object.entries(sub.bonuses)) out[+k] += v;
-      S.raceChoices.forEach((ab, i) => { if (ab != null && ab !== "") out[+ab] += [...S.race.choices, ...(sub?.choices || [])][i] || 0; });
-      return out; };
-    const finalScores = () => { const sc = S.abilities.map((v, i) => v + raceBonus()[i]);
-      S.asis.forEach(x => { try { const g = x.get(); if (g.type === "asi") g.inc.forEach(i => sc[i]++); else if (g.feat.ability != null) sc[g.feat.ability]++; } catch (_) { /* not chosen yet */ } });
-      return sc; };
+    const bonus = () => { const out = [0, 0, 0, 0, 0, 0]; (S.race?.bonuses || []).forEach(b => { out[b.ability] += b.value; }); return out; };
+    const finalScores = () => {
+      const sc = S.abilities.map((v, i) => v + bonus()[i]);
+      S.asis.forEach(x => { try { const g = x.get(); if (g.type === "asi") g.inc.forEach(i => sc[i]++); else if (g.feat?.ability != null) sc[g.feat.ability]++; } catch (_) { /* not chosen yet */ } });
+      return sc;
+    };
     const asiLevels = () => (S.cls ? S.cls.asiLevels.filter(l => l <= S.level) : []);
+    const listOf = (url, set) => { const wrap = h("div", {}, h("p", { className: "muted", textContent: "Loading…" })); load(url).then(rows => set(wrap, rows)).catch(e => wrap.replaceChildren(h("p", { className: "bad", textContent: e.message }))); return wrap; };
 
     // -- Basics
     function basics() {
-      const name = h("input", { value: S.name, placeholder: "Character name", className: "grow", oninput: () => (S.name = name.value) });
-      const level = h("input", { type: "number", min: 1, max: 20, value: S.level, className: "inum", onchange: () => { S.level = Math.max(1, Math.min(20, +level.value || 1)); S.asis = []; S.hpRolls = []; } });
-      const owner = isDM ? h("input", { value: S.owner, placeholder: "user name (optional)", oninput: () => (S.owner = owner.value) }) : null;
-      return [h("p", { className: "muted", textContent: "Everything here is the rule book's (Open5e): races, classes and backgrounds include the core rules and the Kobold Press / third-party books. Start at level 1, or at a higher level for a character who joins a game in progress." }),
+      const name = textbox({ value: S.name, placeholder: "Character name", className: "grow", oninput: () => (S.name = name.value) }, () => next());
+      const level = h("input", { type: "number", min: 1, max: 20, value: S.level, className: "inum", onchange: () => { S.level = Math.max(1, Math.min(20, +level.value || 1)); S.asis = []; S.hpRolls = []; S.choices = {}; } });
+      const owner = isDM ? textbox({ value: S.owner, placeholder: "user name (optional)", oninput: () => (S.owner = owner.value), autocapitalize: "none" }) : null;
+      setTimeout(() => name.focus(), 50);   // the keyboard comes up at once on a phone
+      return [h("p", { className: "muted", textContent: "Everything here is Fight Club's own rule book: the races, classes and backgrounds of the Fight Club collection you imported. Start at level 1, or higher for a character who joins a game in progress." }),
         label("Name", name), label("Starting level (1 to 20)", level), owner ? label("Belongs to", owner) : null];
     }
     // -- Race
@@ -89,21 +119,15 @@ const Creator = (() => {
       const wrap = h("div", { className: "stack" });
       const fill = async () => {
         wrap.replaceChildren();
-        if (!S.raceSlug) return;
-        S.race = await load("/api/rules/races/" + S.raceSlug);
-        const sub = S.race.subraces.find(s => s.slug === S.subrace);
-        const picks = [...S.race.choices, ...(sub?.choices || [])];
-        if (S.raceChoices.length !== picks.length) S.raceChoices = picks.map(() => "");
-        const fixed = { ...S.race.bonuses }; if (sub) for (const [k, v] of Object.entries(sub.bonuses)) fixed[k] = (fixed[k] || 0) + v;
-        wrap.append(h("p", { textContent: `Ability bonuses: ${Object.entries(fixed).map(([k, v]) => `${ABIL[+k]} ${sgn(v)}`).join(", ") || "none fixed"}. Speed ${S.race.speed} ft, ${S.race.size}.` }));
-        if (S.race.subraces.length) wrap.append(label("Subrace", select([["", "(choose)"], ...S.race.subraces.map(s => [s.slug, s.name])], S.subrace, v => { S.subrace = v; S.raceChoices = []; fill(); })));
-        picks.forEach((v, i) => wrap.append(label(`+${v} to`, select([["", "(choose an ability)"], ...abilityOptions(Object.keys(fixed).map(Number))], S.raceChoices[i], x => { S.raceChoices[i] = x; }))));
+        if (S.raceId === "") return;
+        S.race = await load("/api/rules/races/" + S.raceId);
+        const fixed = S.race.bonuses.map(b => `${ABIL[b.ability]} ${sgn(b.value)}`).join(", ") || "none";
+        wrap.append(h("p", { textContent: `Ability bonuses: ${fixed}. Speed ${S.race.speed} ft.` }));
         wrap.append(h("fieldset", { className: "efset" }, h("legend", { textContent: "Looks (optional)" }), h("div", { className: "efgrid" },
-          ...["age", "height", "weight", "eyes", "skin", "hair"].map(k => label(k[0].toUpperCase() + k.slice(1), h("input", { value: S.looks[k] || "", oninput: ev => (S.looks[k] = ev.target.value) }))))));
-        wrap.append(h("details", {}, h("summary", { textContent: "Racial traits" }), ...[...S.race.feats, ...(sub?.feats || [])].map(f => h("p", {}, h("b", { textContent: f.name + ". " }), f.text))));
+          ...["age", "height", "weight", "eyes", "skin", "hair"].map(k => label(k[0].toUpperCase() + k.slice(1), textbox({ value: S.looks[k] || "", oninput: ev => (S.looks[k] = ev.target.value) }))))));
+        wrap.append(h("details", {}, h("summary", { textContent: "Racial traits" }), ...S.race.feats.map(f => h("p", {}, h("b", { textContent: f.name + ". " }), f.text))));
       };
-      const list = h("div", {}, h("p", { className: "muted", textContent: "Loading races…" }));
-      load("/api/rules/races").then(rows => { list.replaceChildren(label("Race", select([["", "(choose)"], ...rows.map(r => [r.slug, r.name + (r.source && r.source !== "5e Core Rules" ? ` (${r.source})` : "")])], S.raceSlug, v => { S.raceSlug = v; S.subrace = ""; S.raceChoices = []; fill(); }))); }).catch(e => list.replaceChildren(h("p", { className: "bad", textContent: e.message })));
+      const list = listOf("/api/rules/races", (w, rows) => w.replaceChildren(label("Race", select([["", "(choose)"], ...rows.map(r => [String(r.id), r.name + (r.source ? ` (${r.source})` : "")])], S.raceId, v => { S.raceId = v; S.race = null; fill(); }))));
       fill();
       return [list, wrap];
     }
@@ -112,24 +136,23 @@ const Creator = (() => {
       const wrap = h("div", { className: "stack" });
       const fill = async () => {
         wrap.replaceChildren();
-        if (!S.clsSlug) return;
-        const c = S.cls = await load("/api/rules/classes/" + S.clsSlug);
+        if (S.clsId === "") return;
+        const c = S.cls = await load("/api/rules/classes/" + S.clsId);
         wrap.append(h("p", { textContent: `Hit die d${c.hd}. Saving throws ${c.saves.map(i => ABIL[i]).join(", ")}. Armor: ${c.armor || "none"}. Weapons: ${c.weapons || "none"}. Tools: ${c.tools || "none"}.` }));
-        if (c.subclass.options.length && S.level >= c.subclass.level) {
-          wrap.append(label(c.subclass.label, select([["", "(choose)"], ...c.subclass.options.map(o => [o.slug, o.name + (o.source && o.source !== "5e Core Rules" ? ` (${o.source})` : "")])], S.subclass, v => (S.subclass = v))));
-        } else if (c.subclass.options.length) wrap.append(h("p", { className: "muted", textContent: `Its ${c.subclass.label.toLowerCase()} is chosen at level ${c.subclass.level}: take it with Level up.` }));
-        const left = () => S.skills.length;
         const info = h("p", { className: "muted" });
-        const boxes = c.skills.options.map(i => { const cb = h("input", { type: "checkbox", checked: S.skills.includes(i), onchange: () => {
-          if (cb.checked) S.skills.push(i); else S.skills = S.skills.filter(x => x !== i);
-          if (left() > c.skills.count) { S.skills = S.skills.filter(x => x !== i); cb.checked = false; }
-          info.textContent = `${left()} of ${c.skills.count} chosen`; } });
-          return h("label", { className: "check" }, cb, " " + SKILLS[i]); });
-        info.textContent = `${left()} of ${c.skills.count} chosen`;
+        const boxes = c.skills.options.map(i => {
+          const cb = h("input", { type: "checkbox", checked: S.skills.includes(i), onchange: () => {
+            if (cb.checked) S.skills.push(i); else S.skills = S.skills.filter(x => x !== i);
+            if (S.skills.length > c.skills.count) { S.skills = S.skills.filter(x => x !== i); cb.checked = false; }
+            info.textContent = `${S.skills.length} of ${c.skills.count} chosen`;
+          } });
+          return h("label", { className: "check" }, cb, " " + SKILLS[i]);
+        });
+        info.textContent = `${S.skills.length} of ${c.skills.count} chosen`;
         wrap.append(h("fieldset", { className: "efset" }, h("legend", { textContent: `Class skills: choose ${c.skills.count}` }), h("div", { className: "efgrid" }, ...boxes), info));
       };
-      const list = h("div", {}, h("p", { className: "muted", textContent: "Loading classes…" }));
-      load("/api/rules/classes").then(rows => { list.replaceChildren(label("Class", select([["", "(choose)"], ...rows.map(r => [r.slug, r.name])], S.clsSlug, v => { S.clsSlug = v; S.subclass = ""; S.skills = []; S.asis = []; S.picks = []; S.equip = null; S.cantrips = []; S.spells = []; fill(); }))); }).catch(e => list.replaceChildren(h("p", { className: "bad", textContent: e.message })));
+      const list = listOf("/api/rules/classes", (w, rows) => w.replaceChildren(label("Class", select([["", "(choose)"], ...rows.map(r => [String(r.id), r.name])], S.clsId, v => {
+        S.clsId = v; S.cls = null; S.skills = []; S.asis = []; S.choices = {}; S.cantrips = []; S.spells = []; fill(); }))));
       fill();
       return [list, wrap];
     }
@@ -138,176 +161,188 @@ const Creator = (() => {
       const wrap = h("div", { className: "stack" });
       const fill = async () => {
         wrap.replaceChildren();
-        if (!S.bgSlug) return;
-        const b = S.bg = await load("/api/rules/backgrounds/" + S.bgSlug);
-        if (S.bgSkills.length !== b.extraSkills) S.bgSkills = Array(b.extraSkills).fill("");
-        wrap.append(h("p", { textContent: `Skills: ${b.skills.map(i => SKILLS[i]).join(", ") || "none fixed"}. Tools: ${b.tools || "none"}. Languages: ${b.languages || "none"}.` }),
-          h("p", {}, h("b", { textContent: (b.feature.name || "Feature") + ". " }), b.feature.text));
-        S.bgSkills.forEach((v, i) => wrap.append(label("Another skill of your choice", select([["", "(choose a skill)"], ...SKILLS.map((s, k) => [String(k), s])], S.bgSkills[i], x => { S.bgSkills[i] = x; }))));
+        if (S.bgId === "") return;
+        const b = S.bg = await load("/api/rules/backgrounds/" + S.bgId);
+        wrap.append(h("p", { textContent: `Skills: ${b.skills.map(i => SKILLS[i]).join(", ") || "none fixed"}.` }),
+          h("details", { open: true }, h("summary", { textContent: "What it gives" }), ...b.feats.map(f => h("p", {}, h("b", { textContent: f.name + ". " }), f.text))));
       };
-      const list = h("div", {}, h("p", { className: "muted", textContent: "Loading backgrounds…" }));
-      load("/api/rules/backgrounds").then(rows => { list.replaceChildren(label("Background", select([["", "(choose)"], ...rows.map(r => [r.slug, r.name + (r.source && r.source !== "5e Core Rules" ? ` (${r.source})` : "")])], S.bgSlug, v => { S.bgSlug = v; S.bgSkills = []; S.equip = null; fill(); }))); }).catch(e => list.replaceChildren(h("p", { className: "bad", textContent: e.message })));
+      const list = listOf("/api/rules/backgrounds", (w, rows) => w.replaceChildren(label("Background", select([["", "(choose)"], ...rows.map(r => [String(r.id), r.name + (r.source ? ` (${r.source})` : "")])], S.bgId, v => { S.bgId = v; S.bg = null; fill(); }))));
       fill();
       return [list, wrap];
     }
     // -- Abilities
     function abilities() {
       const out = h("div", {});
-      const bonus = raceBonus();
+      const b = bonus();
+      const spent = () => S.abilities.reduce((n, v) => n + ({ 8: 0, 9: 1, 10: 2, 11: 3, 12: 4, 13: 5, 14: 7, 15: 9 }[v] ?? 99), 0);
       const draw = () => {
         const rows = ABIL.map((a, i) => {
-          const base = S.abilities[i], total = base + bonus[i];
+          const base = S.abilities[i], total = base + b[i];
           let input;
-          if (S.method === "standard") input = select([...[15, 14, 13, 12, 10, 8].map(v => [String(v), String(v)])], String(base), v => { S.abilities[i] = +v; draw(); });
+          if (S.method === "standard") input = select([15, 14, 13, 12, 10, 8].map(v => [String(v), String(v)]), String(base), v => { S.abilities[i] = +v; draw(); });
           else if (S.method === "pointbuy") input = h("span", { className: "nowrap" }, h("button", { type: "button", className: "tiny", textContent: "−", onclick: () => { if (base > 8) { S.abilities[i]--; draw(); } } }), ` ${base} `,
             h("button", { type: "button", className: "tiny", textContent: "+", onclick: () => { if (base < 15 && spent() + (base >= 13 ? 2 : 1) <= 27) { S.abilities[i]++; draw(); } } }));
           else if (S.method === "roll") input = h("b", { textContent: String(base) });
           else input = h("input", { type: "number", min: 1, max: 20, value: base, className: "inum", onchange: ev => { S.abilities[i] = Math.max(1, Math.min(20, +ev.target.value || 10)); draw(); } });
-          return h("tr", {}, h("td", { textContent: ABIL_NAMES[i] }), h("td", {}, input), h("td", { className: "muted", textContent: bonus[i] ? sgn(bonus[i]) + " race" : "" }), h("td", {}, h("b", { textContent: String(total) }), ` (${sgn(mod(total))})`));
+          return h("tr", {}, h("td", { textContent: ABIL_NAMES[i] }), h("td", {}, input), h("td", { className: "muted", textContent: b[i] ? sgn(b[i]) + " race" : "" }), h("td", {}, h("b", { textContent: String(total) }), ` (${sgn(mod(total))})`));
         });
-        out.replaceChildren(h("table", { className: "loot" }, h("thead", {}, h("tr", {}, ["Ability", "Base", "", "Score (modifier)"].map(t => h("th", { textContent: t })))), h("tbody", {}, rows)),
+        out.replaceChildren(...[h("table", { className: "loot" }, h("thead", {}, h("tr", {}, ["Ability", "Base", "", "Score (modifier)"].map(t => h("th", { textContent: t })))), h("tbody", {}, rows)),
           S.method === "pointbuy" ? h("p", { className: "muted", textContent: `${27 - spent()} of 27 points left (8 to 15; 14 and 15 cost 2 each)` }) : null,
           S.method === "standard" && new Set(S.abilities).size !== 6 ? h("p", { className: "bad", textContent: "Use each of 15, 14, 13, 12, 10 and 8 once." }) : null,
-          S.method === "roll" ? h("button", { type: "button", textContent: "🎲 Roll 4d6, drop the lowest, six times", onclick: () => { S.abilities = ABIL.map(() => { const r = [d(6), d(6), d(6), d(6)].sort((x, y) => x - y); return r[1] + r[2] + r[3]; }); draw(); } }) : null);
+          S.method === "roll" ? h("button", { type: "button", textContent: "🎲 Roll 4d6, drop the lowest, six times", onclick: () => { S.abilities = ABIL.map(() => { const r = [d(6), d(6), d(6), d(6)].sort((x, y) => x - y); return r[1] + r[2] + r[3]; }); draw(); } }) : null].filter(Boolean));
       };
-      const spent = () => S.abilities.reduce((n, v) => n + ({ 8: 0, 9: 1, 10: 2, 11: 3, 12: 4, 13: 5, 14: 7, 15: 9 }[v] ?? 99), 0);
       const method = select([["standard", "Standard array (15, 14, 13, 12, 10, 8)"], ["pointbuy", "Point buy (27 points)"], ["roll", "Roll 4d6, drop the lowest"], ["manual", "Enter the scores myself"]], S.method, v => {
-        S.method = v; S.abilities = v === "standard" ? [15, 14, 13, 12, 10, 8] : v === "pointbuy" ? [8, 8, 8, 8, 8, 8] : v === "roll" ? [10, 10, 10, 10, 10, 10] : [10, 10, 10, 10, 10, 10]; draw(); });
+        S.method = v; S.abilities = v === "standard" ? [15, 14, 13, 12, 10, 8] : v === "pointbuy" ? [8, 8, 8, 8, 8, 8] : [10, 10, 10, 10, 10, 10]; draw(); });
       draw();
       return [label("How to set the scores", method), out];
     }
-    // -- Choices: hit points and ability score improvements
+    // -- Choices: class features to choose, ability score improvements, then hit points (after the scores they depend on)
     function choices() {
       if (!S.cls) return [h("p", { className: "muted", textContent: "Choose a class first." })];
       const hd = S.cls.hd, levels = S.level - 1;
       const kids = [];
-      if (levels > 0) {
-        const mode = select([["average", `Average (${Math.floor(hd / 2) + 1} a level)`], ["roll", `Roll d${hd} for each level`]], S.hpMode, v => { S.hpMode = v; draw(); });
-        const rolls = h("div", { className: "efgrid" });
-        const draw = () => {
-          rolls.replaceChildren();
-          if (S.hpMode !== "roll") return;
-          if (S.hpRolls.length !== levels) S.hpRolls = Array(levels).fill(null);
-          S.hpRolls.forEach((v, i) => { const inp = h("input", { type: "number", min: 1, max: hd, value: v ?? "", className: "inum", onchange: () => { S.hpRolls[i] = Math.max(1, Math.min(hd, +inp.value || 1)); } });
-            rolls.append(label(`Level ${i + 2}`, h("span", { className: "nowrap" }, inp, " ", h("button", { type: "button", className: "tiny", textContent: "🎲", onclick: () => { S.hpRolls[i] = d(hd); inp.value = S.hpRolls[i]; } })))); });
-        };
-        draw();
-        kids.push(h("fieldset", { className: "efset" }, h("legend", { textContent: "Hit points" }), h("p", { className: "muted", textContent: `Level 1 takes the whole die (${hd}) plus Constitution; each later level the average or a roll, plus Constitution (at least 1).` }), label("Levels 2 to " + S.level, mode), rolls));
-      }
+      const total = h("p", { className: "muted" });
+      const hpNow = () => {
+        const con = mod(finalScores()[2]);
+        let hp = hd + con;
+        for (let k = 0; k < levels; k++) { const r = S.hpMode === "roll" ? (S.hpRolls[k] ?? Math.floor(hd / 2) + 1) : Math.floor(hd / 2) + 1; hp += Math.max(1, r + con); }
+        total.textContent = `Hit points: ${hp} (Constitution ${finalScores()[2]}, ${sgn(mod(finalScores()[2]))} a level)`;
+      };
+      const gs = groupsNow().map(g => ({ ...g, options: g.options.map(o => ({ ...o, text: "" })) }));
+      if (gs.length) kids.push(h("h4", { textContent: "Choose your class features" }), ...choiceBoxes(gs, S.choices, () => {}));
       const lv = asiLevels();
-      if (S.asis.length !== lv.length) S.asis = lv.map((l) => asiChooser(`Level ${l}: ability score improvement`));
+      if (S.asis.length !== lv.length) S.asis = lv.map(l => asiChooser(`Level ${l}: ability score improvement`, () => hpNow()));
       S.asis.forEach(a => kids.push(a.el));
-      if (!kids.length) kids.push(h("p", { className: "muted", textContent: "A level 1 character has no further choices: continue." }));
+      const mode = select([["average", `Average (${Math.floor(hd / 2) + 1} a level)`], ["roll", `Roll d${hd} for each level`]], S.hpMode, v => { S.hpMode = v; draw(); hpNow(); });
+      const rolls = h("div", { className: "efgrid" });
+      const draw = () => {
+        rolls.replaceChildren();
+        if (S.hpMode !== "roll") return;
+        if (S.hpRolls.length !== levels) S.hpRolls = Array(levels).fill(null);
+        S.hpRolls.forEach((v, i) => {
+          const inp = h("input", { type: "number", min: 1, max: hd, value: v ?? "", className: "inum", onchange: () => { S.hpRolls[i] = Math.max(1, Math.min(hd, +inp.value || 1)); hpNow(); } });
+          rolls.append(label(`Level ${i + 2}`, h("span", { className: "nowrap" }, inp, " ", h("button", { type: "button", className: "tiny", textContent: "🎲", onclick: () => { S.hpRolls[i] = d(hd); inp.value = S.hpRolls[i]; hpNow(); } }))));
+        });
+      };
+      draw(); hpNow();
+      kids.push(h("fieldset", { className: "efset" }, h("legend", { textContent: "Hit points (rolled after the ability scores)" }),
+        h("p", { className: "muted", textContent: `Level 1 takes the whole die (${hd}) plus Constitution; each later level the average or a roll, plus Constitution (at least 1).` }),
+        levels > 0 ? label("Levels 2 to " + S.level, mode) : null, rolls, total));
       return kids;
     }
-    // -- Equipment
+    // -- Equipment: starting gold, and anything from the rule book's item list
     function equipment() {
-      if (!S.cls || !S.bgSlug) return [h("p", { className: "muted", textContent: "Choose a class and a background first." })];
-      const wrap = h("div", { className: "stack" });
-      const draw = () => {
-        wrap.replaceChildren();
-        const mode = select([["package", "The class's equipment and the background's"], ["gold", "Starting gold instead (buy your own)"], ["none", "None (add items later)"]], S.equipMode, v => { S.equipMode = v; draw(); });
-        wrap.append(label("Starting equipment", mode));
-        if (S.equipMode === "package" && S.equip) {
-          S.equip.lines.forEach((line, n) => {
-            if (S.picks[n] == null) S.picks[n] = 0;
-            if (line.options) wrap.append(h("fieldset", { className: "efset" }, h("legend", { textContent: "Choose one" }), ...line.options.map((o, k) => h("label", { className: "check" },
-              h("input", { type: "radio", name: "eq" + n, checked: S.picks[n] === k, onchange: () => (S.picks[n] = k) }), " " + o.text))));
-            else wrap.append(h("p", { textContent: "• " + line.fixed.text }));
-          });
-          if (S.equip.background.length) wrap.append(h("p", { className: "muted", textContent: "Background: " + S.equip.background.map(i => (i.qty > 1 && i.kind !== "coin" ? i.qty + " " : "") + i.name).join(", ") }));
-        }
-        if (S.equipMode === "gold") {
-          const m = (S.cls.wealth || "4d4x10").match(/(\d+)d(\d+)(?:x(\d+))?/), n = +m[1], sides = +m[2], mult = +(m[3] || 1);
-          const gold = h("input", { type: "number", min: 0, max: n * sides * mult, value: S.gold, className: "inum", onchange: () => (S.gold = Math.max(0, +gold.value || 0)) });
-          wrap.append(h("p", { className: "muted", textContent: `A ${S.cls.name} starts with ${S.cls.wealth.replace("x", " × ")} gold pieces.` }), label("Gold", h("span", { className: "nowrap" }, gold, " ",
-            h("button", { type: "button", textContent: "🎲 Roll", onclick: () => { let t = 0; for (let i = 0; i < n; i++) t += d(sides); S.gold = t * mult; gold.value = S.gold; } }))));
-        }
+      if (!S.cls) return [h("p", { className: "muted", textContent: "Choose a class first." })];
+      const m = (S.cls.wealth || "4d4x10").match(/(\d+)d(\d+)(?:x(\d+))?/), n = +m[1], sides = +m[2], mult = +(m[3] || 1);
+      const gold = h("input", { type: "number", min: 0, max: n * sides * mult, value: S.gold, className: "inum", onchange: () => (S.gold = Math.max(0, Math.min(n * sides * mult, +gold.value || 0))) });
+      const have = h("div", {}), results = h("div", {});
+      const drawHave = () => have.replaceChildren(...(S.items.length ? [h("h4", { textContent: "Your gear" }), ...S.items.map(it => h("div", { className: "row" }, h("span", { textContent: `${it.qty > 1 ? it.qty + " × " : ""}${it.name}` }),
+        h("button", { type: "button", className: "tiny", textContent: "+", onclick: () => { it.qty++; drawHave(); } }),
+        h("button", { type: "button", className: "tiny", textContent: "−", onclick: () => { it.qty--; if (it.qty < 1) S.items = S.items.filter(x => x !== it); drawHave(); } })))] : []));
+      const search = async () => {
+        if (!q.value.trim()) { results.replaceChildren(); return; }
+        try {
+          const rows = await api("/api/rules/items?q=" + encodeURIComponent(q.value.trim()));
+          results.replaceChildren(rows.length ? h("table", { className: "loot" }, h("tbody", {}, rows.map(r => h("tr", { className: "addable", onclick: () => { const x = S.items.find(i => i.id === r.id); if (x) x.qty++; else S.items.push({ id: r.id, name: r.name, qty: 1 }); drawHave(); } },
+            h("td", { textContent: r.name }), h("td", { className: "muted", textContent: r.detail }), h("td", { className: "muted", textContent: r.value ? r.value + " gp" : "" }))))) : h("p", { className: "muted", textContent: "Nothing matches." }));
+        } catch (e) { results.replaceChildren(h("p", { className: "bad", textContent: e.message })); }
       };
-      if (S.equip) draw(); else {
-        wrap.append(h("p", { className: "muted", textContent: "Loading the equipment…" }));
-        api(`/api/rules/equipment?class=${S.clsSlug}&background=${S.bgSlug}`).then(e => { S.equip = e; draw(); }).catch(e => wrap.replaceChildren(h("p", { className: "bad", textContent: e.message })));
-      }
-      return [wrap];
+      const q = textbox({ placeholder: "Search the rule book's items (sword, rope, backpack ...)", className: "grow", oninput: () => { clearTimeout(q.t); q.t = setTimeout(search, 200); } });
+      drawHave();
+      return [h("p", { className: "muted", textContent: `A ${S.cls.name} starts with ${S.cls.wealth.replace("x", " × ")} gold pieces to spend (Fight Club's own way). Roll or enter it below, then add the gear you want: tap an item to take one (keeping track of the cost is up to you).` }),
+        label("Starting gold", h("span", { className: "nowrap" }, gold, " ", h("button", { type: "button", textContent: "🎲 Roll", onclick: () => { let t = 0; for (let i = 0; i < n; i++) t += d(sides); S.gold = t * mult; gold.value = S.gold; } }))),
+        h("div", { className: "row" }, q), results, have];
     }
     // -- Spells
     function allowance() {
-      if (!S.cls || !S.cls.caster) return null;
-      const row = S.cls.levels[S.level - 1], sc = finalScores(), ab = S.cls.spellAbility;
-      if (!row) return null;
-      let spells;
-      if (row.spellsKnown) spells = row.spellsKnown;
-      else if (S.cls.slug === "wizard") spells = 6 + 2 * (S.level - 1);
-      else spells = Math.max(1, mod(sc[ab]) + (S.cls.caster === "half" ? Math.floor(S.level / 2) : S.level));
-      const top = row.pact ? row.pact.level : Math.max(0, ...row.slots.map((n, i) => (n ? i + 1 : 0)));
-      return { cantrips: row.cantrips, spells, top, kind: row.spellsKnown ? "known" : S.cls.slug === "wizard" ? "spellbook" : "prepared" };
+      const c = S.cls;
+      if (!c || !c.spellKind) return null;
+      const row = c.slots[S.level] || c.slots[String(S.level)] || [0], sc = finalScores();
+      const cantrips = row[0] || 0, anySlots = row.slice(1).some(Boolean);
+      if (!cantrips && !anySlots) return null;
+      const spells = c.spellKind === "known" ? c.known[S.level - 1] : c.spellKind === "spellbook" ? 6 + 2 * (S.level - 1) : Math.max(1, mod(sc[c.spellAbility]) + (c.half ? Math.floor(S.level / 2) : S.level));
+      const top = Math.max(0, ...row.slice(1).map((n, i) => (n ? i + 1 : 0)));
+      return { cantrips, spells: c.spellKind === "prepared" && !anySlots ? 0 : spells, top, kind: c.spellKind };
     }
     function spells() {
       const a = allowance();
       if (!a) return [h("p", { className: "muted", textContent: S.cls ? `${S.cls.name} does not cast spells at level ${S.level}: continue.` : "Choose a class first." })];
-      const summary = h("div", {}), panelBox = h("div", {});
+      const summary = h("div", {}), results = h("div", {});
+      const chip = (s, list) => h("span", { className: "chip" }, s.name, " ", h("button", { type: "button", className: "tiny", textContent: "✕", onclick: () => { S[list] = S[list].filter(x => x.id !== s.id); drawSummary(); } }));
+      const drawSummary = () => summary.replaceChildren(h("p", {}, h("b", { textContent: `Cantrips ${S.cantrips.length} of ${a.cantrips}: ` }), ...S.cantrips.map(s => chip(s, "cantrips"))),
+        h("p", {}, h("b", { textContent: `Spells ${S.spells.length} of ${a.spells}${a.kind === "prepared" ? " (prepared each day)" : a.kind === "spellbook" ? " (in your spellbook)" : ""}: ` }), ...S.spells.map(s => chip(s, "spells"))));
+      drawSummary();
+      let rows = [];
       const draw = () => {
-        const chip = (slug, list) => h("span", { className: "chip" }, slug.name, " ", h("button", { type: "button", className: "tiny", textContent: "✕", onclick: () => { S[list] = S[list].filter(x => x.slug !== slug.slug); draw(); } }));
-        summary.replaceChildren(h("p", {}, h("b", { textContent: `Cantrips ${S.cantrips.length} of ${a.cantrips}: ` }), ...S.cantrips.map(s => chip(s, "cantrips"))),
-          h("p", {}, h("b", { textContent: `Spells ${S.spells.length} of ${a.spells}${a.kind === "prepared" ? " (prepared each day from the whole list)" : a.kind === "spellbook" ? " (in your spellbook)" : ""}: ` }), ...S.spells.map(s => chip(s, "spells"))));
+        const f = q.value.trim().toLowerCase(), L = lvl.value;
+        const shown = rows.filter(r => (!f || r.name.toLowerCase().includes(f)) && (L === "" || r.level === +L)).slice(0, 60);
+        results.replaceChildren(...[h("table", { className: "loot" }, h("tbody", {}, shown.map(r => h("tr", { className: "addable", title: r.text, onclick: () => take(r) },
+          h("td", { textContent: r.name }), h("td", { className: "muted", textContent: r.level === 0 ? "Cantrip" : "Level " + r.level }), h("td", { className: "muted", textContent: r.school }))))),
+          shown.length === 60 ? h("p", { className: "muted", textContent: "Showing the first 60: type to narrow it down." }) : null].filter(Boolean));
       };
-      draw();
-      const panel = Spells.panel(row => {
-        const into = row.level === 0 ? "cantrips" : "spells", cap = row.level === 0 ? a.cantrips : a.spells;
-        if (S[into].some(x => x.slug === row.slug)) return;
-        if (row.level > a.top) { alert(`A level ${S.level} ${S.cls.name} has no spell slots of level ${row.level} yet`); return; }
-        if (S[into].length >= cap) { alert(row.level === 0 ? `You know ${a.cantrips} cantrips` : `You can have ${a.spells} spells`); return; }
-        S[into].push({ slug: row.slug, name: row.name }); draw();
-      }, { compact: true, defaultClass: S.cls.name });
-      panelBox.append(h("p", { className: "muted", textContent: "Click a spell (or its +) to take it. Cantrips and spells you leave out can be added later from the sheet." }), panel.el);
-      return [summary, panelBox];
+      const take = r => {
+        const into = r.level === 0 ? "cantrips" : "spells", cap = r.level === 0 ? a.cantrips : a.spells;
+        if (S[into].some(x => x.id === r.id)) return;
+        if (S[into].length >= cap) { alert(r.level === 0 ? `You know ${a.cantrips} cantrips` : `You can have ${a.spells} spells`); return; }
+        S[into].push({ id: r.id, name: r.name }); drawSummary();
+      };
+      const q = textbox({ placeholder: "Filter by name", className: "grow", oninput: () => draw() });
+      const lvl = select([["", "Any level"], ["0", "Cantrips"], ...[1, 2, 3, 4, 5, 6, 7, 8, 9].filter(n => n <= a.top).map(n => [String(n), "Level " + n])], "", () => draw());
+      results.append(h("p", { className: "muted", textContent: "Loading the spell list…" }));
+      load("/api/rules/spells?class=" + encodeURIComponent(S.cls.name)).then(r => { rows = r.filter(x => x.level <= a.top); draw(); }).catch(e => results.replaceChildren(h("p", { className: "bad", textContent: e.message })));
+      return [summary, h("div", { className: "row" }, q, lvl), results];
     }
     // -- Review
     function review() {
       const sc = finalScores(), a = allowance();
-      return [h("h3", { textContent: S.name || "(no name)" }), h("p", { textContent: `${S.race ? (S.race.subraces.find(s => s.slug === S.subrace)?.name || S.race.name) : "?"} ${S.cls ? S.cls.name : "?"}, level ${S.level}${S.bg ? ", " + S.bg.name : ""}` }),
+      return [h("h3", { textContent: S.name || "(no name)" }), h("p", { textContent: `${S.race ? S.race.name : "?"} ${S.cls ? S.cls.name : "?"}, level ${S.level}${S.bg ? ", " + S.bg.name : ""}` }),
         h("p", { textContent: ABIL.map((x, i) => `${x} ${sc[i]} (${sgn(mod(sc[i]))})`).join("   ") }),
-        h("p", { className: "muted", textContent: `Hit points: ${S.cls ? S.cls.hd + mod(sc[2]) + (S.level - 1) * ((S.hpMode === "average" ? Math.floor(S.cls.hd / 2) + 1 : S.cls.hd / 2 + 0.5) + mod(sc[2])) : "?"} (about). Equipment: ${S.equipMode}. ${a ? `Spells: ${S.cantrips.length} cantrips, ${S.spells.length} spells.` : ""}` }),
+        h("p", { className: "muted", textContent: `Gold ${S.gold}${S.items.length ? ", " + S.items.length + " kind(s) of gear" : ""}. ${a ? `Spells: ${S.cantrips.length} cantrips, ${S.spells.length} spells.` : ""}` }),
         h("p", { className: "muted", textContent: "Create saves the character to your characters. You can edit, level up and download it like any other." })];
     }
 
     // -- the frame
-    const body2 = () => { err.textContent = ""; body.replaceChildren(h("h3", { textContent: `${at + 1}. ${steps[at][0]}` }), ...steps[at][1]().filter(Boolean)); drawNav(); };
-    const drawNav = () => nav.replaceChildren(h("span", { className: "muted grow", textContent: steps.map(([t], i) => (i === at ? `[${t}]` : t)).join(" › ") }),
-      h("button", { type: "button", textContent: "Back", disabled: at === 0, onclick: () => { at--; body2(); } }),
-      at < steps.length - 1 ? h("button", { type: "button", className: "primary", textContent: "Next", onclick: () => next() })
-        : h("button", { type: "button", className: "primary", textContent: "Create character", disabled: busy, onclick: create }));
+    const pos = () => { const v = visible(); return { v, i: Math.max(0, v.findIndex(([n]) => n === at)) }; };
+    const body2 = () => { err.textContent = ""; const { v, i } = pos(); body.replaceChildren(h("h3", { textContent: `${i + 1}. ${v[i][0]}` }), ...v[i][1]().filter(Boolean)); drawNav(); };
+    const drawNav = () => {
+      const { v, i } = pos();
+      nav.replaceChildren(h("span", { className: "muted grow stepbar", textContent: v.map(([t], k) => (k === i ? `[${t}]` : t)).join(" › ") }),
+        h("button", { type: "button", textContent: "Back", disabled: i === 0, onclick: () => { at = v[i - 1][0]; body2(); } }),
+        i < v.length - 1 ? h("button", { type: "button", className: "primary", textContent: "Next", onclick: () => next() })
+          : h("button", { type: "button", className: "primary", textContent: "Create character", disabled: busy, onclick: create }));
+    };
     const problem = () => {   // what stops moving on from this step
-      const t = steps[at][0];
+      const t = at;
       if (t === "Basics" && !S.name.trim()) return "Give the character a name";
-      if (t === "Race") { if (!S.race) return "Choose a race"; if (S.race.subraces.length && !S.subrace) return "Choose a subrace"; if (S.raceChoices.some(x => x === "" || x == null) || new Set(S.raceChoices).size !== S.raceChoices.length) return "Choose the abilities your race raises (each a different one)"; }
-      if (t === "Class") { if (!S.cls) return "Choose a class"; if (S.skills.length !== S.cls.skills.count) return `Choose ${S.cls.skills.count} class skills`; if (S.cls.subclass.options.length && S.level >= S.cls.subclass.level && !S.subclass) return `Choose a ${S.cls.subclass.label.toLowerCase()}`; }
-      if (t === "Background") { if (!S.bg) return "Choose a background"; if (S.bgSkills.some(x => x === "")) return "Choose the extra skill(s)"; if (S.skills.some(i => S.bg.skills.includes(i) || S.bgSkills.map(Number).includes(i))) return "A skill cannot come from both the class and the background: change one"; }
-      if (t === "Abilities") { if (S.method === "standard" && new Set(S.abilities).size !== 6) return "Use each number of the standard array once"; }
-      if (t === "Choices") for (const a of S.asis) { try { a.get(); } catch (e) { return e.message; } }
-      if (t === "Equipment" && S.equipMode === "gold" && !S.gold) return "Roll or enter your starting gold";
+      if (t === "Race" && !S.race) return "Choose a race";
+      if (t === "Class") { if (!S.cls) return "Choose a class"; if (S.skills.length !== S.cls.skills.count) return `Choose ${S.cls.skills.count} class skills`; }
+      if (t === "Background") { if (!S.bg) return "Choose a background"; if (S.skills.some(i => S.bg.skills.includes(i))) return "A skill cannot come from both the class and the background: change one"; }
+      if (t === "Abilities" && S.method === "standard" && new Set(S.abilities).size !== 6) return "Use each number of the standard array once";
+      if (t === "Choices") {
+        for (const g of groupsNow()) if ((S.choices[g.key] || []).length !== g.picks) return `Choose your ${g.head.toLowerCase()}`;
+        for (const a of S.asis) { try { a.get(); } catch (e) { return e.message; } }
+      }
       return "";
     };
-    const next = () => { const p = problem(); if (p) { err.textContent = p; return; } at++; body2(); };
+    const next = () => { const p = problem(); if (p) { err.textContent = p; return; } const { v, i } = pos(); at = v[Math.min(i + 1, v.length - 1)][0]; body2(); };
     async function create() {
       busy = true; drawNav();
       try {
-        const sc = S.asis.map(a => a.get());
-        const res = await api("/api/party/create", "POST", { name: S.name.trim(), level: S.level, owner: S.owner, race: S.raceSlug, subrace: S.subrace, raceChoices: S.raceChoices.map(Number), looks: S.looks,
-          background: S.bgSlug, bgSkills: S.bgSkills.map(Number), class: S.clsSlug, subclass: S.subclass, skills: S.skills, abilityMethod: S.method, abilities: S.abilities,
-          hpRolls: S.hpMode === "roll" ? S.hpRolls : null, asi: sc, equipment: { mode: S.equipMode, picks: S.picks, gold: S.gold },
-          spells: { cantrips: S.cantrips.map(x => x.slug), spells: S.spells.map(x => x.slug) } });
+        const res = await api("/api/party/create", "POST", { name: S.name.trim(), level: S.level, owner: S.owner, race: +S.raceId, looks: S.looks, background: +S.bgId, class: +S.clsId, skills: S.skills,
+          choices: S.choices, abilityMethod: S.method, abilities: S.abilities, hpRolls: S.hpMode === "roll" ? S.hpRolls : null, asi: S.asis.map(a => a.get()),
+          equipment: { gold: S.gold, items: S.items.map(i => ({ id: i.id, qty: i.qty })) }, spells: { cantrips: S.cantrips.map(x => x.id), spells: S.spells.map(x => x.id) } });
         dlg.close();
         onCreated?.(res.id, res.character);
       } catch (e) { err.textContent = e.message; }
       busy = false; drawNav();
     }
     dlg = Nodes.popup({ title: "New character", body: h("div", {}, body, err, nav) });
+    dlg.classList.add("creatordlg");
     body2();
     return dlg;
   }
 
-  return { open, asiChooser };
+  return { open, asiChooser, choiceBoxes };
 })();
 
 const LevelUp = (() => {
@@ -315,52 +350,62 @@ const LevelUp = (() => {
   const sgn = n => (n >= 0 ? "+" : "") + n;
   const d = n => 1 + Math.floor(Math.random() * n);
 
-  // open(m, { onDone(character), onFinish(), addSpells() }): onDone is called when the level is applied (m is already updated), onFinish when the page's Done button is
-  // pressed, addSpells() when Add spells is.
+  // open(m, { onDone(character), onFinish(), addSpells() }): onDone is called when the level is applied (m is already updated), onFinish when the page's Done button is pressed,
+  // addSpells() when Add spells is.
   function open(m, { onDone, onFinish, addSpells } = {}) {
     const body = h("div", { className: "creator" }), err = h("p", { className: "bad" });
     const dlg = Nodes.popup({ title: `Level up ${m.name}`, body: h("div", {}, body, err) });
+    dlg.classList.add("creatordlg");
     const fail = e => { err.textContent = e.message; };
     async function start() {
       err.textContent = "";
       body.replaceChildren(h("p", { className: "muted", textContent: "Loading…" }));
       let info;
-      try { info = await api(`/api/party/${m.id}/levelup`); } catch (e) { return fail(e); }
+      try { info = await api(`/api/party/${m.id}/levelup`); } catch (e) { body.replaceChildren(); return fail(e); }
       if (!info.canLevel) { body.replaceChildren(h("p", { textContent: "This character is already level 20." })); return; }
-      const own = info.classes.map(c => [c.slug, `${c.name} (level ${c.level} → ${c.level + 1})`]);
-      const multi = info.options.map(o => [o.slug, `${o.name}${o.problems.length ? " — " + o.problems.join("; ") : " (new class)"}`]);
-      const pick = h("select", {}, h("optgroup", { label: "Take a level in" }, own.map(([v, t]) => h("option", { value: v, textContent: t }))),
-        h("optgroup", { label: "Multiclass (needs 13 in the abilities involved)" }, multi.map(([v, t]) => h("option", { value: v, textContent: t }))));
+      const pick = h("select", {}, h("optgroup", { label: "Take a level in" }, info.classes.filter(c => c.known).map(c => h("option", { value: c.name, textContent: `${c.name} (level ${c.level} → ${c.level + 1})` }))),
+        h("optgroup", { label: "Multiclass (needs 13 in the abilities involved)" }, info.options.map(o => h("option", { value: o.name, textContent: `${o.name}${o.problems.length ? " — " + o.problems.join("; ") : " (new class)"}` }))));
       const xp = h("p", { className: "muted", textContent: `Level ${info.total} · ${info.xp} XP${info.xpNext ? ` (level ${info.total + 1} at ${info.xpNext})` : ""}. Levelling up raises XP to the new level's threshold if it is lower.` });
       body.replaceChildren(xp, h("label", { className: "ef" }, h("span", { className: "muted", textContent: "Class" }), pick), h("div", { className: "row" }, h("button", { className: "primary", textContent: "Continue", onclick: () => plan(pick.value) })));
     }
-    async function plan(slug) {
+    async function plan(name) {
       err.textContent = "";
       let p;
-      try { p = await api(`/api/party/${m.id}/levelup?class=${encodeURIComponent(slug)}`); } catch (e) { return fail(e); }
+      try { p = await api(`/api/party/${m.id}/levelup?class=${encodeURIComponent(name)}`); } catch (e) { return fail(e); }
       if (p.problems.length) { fail(new Error(p.problems.join("; "))); return; }
-      let roll = null;
-      const hpInfo = h("p", { textContent: `Hit points: average ${p.hpAverage} (d${p.hd} average ${Math.floor(p.hd / 2) + 1} ${sgn(p.conMod)} Constitution)` });
+      let roll = null, asi = null;
+      const picked = {};
+      const hpInfo = h("p", {});
       const rollBox = h("input", { type: "number", min: 1, max: p.hd, className: "inum", placeholder: "roll", onchange: () => { roll = rollBox.value === "" ? null : Math.max(1, Math.min(p.hd, +rollBox.value)); sync(); } });
-      const sync = () => { hpInfo.textContent = roll == null ? `Hit points: average ${p.hpAverage} (d${p.hd} average ${Math.floor(p.hd / 2) + 1} ${sgn(p.conMod)} Constitution)` : `Hit points: rolled ${roll} ${sgn(p.conMod)} Constitution = ${Math.max(1, roll + p.conMod)}`; };
-      const asi = p.asi ? Creator.asiChooser("Ability score improvement") : null;
-      let sub = "";
-      const subSel = p.subclass ? h("select", { onchange: ev => (sub = ev.target.value) }, h("option", { value: "", textContent: "(choose)" }), p.subclass.options.map(o => h("option", { value: o.slug, textContent: o.name + (o.source && o.source !== "5e Core Rules" ? ` (${o.source})` : "") }))) : null;
+      const conScore = (m.abilities || []).find(a => a.name === "CON")?.score ?? 10;
+      // hit points after the ability score improvement (a rise in Constitution counts for this level and, once the modifier steps up, for every earlier one)
+      const sync = () => {
+        let mod = p.conMod;
+        try { const g = asi?.get(); if (g?.type === "asi") mod = Math.floor((conScore + g.inc.filter(x => x === 2).length - 10) / 2); else if (g?.feat?.ability === 2) mod = Math.floor((conScore + 1 - 10) / 2); } catch (_) { /* not chosen yet */ }
+        const base = roll == null ? Math.floor(p.hd / 2) + 1 : roll, gain = Math.max(1, base + mod) + Math.max(0, mod - p.conMod) * (p.newTotal - 1);
+        hpInfo.textContent = `Hit points: ${roll == null ? "average " + base : "rolled " + roll} ${sgn(mod)} Constitution${mod > p.conMod ? ` (and +${mod - p.conMod} for each earlier level)` : ""} = +${gain}`;
+      };
+      asi = p.asi ? Creator.asiChooser("Ability score improvement (first: it can change the hit points below)", sync) : null;
+      sync();
+      const choiceEls = Creator.choiceBoxes(p.groups, picked, () => {});
       body.replaceChildren(...[
         h("h3", { textContent: `${p.class.name}: level ${p.classLevel} (character level ${p.newTotal})` }),
-        hpInfo, h("div", { className: "row" }, h("button", { type: "button", textContent: `🎲 Roll d${p.hd}`, onclick: () => { roll = d(p.hd); rollBox.value = roll; sync(); } }), rollBox, h("button", { type: "button", className: "tiny", textContent: "Use the average", onclick: () => { roll = null; rollBox.value = ""; sync(); } })),
-        p.features.length ? h("div", {}, h("h4", { textContent: "New features" }), ...p.features.map(f => h("details", {}, h("summary", { textContent: f.name }), h("p", { textContent: f.text || "(see the class description)" })))) : h("p", { className: "muted", textContent: "No new class features at this level." }),
-        Object.keys(p.extra || {}).length ? h("p", { className: "muted", textContent: Object.entries(p.extra).map(([k, v]) => `${k}: ${v}`).join(" · ") }) : null,
-        subSel ? h("label", { className: "ef" }, h("span", { className: "muted", textContent: p.subclass.label }), subSel) : null,
+        p.features.length ? h("div", {}, h("h4", { textContent: "New features" }), ...p.features.map(f => h("details", {}, h("summary", { textContent: f.name }), h("p", { textContent: f.text })))) : h("p", { className: "muted", textContent: "No new class features at this level." }),
+        ...(choiceEls.length ? [h("h4", { textContent: "Choose" }), ...choiceEls] : []),
         asi ? asi.el : null,
+        h("h4", { textContent: "Hit points (after the ability scores)" }), hpInfo,
+        h("div", { className: "row" }, h("button", { type: "button", textContent: `🎲 Roll d${p.hd}`, onclick: () => { roll = d(p.hd); rollBox.value = roll; sync(); } }), rollBox, h("button", { type: "button", className: "tiny", textContent: "Use the average", onclick: () => { roll = null; rollBox.value = ""; sync(); } })),
         p.newCantrips || p.newSpells ? h("p", {}, `New spells: ${p.newCantrips ? p.newCantrips + " cantrip(s)" : ""}${p.newCantrips && p.newSpells ? " and " : ""}${p.newSpells ? p.newSpells + " spell(s)" : ""} to learn: add them from Spells after levelling.`) : null,
         h("div", { className: "row" }, h("button", { textContent: "Back", onclick: start }), h("button", { className: "primary", textContent: `Level up to ${p.newTotal}`, onclick: async ev => {
           err.textContent = "";
           let decision = null;
-          try { if (asi) decision = asi.get(); if (subSel && !sub) throw new Error(`Choose a ${p.subclass.label.toLowerCase()}`); } catch (e) { return fail(e); }
+          try {
+            if (asi) decision = asi.get();
+            for (const g of p.groups) if ((picked[g.key] || []).length !== g.picks) throw new Error(`Choose your ${g.head.toLowerCase()}`);
+          } catch (e) { return fail(e); }
           ev.target.disabled = true;
           try {
-            const res = await api(`/api/party/${m.id}/levelup`, "POST", { class: slug, roll, asi: decision, subclass: sub });
+            const res = await api(`/api/party/${m.id}/levelup`, "POST", { class: name, roll, asi: decision, choices: picked });
             done(res, p);
           } catch (e) { fail(e); ev.target.disabled = false; }
         } }))].filter(Boolean));   // (replaceChildren would print a null as the word "null")
@@ -370,7 +415,8 @@ const LevelUp = (() => {
       body.replaceChildren(...[h("h3", { textContent: `${m.name} is now level ${res.result.level}` }),
         h("p", { textContent: `+${res.result.hpGain} hit points (${res.character.hpMax} in all).${res.result.features.length ? " New: " + res.result.features.join(", ") + "." : ""}` }),
         p.newCantrips || p.newSpells ? h("p", { className: "ok", textContent: "You can learn new spells now." }) : null,
-        h("div", { className: "row" }, p.newCantrips || p.newSpells ? h("button", { className: "primary", textContent: "Add spells", onclick: () => { dlg.close(); addSpells?.(); } }) : null, h("button", { textContent: "Done", onclick: () => { dlg.close(); onFinish?.(); } }))].filter(Boolean));
+        h("div", { className: "row" }, p.newCantrips || p.newSpells ? h("button", { className: "primary", textContent: "Add spells", onclick: () => { dlg.close(); addSpells?.(); } }) : null,
+          h("button", { textContent: "Done", onclick: () => { dlg.close(); onFinish?.(); } }))].filter(Boolean));
       onDone?.(res.character);
     }
     start();

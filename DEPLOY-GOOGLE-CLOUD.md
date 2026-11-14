@@ -293,6 +293,7 @@ to build a monster list (saved in the bucket's `data/` folder, rebuilt monthly) 
   one-instance limit above also protects the accounts. Back the bucket up as described in "Everyday tasks".
 - **The bucket is a network disk,** so file access is a little slower than a local disk. A long soundtrack may
   hesitate the first time it plays.
+- **Character creation needs the rule book in the bucket.** It is Fight Club's compendium, kept from a Fight Club backup you import (the container image has no backup in it): after the first deploy, sign in as the DM and import a Fight Club backup made after you imported the collection into the app. Home then says which rule book is in use.
 - **The Fight Club expansion download** (`/download/collection.zip`) is deliberately not in the image (it is
   123 MB); that one link says "not found" in the cloud copy.
 - **Cost.** With `--min-instances 0` you pay only while a container is running (it stops about 15 minutes after

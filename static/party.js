@@ -312,6 +312,12 @@ async function renderDetail(id) {
     },
   });
 
+  const removeFeature = async f => {
+    if (!confirm(`Remove "${f.name}" from ${m.name}? It is taken out of the character's file.`)) return;
+    try { await call("DELETE", `features/${f.ref}`); } catch (e) { alert(e.message); return; }
+    await refresh("feats");
+  };
+
   // The five sub-menu pages. Inventory, Spells and Feats are rebuilt every time they are shown (an Add may have changed them).
   const counts = () => Sheet.counts(m);
   const sheet = UI.tabs({ key: "sheet", first: "tracker", tabs: [
@@ -319,7 +325,7 @@ async function renderDetail(id) {
     { id: "stats", label: "Skills and Stats", render: statsPanel, fresh: true },
     { id: "inv", label: () => `Inventory (${counts().items})`, render: () => Sheet.inventory(m, invHooks), fresh: true },
     { id: "spells", label: () => `Spells (${counts().spells})`, render: spellsPanel, fresh: true },
-    { id: "feats", label: () => `Feats, Features and Notes (${counts().features})`, render: () => Sheet.features(m, addNote, editFeature), fresh: true },
+    { id: "feats", label: () => `Feats, Features and Notes (${counts().features})`, render: () => Sheet.features(m, addNote, editFeature, removeFeature), fresh: true },
   ] });
   view.append(sheet.el);
   try { if (sessionStorage.getItem("openAddSpell")) { sessionStorage.removeItem("openAddSpell"); sheet.show("spells"); addSpell(); } } catch (_) { /* no storage */ }   // after a level-up: straight to learning the new spells

@@ -134,12 +134,14 @@ const Sheet = (() => {
       ...m.classes.flatMap(c => c.feats.map(f => ({ ...f, source: c.name }))), ...m.feats.map(f => ({ ...f, source: "Feat" }))];
   }
   // features(m, add, edit): `edit(feature)` opens the editor for any row (every kind has the ✎ button).
-  function features(m, add, edit) {
+  // features(m, add, edit, remove): `edit(feature)` opens the editor for any row (every kind has the ✎ button) and `remove(feature)` takes it out (✕; the page asks first)
+  function features(m, add, edit, remove) {
     return withAdd([["+ Add note", add]], dataTable({
       key: `sheet.${m.id}.features`, rows: featureRows(m), empty: "No features, feats or notes.",
       columns: [{ label: "Name", text: f => f.name }, { label: "Source", text: f => f.source, filter: true }],
       detail: f => f.text || null,
-      actions: edit ? f => [h("button", { className: "tiny", textContent: "✎", title: "Edit the title and text", onclick: () => edit(f) })] : null,
+      actions: edit ? f => [h("button", { className: "tiny", textContent: "✎", title: "Edit the title and text", onclick: () => edit(f) }),
+        remove ? h("button", { className: "tiny danger", textContent: "✕", title: "Remove it from the character", onclick: () => remove(f) }) : null] : null,
     }));
   }
 

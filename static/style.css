@@ -2930,3 +2930,14 @@ body.canvaspage #stage { touch-action: none; }   /* without this the phone scrol
 .creator details { margin: .3rem 0; }
 .creatornav { align-items: center; margin-top: .6rem; }
 .chip { display: inline-block; border: 1px solid var(--accent, #9b6cff); border-radius: 12px; padding: 0 .5rem; margin: 0 .25rem .25rem 0; font-size: .85rem; }
+
+/* the creation and level-up wizards on a phone: the pop-up fills the screen and scrolls inside itself, with room below the last button, and the Back / Next bar stays in reach.
+   16px text in the boxes so the phone neither zooms nor refuses to show the keyboard. */
+@media (max-width: 600px) {
+  dialog.creatordlg { width: 100vw; max-width: 100vw; height: 100dvh; max-height: 100dvh; margin: 0; border-radius: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; padding-bottom: 0; }
+  .creator { min-width: 0; padding-bottom: 30dvh; }
+  .creatornav { position: sticky; bottom: 0; background: var(--panel, #1a1625); padding: .6rem 0; border-top: 1px solid var(--line, #444); z-index: 2; flex-wrap: wrap; }
+  .creatornav .stepbar { flex-basis: 100%; font-size: .75rem; }
+  .creator input, .creator select, .creator textarea { font-size: 16px; }
+  .creator .efgrid { grid-template-columns: 1fr; }
+}

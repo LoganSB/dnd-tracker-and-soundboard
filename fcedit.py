@@ -41,6 +41,20 @@ def _ints(s):
     return [int(x) for x in re.findall(r"-?\d+", s or "")]
 
 
+def class_level(c):
+    """A class's level. Fight Club leaves <level> out at level 1 (the sample character it made has none), so a missing one is 1."""
+    return max(1, int(_num(_t(c, "level"), 1)))
+
+
+def strip_empty(el):
+    """Remove every element under `el` that has no text and no children. Fight Club's own backups never contain one, and an empty <age/> or <text/> is the kind of thing
+    that makes its reader refuse a file; party._write calls this on everything the app saves."""
+    for kid in list(el):
+        strip_empty(kid)
+        if len(kid) == 0 and not (kid.text or "").strip():
+            el.remove(kid)
+
+
 def slot_list(root, tag="slots"):
     """The ten numbers of <slots> / <slotsCurrent>: position 0 is the CANTRIPS known (Fight Club counts them as level 0: a 13th-level Cleric is
     "5,4,3,3,3,2,1,1,0,0" = 5 cantrips, then four 1st-level slots, three 2nd ... ), positions 1-9 are the slots of spell level 1-9."""

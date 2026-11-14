@@ -62,6 +62,7 @@ from flask import Blueprint, Response, abort, jsonify, request, send_file
 
 import auth
 import charcalc
+import codex
 import fcedit
 import fcformat
 import fcmonster
@@ -244,6 +245,7 @@ def _peek(cid):
             _chars.pop(cid, None)
             abort(404)
         root = SafeET.parse(p).getroot()
+        fcedit.strip_empty(root)   # an empty element saved by an earlier version is dropped as it is read (Fight Club may refuse a file with one)
         _chars[cid] = [root, _mtime(p)]
         return root
 
@@ -257,6 +259,7 @@ def _load(cid):
 def _write(cid, root):
     """Save a <character> element: into the cache now, to data/party/<cid>.xml a few seconds later (a character with no file yet: at once)."""
     p = _path(cid)
+    fcedit.strip_empty(root)   # Fight Club's own files hold no empty element, and it may refuse a file that does
     with lock:
         _chars[cid] = [root, 0]
         if p.exists():
@@ -271,7 +274,7 @@ def _write(cid, root):
 
 def _class_line(root):
     """"Wizard 5 / Cleric 1": a multiclassed character has several <class> elements."""
-    return " / ".join(f"{_t(c, 'name')} {_t(c, 'level', '?')}" for c in root.findall("class"))
+    return " / ".join(f"{_t(c, 'name')} {fcedit.class_level(c)}" for c in root.findall("class"))
 
 
 def _has_image(cid, root):
@@ -443,7 +446,7 @@ def summary(cid, root):
     return {
         "id": cid, "name": _t(root, "name"), "class": levels, "owner": ex.get("owner", ""),
         # total character level (the encounter builder uses it to rate difficulty)
-        "level": sum(int(_num(_t(c, "level"))) for c in cls),
+        "level": sum(fcedit.class_level(c) for c in cls),
         "race": _t(root.find("race"), "name") if root.find("race") is not None else "",
         "hp": int(_num(_t(root, "hpCurrent"))), "hpMax": int(_num(_t(root, "hpMax"))),
         # <slots> and <slotsCurrent> are comma lists like "4,3,2,0,0,0,0,0,0," (index 0 =
@@ -455,7 +458,7 @@ def summary(cid, root):
         "conditions": ex.get("conditions", ""),
         # hit dice per class: the die size, the class level (= the most there can be) and how many are left (all of them when the
         # file does not say)
-        "hitDice": [{"name": _t(c, "name"), "hd": HIT_DIE.get(int(_num(_t(c, "hd"))), 0), "level": int(_num(_t(c, "level"), 1)),
+        "hitDice": [{"name": _t(c, "name"), "hd": HIT_DIE.get(int(_num(_t(c, "hd"), 1)), 0), "level": int(_num(_t(c, "level"), 1)),
                      "left": int(_num(_t(c, "hdCurrent"), _num(_t(c, "level"), 1)))} for c in cls],
         # companions (Fight Club <monster>): where each is in the file, its name and kind, hit points and AC (see fcmonster.py)
         "creatures": [fcmonster.row(i, m) for i, m in enumerate(root.findall("monster"))],
@@ -501,7 +504,7 @@ def detail(cid, root):
         # so merging those in listed all the druid circles and features far above the character's level. Not used here.
         feats = _feats(c, f"c{len(d['classes'])}.")
         d["classes"].append({
-            "name": _t(c, "name"), "level": _t(c, "level"),
+            "name": _t(c, "name"), "level": str(fcedit.class_level(c)),
             # hd = hit die size (e.g. 8), hdCurrent = hit dice still unspent.
             "hd": _t(c, "hd"), "hdCurrent": _t(c, "hdCurrent"),
             "armor": _t(c, "armor"), "weapons": _t(c, "weapons"), "tools": _t(c, "tools"),
@@ -548,7 +551,7 @@ def detail(cid, root):
 
 
 # ------------------------------------------------------------------- import
-def _characters_from(data: bytes):
+def _characters_from(data: bytes, adopt=False):
     """Parse XML bytes and return ([<character> elements], {portrait uid: base64 text}).
 
     A Fight Club backup has <data> as the root with <character> children and, after them, the portraits as
@@ -558,11 +561,13 @@ def _characters_from(data: bytes):
     root = SafeET.fromstring(data)
     if root.tag == "character":
         return [root], {}
+    if adopt:   # a backup that also holds Fight Club's rule book becomes the rule book character creation copies from (codex.py)
+        codex.adopt_root(root)
     images = {(i.findtext("uid") or "").strip(): "".join((i.findtext("encoded") or "").split()) for i in root.findall("imageData") if i.find("encoded") is not None}
     return root.findall("character"), images
 
 
-def _read_upload(f):
+def _read_upload(f, adopt=False):
     """Read an uploaded file object `f` of EITHER kind -> ([<character> elements], {portrait uid: base64}, {character uid: extras}).
 
     The kind is told from the file itself (gloan5e.load): a Gloan5e file brings its extras; a Fight Club file is converted to the same record with
@@ -572,7 +577,7 @@ def _read_upload(f):
     raw, name = f.read(), getattr(f, "filename", "") or ""   # whole upload as a bytes object
     fc, extras, kind = gloan5e.load(raw, name)
     if kind == "gloan5e":
-        chars, images = _characters_from(fc)
+        chars, images = _characters_from(fc, adopt)
         return chars, images, extras
     if zipfile.is_zipfile(io.BytesIO(fc)):
         chars, images = [], {}
@@ -582,13 +587,13 @@ def _read_upload(f):
                     continue
                 if info.filename.lower().endswith((".xml", ".backup")):
                     try:
-                        c, i = _characters_from(z.read(info))
+                        c, i = _characters_from(z.read(info), adopt)
                         chars += c
                         images.update(i)
                     except ET.ParseError:
                         continue
         return chars, images, {}
-    chars, images = _characters_from(fc)
+    chars, images = _characters_from(fc, adopt)
     return chars, images, {}
 
 
@@ -668,13 +673,14 @@ def import_party():
     f = request.files.get("file")  # uploaded files arrive in request.files, not the JSON body
     if not f:
         return jsonify(error="No file uploaded"), 400
+    user = auth.current_user()
     try:
-        chars, images, extras = _read_upload(f)
+        # the DM's backup may bring the rule book (its compendium); a player's only when there is none yet
+        chars, images, extras = _read_upload(f, adopt=(user["role"] == "dm" or codex.load() is None))
     except Exception as e:
         return jsonify(error=f"Could not read file: {e}"), 400
     if not chars:
         return jsonify(error="No <character> entries found in that file"), 400
-    user = auth.current_user()
     wanted = set(request.form.getlist("only")) if "select" in request.form else None
     with lock:
         ex = _extra()
@@ -1242,6 +1248,23 @@ def change_feature(cid, ref):
             return jsonify(error=str(err)), 404
         fcedit.put(el, "name", name)
         fcedit.put(el, "text", _text(b.get("text"), 8000))
+        _write(cid, root)
+    return jsonify(ok=True, character=detail(cid, root))
+
+
+@bp.delete("/api/party/<cid>/features/<ref>")
+def delete_feature(cid, ref):
+    """DELETE /api/party/<id>/features/<ref> -> {"ok": true, "character"}: remove a note, feat or class / race / background feature (`ref` as in change_feature). It takes the element out of
+    the file; there is no undo, so the page asks first."""
+    _guard(cid)
+    with lock:
+        root = _load(cid)
+        try:
+            el = _feature_at(root, ref)
+        except ValueError as err:
+            return jsonify(error=str(err)), 404
+        parent = next(p for p in root.iter() if el in list(p))
+        parent.remove(el)
         _write(cid, root)
     return jsonify(ok=True, character=detail(cid, root))
 
