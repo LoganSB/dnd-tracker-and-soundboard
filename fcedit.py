@@ -41,6 +41,24 @@ def _ints(s):
     return [int(x) for x in re.findall(r"-?\d+", s or "")]
 
 
+def slot_list(root, tag="slots"):
+    """The ten numbers of <slots> / <slotsCurrent>: position 0 is the CANTRIPS known (Fight Club counts them as level 0: a 13th-level Cleric is
+    "5,4,3,3,3,2,1,1,0,0" = 5 cantrips, then four 1st-level slots, three 2nd ... ), positions 1-9 are the slots of spell level 1-9."""
+    ints = _ints(_t(root, tag))
+    return (ints + [0] * 10)[:10]
+
+
+def slot_levels(root, tag="slots"):
+    """The nine numbers for spell levels 1-9 (not the cantrips)."""
+    return slot_list(root, tag)[1:]
+
+
+def set_slot_levels(root, tag, nine):
+    """Write spell levels 1-9 into <slots> / <slotsCurrent>, leaving the cantrip count at position 0 as it is."""
+    first = slot_list(root, tag)[0]
+    put(root, tag, "".join(f"{v}," for v in [first] + [int(v) for v in (list(nine) + [0] * 9)[:9]]))
+
+
 def put(parent, tag, value):
     """Set the text of the child <tag> of `parent`, creating the element when it is missing."""
     e = parent.find(tag)
@@ -365,14 +383,12 @@ def edit_character(root, b):
             for k in ("armor", "weapons", "tools"):
                 if k in v:
                     put(c, k, str(v[k]).strip()[:120])
-    if "slots" in b:
-        old = _ints(_t(root, "slots"))
+    if "slots" in b:   # spell levels 1-9 (the cantrip count at position 0 of the file's list is not touched)
         new = [_clamp(v, 0, 9) for v in b["slots"]][:9]
         new += [0] * (9 - len(new))
-        new += old[9:10] or [0]
-        put(root, "slots", "".join(f"{v}," for v in new))
-        cur = _ints(_t(root, "slotsCurrent"))
-        put(root, "slotsCurrent", "".join(f"{min(cur[i] if i < len(cur) else new[i], new[i])}," for i in range(len(new))))
+        cur = slot_levels(root, "slotsCurrent")
+        set_slot_levels(root, "slots", new)
+        set_slot_levels(root, "slotsCurrent", [min(cur[i], new[i]) for i in range(9)])
     if "profs" in b:
         _edit_profs(root, b["profs"])
 

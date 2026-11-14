@@ -69,7 +69,8 @@ async function renderDetail(id) {
   // Two downloads: this character, and ALL of them in one Fight Club backup (the server only includes the characters this user may see: the DM
   // gets every character, a player only the ones assigned to them).
   const isDM = document.body.dataset.role === "dm";
-  bar.append(picker, h("button", { className: "btn", onclick: () => downloadCharacters(`/api/party/${id}/export.zip`, "this character"), textContent: "⬇ Download this character" }),
+  bar.append(picker, h("button", { className: "btn", onclick: () => Creator.open({ isDM, onCreated: cid => { store("party.last", cid); location.href = "/_/party/" + cid; } }), textContent: "＋ New character" }),
+    h("button", { className: "btn", onclick: () => downloadCharacters(`/api/party/${id}/export.zip`, "this character"), textContent: "⬇ Download this character" }),
     h("button", { className: "btn", onclick: () => downloadCharacters("/api/party/export.zip", isDM ? "all characters" : "all your characters"), textContent: isDM ? "⬇ Download all characters" : "⬇ Download all my characters",
       title: "One Fight Club backup file holding " + (isDM ? "every character" : "every character assigned to you") }));
   fillPicker(picker, id);
@@ -111,8 +112,11 @@ async function renderDetail(id) {
   };
   // The Edit character button (editchar.js): the form's changes are saved with one PATCH, then the page loads again with the new numbers.
   // It sits beside the name on the Tracker card (below), which scrolls with the page, not in the toolbar.
-  const editButton = () => h("button", { className: "tiny editbtn", textContent: "✎ Edit", title: "Edit character: change the scores, race, class, spell slots and proficiencies",
-    onclick: () => EditCharacter.open(m, async changes => { await patch(changes); location.reload(); }) });
+  const editButton = () => h("span", { className: "editbtn" },
+    h("button", { className: "tiny", textContent: "✎ Edit", title: "Edit character: change the scores, race, class, spell slots and proficiencies",
+      onclick: () => EditCharacter.open(m, async changes => { await patch(changes); location.reload(); }) }), " ",
+    h("button", { className: "tiny", textContent: "⬆ Level up", title: "Take the next level: hit points, features, spell slots, ability score improvement or feat, multiclass",
+      onclick: () => LevelUp.open(m, { onDone: () => extras?.redraw(), onFinish: () => location.reload(), addSpells: () => { try { sessionStorage.setItem("openAddSpell", "1"); } catch (_) { /* just reload */ } location.reload(); } }) }));
   // The Skills and Stats page is rebuilt every time it is opened (the Tracker page may have changed things meanwhile), so it loads the
   // character again first.
   const statsPanel = () => {
@@ -318,6 +322,7 @@ async function renderDetail(id) {
     { id: "feats", label: () => `Feats, Features and Notes (${counts().features})`, render: () => Sheet.features(m, addNote, editFeature), fresh: true },
   ] });
   view.append(sheet.el);
+  try { if (sessionStorage.getItem("openAddSpell")) { sessionStorage.removeItem("openAddSpell"); sheet.show("spells"); addSpell(); } } catch (_) { /* no storage */ }   // after a level-up: straight to learning the new spells
 }
 
 // ------------------------------------------------------------------ boot

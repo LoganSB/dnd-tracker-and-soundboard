@@ -79,16 +79,16 @@ const Sheet = (() => {
     return h("div", {}, currency(m, hooks), withAdd([["+ Add loot", hooks.addLoot], ["+ Custom item", hooks.addItem]], dataTable({
       key: `sheet.${m.id}.items`, rows, empty: "No items.",
       columns: [
-        { label: "Item", text: i => i.name.trim() + (i.magic ? " ✦" : ""),
-          show: i => h("span", {}, i.name.trim() + (i.magic ? " ✦" : ""),
+        { label: "Item", text: i => i.name.trim() + (i.magic ? " ✦" : ""), clip: "self",
+          show: i => h("span", {}, h("div", { className: "cliptext", title: i.name.trim() + (i.magic ? " ✦" : "") }, i.name.trim() + (i.magic ? " ✦" : "")),
             unattuned(i) ? h("div", { className: "attunenote" }, "⚠ Not attuned: its bonuses do not count yet. ", hooks.attune ? btn("Attune", "Attune to it (3 items at most)", () => hooks.attune(i, true), "primary") : null) : null,
             i.gift ? h("div", { className: "giftnote" }, `Given to you by ${i.gift.from}`, i.gift.qty > 1 ? ` (${i.gift.qty})` : "", " ", hooks.ack ? btn("Acknowledge", "Keep it: end the highlight", () => hooks.ack(i.gift), "primary") : null) : null) },
-        { label: "Count", text: i => (i.quantity > 1 ? String(i.quantity) : ""), wide: true },
-        { label: "Type", text: i => i.type || i.detail, filter: true, wide: true },
-        { label: "Where", text: i => i.where, filter: true, wide: true },
-        { label: "Worn", text: wornText, filter: true, wide: true },
+        { label: "Count", text: i => (i.quantity > 1 ? String(i.quantity) : ""), wide: true, clip: true },
+        { label: "Type", text: i => i.type || i.detail, filter: true, wide: true, clip: true },
+        { label: "Where", text: i => i.where, filter: true, wide: true, clip: true },
+        { label: "Worn", text: wornText, filter: true, wide: true, clip: true },
         { label: "Stats", text: itemStats, wide: true, clip: true },
-        { label: "Value", text: i => gp(i.value), wide: true },
+        { label: "Value", text: i => gp(i.value), wide: true, clip: true },
       ],
       detail: i => i.text || i.detail || null, rowClass: i => [isOn(i) && i.active !== false ? "equipped" : "", unattuned(i) ? "unattuned" : "", i.gift ? "gift" : ""].filter(Boolean).join(" "),
       actions: i => [
@@ -110,7 +110,7 @@ const Sheet = (() => {
     return h("div", {}, slots, withAdd([["+ Add spell", add]], dataTable({
       key: `sheet.${m.id}.spells`, rows, empty: "No spells.",
       columns: [
-        { label: "Spell", text: s => s.name },
+        { label: "Spell", text: s => s.name, clip: true },
         { label: "Level", text: s => (s.level === 0 ? "Cantrip" : String(s.level)), filter: true },
         { label: "School", text: s => s.school, filter: true, wide: true },
         { label: "Ready", text: s => (s.prepared ? "Ready" : ""), filter: true,
@@ -196,7 +196,7 @@ const Sheet = (() => {
     key: `sheet.${m.id}.attacks`, rows: m.attacks, empty: "No weapons equipped.",
     columns: [{ label: "Weapon", text: a => a.name }, { label: "Attack", text: a => sgn(a.atk) },
       { label: "Damage", text: a => a.damage + (a.damage2h ? ` (${a.damage2h} two-handed)` : "") }, { label: "Notes", text: a => a.notes }],
-  }), h("p", { className: "muted", textContent: "Equipped weapons only. Attack = ability modifier + proficiency (if proficient) + the item's bonus." }));
+  }), h("p", { className: "muted", textContent: "Equipped weapons only. Attack = ability modifier + proficiency (if proficient) + the weapon's magic bonus; damage = dice + the same modifier. Finesse takes the better of Strength and Dexterity; the off-hand weapon adds no modifier to damage unless it is negative. Fighting styles, Sneak Attack, Rage and other class features are not included." }));
 
   // ---- the Tracker page, below the live tracker: hit dice first, then Conditions, Statistics, Attacks and Creatures, each under a thin line.
   // All of it sits in the one card the live tracker is in (party.js puts the tracker widget above this). Everything is built from the

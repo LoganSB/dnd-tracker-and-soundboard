@@ -104,6 +104,10 @@ Confirmed from `FightClub5_Lynius_Creature.backup` (a custom creature with every
   * `damage`: dice such as `1d20`; `1n55` is ONE die of 55 sides (shown as 1d55). `attackBonus` and `damage` may be Fight Club formulas with `%` tokens (`%3+%4+%2`, `1w+1o`): nobody knows what they mean, so they are shown as written and never calculated. Damage type codes beyond 1-3 are unknown (shown as "type 12").
 * **Class trackers**: `<class><tracker>` (`label`, `type`, `resetType`, `value` = left now, `formula` = the most) and `<autolevel><tracker>` giving the `formula` from that level on (Channel Divinity: 1, 2 at level 6, 3 at level 18). `resetType` 1 is the only value seen; it is read as "returns on a short rest" (unconfirmed); every tracker returns on a long rest.
 
+## Spell slot lists: position 0 is the cantrips
+
+`slots` and `slotsCurrent` (on the character and on each class) are ten numbers. **Position 0 is the number of cantrips known** (a 13th-level Cleric is `5,4,3,3,3,2,1,1,0,0`: five cantrips, then four 1st-level, three 2nd-level ... slots; a level 2 Cleric `3,3,0,...`: three cantrips and three 1st-level slots), and positions 1 to 9 are the slots of spell level 1 to 9. Earlier versions of this app read position 0 as 1st-level slots, which showed every level one place too low; `fcedit.slot_levels` / `set_slot_levels` now read and write levels 1 to 9 and leave the cantrip count alone. A character made by the creation wizard writes both lists this way.
+
 ## Slots and what the app keeps beside the file
 
 Fight Club's `<slot>` only covers armor (5), the off hand (4) and the main hand (2); 1 is the pack's main list. It has no place for a belt, boots or attunement, so this app keeps the worn kind and attunement in the extras (see `GLOAN5E-FORMAT.md`), and the Fight Club file is unchanged by them. New items the app adds have no `<slot>` (stowed).

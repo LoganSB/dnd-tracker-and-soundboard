@@ -13,7 +13,8 @@ THE RULES USED (5th edition)
   armor class         armor: light = base + Dex, medium = base + Dex (at most 2), heavy = base; shield adds its AC; magic bonuses add;
                       no body armor = 10 + Dex (a Barbarian adds Con, a Monk adds Wis instead of nothing)
   attack bonus        ability modifier + proficiency (when proficient with that weapon) + the item's magic bonus
-                      ability: Str for melee, Dex for ranged, the better of the two for Finesse
+                      ability: Str for melee, Dex for ranged, the better of the two for Finesse (see attacks() for the whole rule list,
+                      including the off hand)
   damage              the dice + the same ability modifier + the item's magic damage bonus
   skills / saves      ability modifier + proficiency bonus when proficient (Fight Club does not record expertise)
   passive Perception  10 + the Perception modifier
@@ -80,44 +81,84 @@ def armor_class(d, mods, equipped):
     return ac, how
 
 
+def _compact(name):
+    """A weapon's name for comparing: lower case, no "+1 " in front, no spaces or hyphens, singular ("Short Swords" and "shortsword" match)."""
+    n = re.sub(r"^\+\d+\s+", "", (name or "").lower().strip())
+    return re.sub(r"[\s\-']", "", n).rstrip("s")
+
+
 def _proficient_with(item, weapons_text):
-    """Is the character proficient with this weapon? By category ("simple" / "martial" in the class's weapon list and in the item's
-    detail line) or by the weapon's own name ("rapiers" lists the Rapier)."""
+    """Is the character proficient with this weapon? (PHB: a class lists the weapon CATEGORIES it knows ("simple", "martial") and/or particular weapons.)
+    By category: the word is in the item's detail line and in the class's list. By name: one WHOLE entry of the class's comma-separated list is this
+    weapon ("hand crossbows" is not the Light Crossbow, "warhammers" is not the Light Hammer). Weapons a RACE trains (an elf's longbow) are not in the
+    class list, so they are not counted."""
     text = (weapons_text or "").lower()
     detail = (item.get("detail") or "").lower()
     for cat in ("simple", "martial"):
         if cat in detail and cat in text:
             return True
-    base = re.sub(r"^\+\d+\s+", "", item.get("name", "").lower()).strip()
-    words = {base, base.split(" of ")[0], base.split()[-1] if base.split() else ""}
-    return any(w and (w in text or w.rstrip("s") in text) for w in words)
+    base = re.sub(r"^\+\d+\s+", "", item.get("name", "").lower()).strip().split(" of ")[0]
+    entries = {_compact(e) for e in re.split(r",|\band\b", text) if e.strip()}
+    return bool(_compact(base)) and _compact(base) in entries
 
 
 def _signed(n):
     return f"+{n}" if n >= 0 else str(n)
 
 
+LIGHT = 8   # the weaponProperty bit
+
+
 def attacks(d, mods, prof, equipped):
     """One row per equipped weapon, then an unarmed strike. Row: name, atk (a number), damage ("1d8+3 piercing"), damage2h (versatile),
-    notes (properties and range)."""
+    notes (properties and range).
+
+    THE RULES (PHB, "Making an attack" and "Weapons"; SRD 5.1):
+      * attack = d20 + ability modifier + proficiency bonus (when proficient with the weapon) + the weapon's magic bonus;
+        damage = the dice + the SAME ability modifier + the weapon's magic damage bonus.
+      * the ability: Strength for a melee weapon, Dexterity for a ranged weapon. A weapon with FINESSE lets you pick Strength or Dexterity (the better one
+        is shown), for both rolls, melee or ranged (a dart is a ranged finesse weapon). A THROWN weapon keeps the ability of its kind (a handaxe
+        thrown is Strength; a dagger is finesse).
+      * the weapon in the OFF HAND (two-weapon fighting: a second Light melee weapon, a bonus-action attack) does not add the ability modifier to its
+        damage unless that modifier is negative. (The Two-Weapon Fighting style, which restores it, is a class feature and is not counted.)
+      * VERSATILE: the second damage is for two hands, with the same modifier.
+    Not counted (they come from class features, feats and spells, not the data): fighting styles, Sneak Attack, Rage damage, Great Weapon Master,
+    +X ammunition, racial weapon training."""
     weapons_text = " ".join(c.get("weapons", "") for c in d.get("classes", []))
+    held = [i for i in equipped if i.get("type") in ("Melee Weapon", "Ranged Weapon") and i.get("damage")]
+    main_hand = any(i.get("slot") == "2" for i in held)
     rows = []
-    for i in equipped:
-        if i.get("type") not in ("Melee Weapon", "Ranged Weapon") or not i.get("damage"):
-            continue
+    for i in held:
         ranged = i["type"] == "Ranged Weapon"
-        stat = mods[1] if ranged else max(mods[0], mods[1]) if i.get("propCode", 0) & FINESSE else mods[0]
+        code = i.get("propCode", 0)
+        stat = max(mods[0], mods[1]) if code & FINESSE else mods[1] if ranged else mods[0]
         b = i.get("bonus", {})
         atk = stat + (prof if _proficient_with(i, weapons_text) else 0) + b.get("atk", 0)
-        dmg = stat + b.get("dmg", 0)
+        off_hand = i.get("slot") == "4" and main_hand and not ranged
+        mod_dmg = min(stat, 0) if off_hand else stat
+        dmg = mod_dmg + b.get("dmg", 0)
         kind = i.get("damageType", "")
         def dice(x):
             return f"{x}{_signed(dmg) if dmg else ''} {kind}".strip()
         rng = f"range {i['range']}" + (f"/{i['longRange']}" if i.get("longRange") else "") if i.get("range") else ""
+        notes = [i.get("property", ""), rng]
+        if off_hand:
+            notes.append("off hand: no ability modifier to damage" + ("" if code & LIGHT else "; needs a Light weapon"))
         rows.append({"name": i["name"].strip(), "atk": atk, "damage": dice(i["damage"]), "damage2h": dice(i["damage2h"]) if i.get("damage2h") else "",
-                     "notes": ", ".join(x for x in (i.get("property", ""), rng) if x)})
-    rows.append({"name": "Unarmed strike", "atk": mods[0] + prof, "damage": f"{max(1, 1 + mods[0])} bludgeoning", "damage2h": "", "notes": ""})
+                     "notes": ", ".join(x for x in notes if x)})
+    rows.append(_unarmed(d, mods, prof))
     return rows
+
+
+def _unarmed(d, mods, prof):
+    """The unarmed strike: proficient always, Strength; 1 + Strength modifier bludgeoning damage (not below 0), or the character's own formula (Fight Club's
+    unarmed field, where %1 stands for the ability modifier: a Monk's martial arts die)."""
+    formula = (d.get("unarmed") or "").strip()
+    if formula and not re.fullmatch(r"\d+", formula):
+        text = formula.replace("%1", _signed(mods[0]) if mods[0] else "+0").replace("+-", "-").replace("++", "+")
+        text = re.sub(r"\+0\b", "", text) or "0"
+        return {"name": "Unarmed strike", "atk": mods[0] + prof, "damage": f"{text} bludgeoning", "damage2h": "", "notes": ""}
+    return {"name": "Unarmed strike", "atk": mods[0] + prof, "damage": f"{max(0, int(formula or 1) + mods[0])} bludgeoning", "damage2h": "", "notes": ""}
 
 
 def _speed(d, equipped):

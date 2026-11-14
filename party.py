@@ -368,7 +368,7 @@ def _item(it, ref="", st=None):
         "property": ", ".join(label for bit, label in WEAPON_PROPS if code & bit), "propCode": code,
         "range": _t(it, "weaponRange"), "longRange": _t(it, "weaponLongRange"),
         "bonus": bonus,
-        "equipped": fcedit.is_equipped(it),
+        "equipped": fcedit.is_equipped(it), "slot": _t(it, "slot"),
         # what the item is doing (gear.states): its key for the extras, the kind it is worn as ("" if not worn) and the kind its name says, whether it needs
         # attunement and is attuned, and whether its own bonuses (score, armor class) count
         "key": st["key"] if st else "", "kind": st["kind"] if st else None, "worn": st["worn"] if st else "",
@@ -431,7 +431,7 @@ def summary(cid, root):
     """The short per-character record used by the party list and tracker.
 
     Returns a dict: id, name, class (e.g. "Wizard 5 / Cleric 1"), race, hp, hpMax,
-    slots (max spell slots per level 1..9), slotsCurrent (remaining), inspiration (0/1),
+    slots (max spell slots per level 1..9; the file's position 0 is the cantrips known, `cantrips` here), slotsCurrent (remaining), inspiration (0/1),
     hasImage (portrait present), trackers (this character's own counters such as Mana, Ki or
     Rage, from the sidecar file; an empty list for a character that has none), conditions (free
     text from the sidecar), deaths (death saving throws), mods (six ability modifiers).
@@ -448,7 +448,7 @@ def summary(cid, root):
         "hp": int(_num(_t(root, "hpCurrent"))), "hpMax": int(_num(_t(root, "hpMax"))),
         # <slots> and <slotsCurrent> are comma lists like "4,3,2,0,0,0,0,0,0," (index 0 =
         # 1st-level slots). slots = maximum, slotsCurrent = how many are still unspent.
-        "slots": _ints(_t(root, "slots")), "slotsCurrent": _ints(_t(root, "slotsCurrent")),
+        "slots": fcedit.slot_levels(root, "slots"), "slotsCurrent": fcedit.slot_levels(root, "slotsCurrent"), "cantrips": fcedit.slot_list(root, "slots")[0],
         "inspiration": int(_num(_t(root, "inspiration"))),
         "hasImage": _has_image(cid, root),
         "trackers": _trackers(ex),
@@ -810,12 +810,10 @@ def update_member(cid):
         if "hpMax" in body:
             setv("hpMax", max(1, int(body["hpMax"])))
         if "slotsCurrent" in body:
-            maxes = _ints(_t(root, "slots"))
-            # Clamp each level's value to that level's maximum (99 if the max is unknown).
-            cur = [max(0, min(int(v), maxes[i] if i < len(maxes) else 99))
-                   for i, v in enumerate(body["slotsCurrent"])]
-            # Fight Club's format is a comma list with a trailing comma, e.g. "3,2,0,".
-            setv("slotsCurrent", "".join(f"{v}," for v in cur))
+            maxes = fcedit.slot_levels(root, "slots")
+            # Clamp each level's value to that level's maximum (spell levels 1-9; position 0 of the file's list, the cantrips, is left alone).
+            cur = [max(0, min(int(v), maxes[i])) for i, v in enumerate(list(body["slotsCurrent"])[:9])]
+            fcedit.set_slot_levels(root, "slotsCurrent", cur + [0] * (9 - len(cur)))
         if "inspiration" in body:
             setv("inspiration", max(0, int(body["inspiration"])))
         if "money" in body:

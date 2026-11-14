@@ -67,7 +67,8 @@ function box(key, title, ...body) {
 //            defaults to the text), filter: true to give the column a menu of its distinct values,
 //            tags(row) -> array: with filter, a row belongs to every value in its list (a row in two campaigns shows up under both),
 //            wide: true = a column that only shows on a wide screen: on a phone it is hidden and its text goes at the top of the row's drop-down instead,
-//            clip: true = a column that never wraps: a long text is cut short with "..." and its whole text goes at the top of the row's drop-down }]
+//            clip: true = a column that never wraps: a long text is cut short with "..." and its whole text goes at the top of the row's drop-down;
+//            clip: "self" = a column that never wraps but whose show() makes its own .cliptext (the item name, which has notes under it) }]
 //   actions  (row) -> array of buttons for the last column (omit for none)
 //   detail   (row) -> text or a node shown under the row when it is clicked (omit, or return nothing for a row, and that row does not
 //            expand). This is the "drop-down" rows: an inventory item's description, a spell's text. Open rows stay open while you search.
@@ -123,10 +124,10 @@ function dataTable({ key, columns, rows, actions, detail, rowClass, empty = "Not
       const text = detail ? detail(r) : null;
       // the wide-only columns' text, as lines for the drop-down (shown on a phone only: .mobinfo)
       const lines = cs => cs.map(c => [c.label, c.text(r)]).filter(x => x[1]).map(([l, t]) => h("div", {}, h("b", { textContent: l + ": " }), t));
-      const clipped = lines(columns.filter(c => c.clip)), more = lines(columns.filter(c => c.wide && !c.clip));
+      const clipped = lines(columns.filter((c, k) => c.clip === true && k > 0)), more = lines(columns.filter(c => c.wide && c.clip !== true));
       const info = clipped.length || more.length ? h("div", {}, clipped.length ? h("div", { className: "clipinfo" }, clipped) : null, more.length ? h("div", { className: "mobinfo" }, more) : null, text) : text;
       const tr = h("tr", { className: (rowClass?.(r) || "") + (info ? " expandable" + (opened.has(r) ? " open" : "") + (!text && !clipped.length ? " mobonly" : "") : "") },
-        columns.map(c => h("td", { className: [c.wide && "wideonly", c.clip && "clip"].filter(Boolean).join(" "), title: c.clip ? c.text(r) : "" }, c.clip ? h("div", { className: "cliptext" }, c.show ? c.show(r) : c.text(r)) : c.show ? c.show(r) : c.text(r))), actions ? h("td", { className: "acts" }, actions(r)) : null);
+        columns.map(c => h("td", { className: [c.wide && "wideonly", c.clip && "clip"].filter(Boolean).join(" ") }, c.clip === true ? h("div", { className: "cliptext", title: c.text(r) }, c.show ? c.show(r) : c.text(r)) : c.show ? c.show(r) : c.text(r))), actions ? h("td", { className: "acts" }, actions(r)) : null);
       if (!info) return [tr];
       // The description sits in its own row right under this one; clicking anywhere on the row (except its buttons) opens or closes it.
       const drow = h("tr", { className: "drow", hidden: !opened.has(r) }, h("td", { colSpan: span, className: "dtext" }, info));

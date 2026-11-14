@@ -195,7 +195,7 @@ OPEN_PREFIXES = ("/static/", "/api/auth/", "/auth/", "/invite/")
 # download.
 # The spell and magic item catalogues (search, full records and their small pages) too, so a player can look things up and add them to their own character;
 # refreshing a catalogue's list stays with the DM.
-PLAYER_PREFIXES = ("/api/party", "/_/party", "/party", "/_/home", "/api/my/", "/download/collection.zip", "/api/spells", "/api/items", "/spell/", "/item/")
+PLAYER_PREFIXES = ("/api/party", "/_/party", "/party", "/_/home", "/api/my/", "/download/collection.zip", "/api/spells", "/api/items", "/spell/", "/item/", "/api/rules")
 
 
 def check_request():

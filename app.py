@@ -690,6 +690,8 @@ from party import bp as party_bp  # noqa: E402  (needs `app` paths set up first)
 
 # Merge all of party.py's routes (/api/party..., ...) into this app.
 app.register_blueprint(party_bp)
+import creation  # noqa: E402  (character creation and level-up; uses party.py)
+app.register_blueprint(creation.bp)
 
 import encounters  # noqa: E402  (encounters, monster search and the initiative order; see encounters.py)
 
