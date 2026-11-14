@@ -69,8 +69,8 @@ async function renderDetail(id) {
   // Two downloads: this character, and ALL of them in one Fight Club backup (the server only includes the characters this user may see: the DM
   // gets every character, a player only the ones assigned to them).
   const isDM = document.body.dataset.role === "dm";
-  bar.append(picker, formatPicker(), h("button", { className: "btn", onclick: () => safeDownload(fmtUrl(`/api/party/${id}/export.zip`)), textContent: "⬇ Download this character" }),
-    h("button", { className: "btn", onclick: () => safeDownload(fmtUrl("/api/party/export.zip")), textContent: isDM ? "⬇ Download all characters" : "⬇ Download all my characters",
+  bar.append(picker, h("button", { className: "btn", onclick: () => downloadCharacters(`/api/party/${id}/export.zip`, "this character"), textContent: "⬇ Download this character" }),
+    h("button", { className: "btn", onclick: () => downloadCharacters("/api/party/export.zip", isDM ? "all characters" : "all your characters"), textContent: isDM ? "⬇ Download all characters" : "⬇ Download all my characters",
       title: "One Fight Club backup file holding " + (isDM ? "every character" : "every character assigned to you") }));
   fillPicker(picker, id);
   const m = await get("/api/party/" + id);
@@ -87,14 +87,32 @@ async function renderDetail(id) {
       h("div", { className: "muted", textContent: [r.speed && r.speed + " ft", r.age && "age " + r.age, r.height, r.weight && r.weight + " lb", r.eyes && r.eyes + " eyes", r.skin, r.hair].filter(Boolean).join(" · ") }))));
 
   // patch(body): save one change (hit dice, conditions, inspiration, creatures), keep the answer in `m`. The panel that asked redraws itself.
-  const patch = async body => {
+  // The counters (hit dice, conditions ...) show at once (Vitals.predict) and are saved in the background, in order; if the server refuses, the sheet goes back
+  // to what the server has and the message is shown. A change Vitals.predict does not know (a score, a creature ...) waits for the server's answer instead.
+  let saving = Promise.resolve(), unsaved = 0;
+  const KNOWN = ["hpCurrent", "slotsCurrent", "inspiration", "hitDice", "trackers", "deaths", "conditions", "classTrackers"];
+  const send = async body => {
     const res = await fetch("/api/party/" + id, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
-    Object.assign(m, await res.json());
+    return res.json();
+  };
+  const patch = body => {
+    if (!Object.keys(body).every(k => KNOWN.includes(k))) {   // wait for the server (and for the saves already on their way)
+      return saving.then(() => send(body)).then(u => { Object.assign(m, u); });
+    }
+    Vitals.predict(m, body);
+    unsaved++;
+    saving = saving.then(async () => {
+      try { const u = await send(body); if (unsaved === 1) Object.assign(m, u); }
+      catch (e) { Object.assign(m, await get("/api/party/" + id)); extras?.redraw(); alert(e.message); }
+      finally { unsaved--; }
+    });
+    return Promise.resolve();
   };
   // The Edit character button (editchar.js): the form's changes are saved with one PATCH, then the page loads again with the new numbers.
-  bar.append(h("button", { className: "btn", textContent: "✎ Edit character", title: "Change the scores, race, class, spell slots and proficiencies",
-    onclick: () => EditCharacter.open(m, async changes => { await patch(changes); location.reload(); }) }));
+  // It sits beside the name on the Tracker card (below), which scrolls with the page, not in the toolbar.
+  const editButton = () => h("button", { className: "tiny editbtn", textContent: "✎ Edit", title: "Edit character: change the scores, race, class, spell slots and proficiencies",
+    onclick: () => EditCharacter.open(m, async changes => { await patch(changes); location.reload(); }) });
   // The Skills and Stats page is rebuilt every time it is opened (the Tracker page may have changed things meanwhile), so it loads the
   // character again first.
   const statsPanel = () => {
@@ -115,7 +133,7 @@ async function renderDetail(id) {
   // below show them) and, under it, hit dice, conditions, statistics, attacks and creatures (sheet.js).
   const trackerPanel = () => {
     const live = h("div", { className: "trackerlist" });
-    mountTracker(live, { only: id, initiative: false, conditions: false, inspiration: false,
+    mountTracker(live, { only: id, initiative: false, conditions: false, inspiration: false, nameExtra: editButton,
       onChange: async () => { try { Object.assign(m, await get("/api/party/" + id)); extras?.redraw(); } catch (_) { /* next change tries again */ } } });
     extras = Sheet.trackerExtras(m, patch, addCompanion);
     return h("section", { className: "card sheetcard" }, live, extras);
@@ -141,8 +159,7 @@ async function renderDetail(id) {
     let add;
     const panel = LootTables.itemPanel(row => add(row), true);
     add = search("Add loot: search the magic items", panel, async row => {
-      const f = await api("/api/items/" + encodeURIComponent(row.slug));
-      await post("items", { name: f.name, type: f.type, rarity: f.rarity, text: (f.desc || "").replace(/\*\*/g, ""), attunement: !!(f.requires_attunement || "").trim() });
+      await post("items", Give.itemBody(await api("/api/items/" + encodeURIComponent(row.slug))));
     }, "inv").add;
   };
   // ---- the Inventory page's hooks (sheet.js inventory): every change goes to the server, then the character is loaded again and the Inventory (and
@@ -151,12 +168,22 @@ async function renderDetail(id) {
     ["4", "Shield"], ["12", "Potion"], ["13", "Scroll"], ["11", "Ring"], ["14", "Wondrous Item"], ["9", "Staff"], ["10", "Wand"], ["8", "Rod"], ["bag", "Bag / container (2 at most)"]];
   const call = async (method, path, body) => {
     const res = await fetch(`/api/party/${id}/${path}`, { method, headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
-    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
+    const out = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(out.error || res.statusText);
+    return out;
   };
-  const changed = async () => { Object.assign(m, await get("/api/party/" + id)); extras?.redraw(); sheet.show("inv"); };
+  // The server's answer to an item change carries the whole character, so the page does not have to ask for it again.
+  const changed = async out => { Object.assign(m, out?.character || await get("/api/party/" + id)); extras?.redraw(); sheet.show("inv"); };
   const itemCall = (method, ref, body) => call(method, `items/${ref}`, body).then(changed).catch(e => alert(e.message));
+  // A count or coin change shows at once and is saved in the background (in order); a refusal puts the sheet back to what the server has.
+  let itemSaves = Promise.resolve();
+  const quick = (apply, send) => {
+    apply();
+    extras?.redraw(); sheet.show("inv");
+    itemSaves = itemSaves.then(() => send()).catch(async e => { alert(e.message); await changed(); });
+  };
   const addItem = () => Nodes.form({
-    title: "Add an item", saveLabel: "Add item",
+    title: "Add a custom item", saveLabel: "Add item",
     note: "Adding the same item again raises its count. New items start carried, not worn: use Equip to wear or hold them (and Attune for items that need it).",
     fields: [{ key: "name", label: "Name", placeholder: "e.g. Rope (50 ft)" }, { key: "typeCode", label: "Kind", type: "select", value: "15", options: ITEM_TYPES.map(([value, label]) => ({ value, label })) },
       { key: "quantity", label: "How many", type: "number", min: 1, max: 9999, value: 1 }, { key: "weight", label: "Weight each (lb)", type: "number", min: 0, step: "any", value: 0 },
@@ -167,14 +194,15 @@ async function renderDetail(id) {
       { key: "magic", label: "Magical", type: "checkbox", value: false }, { key: "text", label: "Description", type: "textarea", rows: 4, max: 6000 }],
     save: async v => {
       if (!v.name.trim()) return "Give the item a name";
-      try { await call("POST", "items", v.typeCode === "bag" ? { bag: true, name: v.name.trim(), weight: v.weight, value: v.value, text: v.text } : { ...v, name: v.name.trim() }); } catch (e) { return e.message; }
-      await changed();
+      let out;
+      try { out = await call("POST", "items", v.typeCode === "bag" ? { bag: true, name: v.name.trim(), weight: v.weight, value: v.value, text: v.text } : { ...v, name: v.name.trim() }); } catch (e) { return e.message; }
+      await changed(out);
     },
   });
   const giveItem = async i => {
     let who;
-    try { who = (await api("/api/party/recipients")).filter(w => w.id !== id); } catch (e) { alert(e.message); return; }
-    if (!who.length) { Nodes.popup({ title: `Give ${i.name.trim()}`, body: h("p", { className: "muted", textContent: "There is nobody to give it to. A player can give to the other players' characters in the loaded campaign's party." }) }); return; }
+    try { who = await api("/api/party/recipients?from=" + encodeURIComponent(id)); } catch (e) { alert(e.message); return; }
+    if (!who.length) { Nodes.popup({ title: `Give ${i.name.trim()}`, body: h("p", { className: "muted", textContent: "There is nobody to give it to. You can only give to the other characters in the loaded campaign's party, and only from a character who is in it too." }) }); return; }
     Nodes.form({
       title: `Give ${i.name.trim()}`, saveLabel: "Give",
       note: "It moves to their inventory, highlighted with your name until they acknowledge it. An equipped item has to be unequipped first.",
@@ -188,7 +216,11 @@ async function renderDetail(id) {
   };
   const invHooks = {
     addLoot: () => addLoot(), addItem,
-    setQty: (i, n) => itemCall("PATCH", i.ref, { quantity: n }),
+    setQty: (i, n) => {
+      if (n <= 0) return itemCall("PATCH", i.ref, { quantity: 0 });   // removing an item waits for the server
+      const it = [...m.items, ...m.containers.flatMap(c => c.items)].find(x => x.ref === i.ref);
+      quick(() => { if (it) it.quantity = n; }, () => call("PATCH", `items/${i.ref}`, { quantity: n }));
+    },
     // Equip: armor, shields and weapons go to Fight Club's slots. Anything else is worn as the kind its name says (a "Belt of ...", "Winged Boots"); only
     // when nothing in it says, the wearer is asked where it goes.
     equip: (i, on) => {
@@ -198,10 +230,17 @@ async function renderDetail(id) {
         note: "Nothing in its name says where it is worn. Pick the place: only one belt, one pair of gloves and so on can be worn at once (up to 10 rings).",
         fields: [{ key: "kind", label: "Worn as", type: "select", value: "neck", options: [["head", "Headwear"], ["neck", "Amulet / necklace"], ["cloak", "Cloak"], ["hands", "Gloves / gauntlets"], ["wrists", "Bracers"], ["belt", "Belt"], ["feet", "Footwear"], ["ring", "Ring"]].map(([value, label]) => ({ value, label })) }],
         save: async v => {
-          try { await call("PATCH", `items/${i.ref}`, { equip: true, kind: v.kind }); } catch (e) { return e.message; }
-          await changed();
+          let out;
+          try { out = await call("PATCH", `items/${i.ref}`, { equip: true, kind: v.kind }); } catch (e) { return e.message; }
+          await changed(out);
         },
       });
+    },
+    coin: (coin, delta) => {
+      const c = m.items.find(x => x.coin === coin), have = c ? c.quantity : 0;
+      if (have + delta < 0) { alert(`Only ${have} ${coin} to spend`); return; }
+      if (!c) return call("PATCH", "coins", { coin, delta }).then(changed).catch(e => alert(e.message));   // the first coin of a kind: the server makes the item
+      quick(() => { c.quantity = have + delta; }, () => call("PATCH", "coins", { coin, delta }));
     },
     attune: (i, on) => itemCall("PATCH", i.ref, { attune: on }),
     remove: i => { if (confirm(`Remove ${i.quantity > 1 ? i.quantity + "× " : ""}${i.name.trim()} from ${m.name}?`)) itemCall("DELETE", i.ref); },

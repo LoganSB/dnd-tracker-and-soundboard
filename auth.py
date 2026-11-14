@@ -193,7 +193,9 @@ OPEN_PREFIXES = ("/static/", "/api/auth/", "/auth/", "/invite/")
 # Players may also use the character pages and character API (route code limits them to their own characters),
 # plus the small page that is their home tab, the "my campaigns" routes (see app.py) and the Fight Club expansion
 # download.
-PLAYER_PREFIXES = ("/api/party", "/_/party", "/party", "/_/home", "/api/my/", "/download/collection.zip")
+# The spell and magic item catalogues (search, full records and their small pages) too, so a player can look things up and add them to their own character;
+# refreshing a catalogue's list stays with the DM.
+PLAYER_PREFIXES = ("/api/party", "/_/party", "/party", "/_/home", "/api/my/", "/download/collection.zip", "/api/spells", "/api/items", "/spell/", "/item/")
 
 
 def check_request():
@@ -207,7 +209,7 @@ def check_request():
     if path in OPEN_EXACT or path.startswith(OPEN_PREFIXES):
         return None
     user = current_user()
-    if user and (user["role"] == "dm" or path.startswith(PLAYER_PREFIXES)):
+    if user and (user["role"] == "dm" or (path.startswith(PLAYER_PREFIXES) and not path.endswith("/index/refresh"))):
         return None
     wants_page = request.method == "GET" and not path.startswith("/api/") and "text/html" in request.headers.get("Accept", "")
     if not user:

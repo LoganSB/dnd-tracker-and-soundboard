@@ -12,6 +12,7 @@
 //                                   opts.compact, opts.lockId, opts.onChange, opts.extraActions(record, ctx)
 // LootTables.pick(entries)          weighted random choice: { entry, roll, total }
 // LootTables.pickRarity(rows, r)    random item of that rarity (every item equally likely)
+// LootTables.giveButton(entry, done) the 🎁 Give button for one loot entry (give.js): used by the entries table, a roll here and the campaign's loot pop-up
 // A loot table record: { id, name, notes, entries: [{ slug, name, type, rarity, weight, note }] }
 const LootTables = (() => {
   const { h, api } = UI;
@@ -56,6 +57,11 @@ const LootTables = (() => {
   }
   const pickRarity = (rows, rarity) => { const pool = rows.filter(m => m.rarity === rarity); return pool.length ? pool[Math.floor(Math.random() * pool.length)] : null; };
   const label = e => `${e.name}${e.rarity ? " (" + e.rarity + ")" : ""}`;
+  // giveButton(entry, done): the 🎁 Give button (give.js) with a "Given to <name>" note beside it afterwards. Every loot source uses it.
+  const giveButton = (entry, done) => {
+    const said = h("span", { className: "ok" });
+    return h("span", { className: "nowrap" }, Give.button(() => entry, (e, who) => { said.textContent = ` ✓ ${e.name} given to ${who}`; done?.(e, who); }), said);
+  };
 
   function config(opts = {}) {
     return {
@@ -64,6 +70,7 @@ const LootTables = (() => {
       head: ["Item", "Type", "Rarity", "Weight"],
       row: (e, ctx) => [e.name, e.type || "", rarityText(e.rarity), ctx.num(e, "weight")],
       preview: e => (e.slug ? preview(e.slug) : null),
+      rowActions: e => [giveButton(e)],
       finder: add => itemPanel(add, opts.compact),
       addEntry: (rec, m) => {
         const line = rec.entries.find(e => e.slug === m.slug);
@@ -75,12 +82,12 @@ const LootTables = (() => {
       summary: (rec, ctx) => {
         const total = rec.entries.reduce((s, e) => s + Math.max(1, Math.floor(+e.weight || 1)), 0);
         const result = h("div", { className: "lootresult" });
+        const show = r => result.replaceChildren(r ? h("span", { textContent: `🎲 d${r.total} → ${r.roll}: ${label(r.entry)} ` }) : "Add at least one entry first.", ...(r ? [giveButton(r.entry)] : []));
         const box = h("div", {}, h("p", { className: "muted", textContent: total
           ? `Rolled as a d${total}. ` + rec.entries.map(e => `${e.name} ${((Math.max(1, e.weight) / total) * 100).toFixed(Math.max(1, e.weight) / total < 0.1 ? 1 : 0)}%`).join(" · ")
           : "No entries yet." }),
         h("div", { className: "row" }, h("button", { textContent: "🎲 Roll", onclick: () => {
-          const r = pick(rec.entries);
-          result.textContent = r ? `🎲 d${r.total} → ${r.roll}: ${label(r.entry)}` : "Add at least one entry first.";
+          show(pick(rec.entries));
         } }), result));
         return box;
       },
@@ -101,5 +108,5 @@ const LootTables = (() => {
     };
   }
 
-  return { items, itemPanel, config, pick, pickRarity, label };
+  return { items, itemPanel, config, pick, pickRarity, label, giveButton };
 })();

@@ -135,7 +135,7 @@ class Catalog:
                 self.data = json.loads(self.file.read_text())
             except Exception:
                 pass
-        if self.data is None or time.time() - self.data.get("built", 0) > INDEX_DAYS * 86400:
+        if self.data is None or time.time() - self.data.get("built", 0) > INDEX_DAYS * 86400 or self.data.get("v") != self.extra.get("v"):
             self.start()
         if self.data is None:
             return jsonify(building=True), 202
@@ -171,9 +171,10 @@ class Catalog:
         return data
 
 
-MONSTERS = Catalog("monsters", "/monsters/", "slug,name,type,cr,armor_class,hit_points,dexterity,document__slug,document__title",
+MONSTERS = Catalog("monsters", "/monsters/", "slug,name,type,size,cr,armor_class,hit_points,dexterity,document__slug,document__title",
                    lambda m: [m["slug"], m["name"], m.get("type", ""), float(m.get("cr") or 0), m.get("armor_class"),
-                              m.get("hit_points"), _mod(m.get("dexterity")), m.get("document__slug", "")], {"xp": XP})
+                              m.get("hit_points"), _mod(m.get("dexterity")), m.get("document__slug", ""), (m.get("size") or "").title()],
+                   {"xp": XP, "v": 2})   # v 2: rows end with the size; a saved list without it is rebuilt (and served meanwhile)
 ITEMS = Catalog("magicitems", "/magicitems/", "slug,name,type,rarity,requires_attunement,document__slug,document__title",
                 lambda m: [m["slug"], m["name"], m.get("type", ""), _rarity(m.get("rarity")),
                            1 if (m.get("requires_attunement") or "").strip() else 0, m.get("document__slug", "")],
@@ -630,7 +631,7 @@ def load_encounter(eid):
         before = len(order)
         for ref in st.get("party", []):                       # party members first (only those with a sheet here)
             if party._path(ref["id"]).exists() and not any(c.get("pc") == ref["id"] for c in order):
-                s = party.summary(ref["id"], party._load(ref["id"]))
+                s = party.summary(ref["id"], party._peek(ref["id"]))
                 bonus = s["mods"][1] if len(s["mods"]) > 1 else 0
                 order.append({"id": secrets.token_hex(4), "kind": "pc", "pc": ref["id"], "name": s["name"],
                               "bonus": bonus, "init": d20() + bonus})

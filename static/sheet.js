@@ -31,7 +31,7 @@ const Sheet = (() => {
   // ---- inventory
   // flatItems(m): the loose items and every container's items as one list, each marked with where it is. Equipped first.
   function flatItems(m) {
-    const all = [...m.items.map(i => ({ ...i, where: "Carried" })), ...m.containers.flatMap(c => c.items.map(i => ({ ...i, where: c.name })))];
+    const all = [...m.items.filter(i => !i.coin).map(i => ({ ...i, where: "Carried" })), ...m.containers.flatMap(c => c.items.map(i => ({ ...i, where: c.name })))];
     return all.map((i, n) => [i, n]).sort((a, b) => isOn(b[0]) - isOn(a[0]) || a[1] - b[1]).map(x => x[0]);
   }
   const itemStats = i => [i.ac && "AC " + i.ac, i.damage && `${i.damage}${i.damage2h ? " (" + i.damage2h + " two-handed)" : ""} ${i.damageType}`.trim(), i.property,
@@ -42,6 +42,25 @@ const Sheet = (() => {
   const isOn = i => (i.fcSlot ? i.equipped : !!i.worn);
   const wornText = i => [isOn(i) ? (i.fcSlot ? "Equipped" : `Worn (${WORN[i.worn] || i.worn})`) : "", i.needsAttune ? (i.attuned ? "attuned" : "needs attunement") : ""].filter(Boolean).join(", ");
 
+  // stepper(apply): the shared "− [ n ] +" control (items and coins use it): the box takes digits only (default 1), and − / + call apply(-n) / apply(+n).
+  const stepper = (apply, title = "") => {
+    const box = h("input", { type: "text", inputMode: "numeric", value: "1", className: "inum stepbox", title: "How many to take away or add", size: 4,
+      oninput: () => { box.value = box.value.replace(/\D/g, "").slice(0, 6); }, onfocus: () => box.select() });
+    const n = () => Math.max(1, parseInt(box.value, 10) || 1);
+    return h("span", { className: "stepper", title }, h("button", { className: "tiny", textContent: "−", title: "Take this many away", onclick: () => apply(-n()) }), box,
+      h("button", { className: "tiny", textContent: "+", title: "Add this many", onclick: () => apply(n()) }));
+  };
+
+  // currency(m, hooks): the coins in a little box of their own (they are items in Fight Club's file, named "Gold (gp)" ..., but they are not listed with the
+  // gear). Gold, silver and copper always show; platinum and electrum only when the character has some. hooks.coin(coin, delta) changes one.
+  const COIN_ORDER = [["pp", "Platinum"], ["gp", "Gold"], ["ep", "Electrum"], ["sp", "Silver"], ["cp", "Copper"]];
+  function currency(m, hooks) {
+    const have = Object.fromEntries(m.items.filter(i => i.coin).map(i => [i.coin, i.quantity]));
+    const cell = ([c, label]) => h("div", { className: "coin" }, h("span", { className: "muted", textContent: label }), h("b", { textContent: String(have[c] || 0) }),
+      hooks.coin ? stepper(d => hooks.coin(c, d), `${label} pieces`) : null);
+    return h("div", { className: "currency" }, h("h3", { textContent: "Currency" }), h("div", { className: "coins" }, ...COIN_ORDER.filter(([c]) => have[c] || ["gp", "sp", "cp"].includes(c)).map(cell)));
+  }
+
   // withAdd(adds, table): the list with its purple Add buttons above it. `adds` = [[label, fn], ...]; a button whose fn the page did not give is left out.
   const withAdd = (adds, table) => {
     const btns = adds.filter(a => a[1]).map(([label, fn]) => h("button", { className: "primary", textContent: label, onclick: fn }));
@@ -49,34 +68,36 @@ const Sheet = (() => {
   };
 
   // inventory(m, hooks): every item as one table. hooks (all optional, the page decides what they do): addLoot() and addItem() open the two Add
-  // pop-ups; setQty(item, n) changes the count (0 removes it); equip(item, on); attune(item, on); give(item); remove(item); ack(gift) acknowledges a gift.
+  // pop-ups; coin(coin, delta) changes a coin; setQty(item, n) changes the count (0 removes it); equip(item, on); attune(item, on); give(item); remove(item); ack(gift) acknowledges a gift.
   // An item another player gave this character is highlighted with "Given to you by <player>" and an Acknowledge button until it is acknowledged.
   function inventory(m, hooks = {}) {
     const gifts = new Map((m.gifts || []).map(g => [g.name, g]));   // item name -> the pending gift of that name
     const rows = flatItems(m).map(i => ({ ...i, gift: i.ref.startsWith("i") ? gifts.get(i.name) : undefined }));   // a gift always lands among the loose items
     const btn = (label, title, fn, cls = "") => h("button", { className: "tiny " + cls, textContent: label, title, onclick: fn });
-    return withAdd([["+ Add loot", hooks.addLoot], ["+ Add item", hooks.addItem]], dataTable({
+    const unattuned = i => isOn(i) && i.needsAttune && !i.attuned;   // worn or held but not attuned: it gives nothing yet
+    return h("div", {}, currency(m, hooks), withAdd([["+ Add loot", hooks.addLoot], ["+ Custom item", hooks.addItem]], dataTable({
       key: `sheet.${m.id}.items`, rows, empty: "No items.",
       columns: [
-        { label: "Item", text: i => (i.quantity > 1 ? `${i.quantity}× ` : "") + i.name.trim() + (i.magic ? " ✦" : ""),
-          show: i => h("span", {}, (i.quantity > 1 ? `${i.quantity}× ` : "") + i.name.trim() + (i.magic ? " ✦" : ""),
+        { label: "Item", text: i => i.name.trim() + (i.magic ? " ✦" : ""),
+          show: i => h("span", {}, i.name.trim() + (i.magic ? " ✦" : ""),
+            unattuned(i) ? h("div", { className: "attunenote" }, "⚠ Not attuned: its bonuses do not count yet. ", hooks.attune ? btn("Attune", "Attune to it (3 items at most)", () => hooks.attune(i, true), "primary") : null) : null,
             i.gift ? h("div", { className: "giftnote" }, `Given to you by ${i.gift.from}`, i.gift.qty > 1 ? ` (${i.gift.qty})` : "", " ", hooks.ack ? btn("Acknowledge", "Keep it: end the highlight", () => hooks.ack(i.gift), "primary") : null) : null) },
+        { label: "Count", text: i => (i.quantity > 1 ? String(i.quantity) : ""), num: true },
         { label: "Type", text: i => i.type || i.detail, filter: true },
         { label: "Where", text: i => i.where, filter: true },
         { label: "Worn", text: wornText, filter: true },
         { label: "Stats", text: itemStats },
         { label: "Value", text: i => gp(i.value) },
       ],
-      detail: i => i.text || i.detail || null, rowClass: i => [isOn(i) && i.active !== false ? "equipped" : "", i.gift ? "gift" : ""].filter(Boolean).join(" "),
+      detail: i => i.text || i.detail || null, rowClass: i => [isOn(i) && i.active !== false ? "equipped" : "", unattuned(i) ? "unattuned" : "", i.gift ? "gift" : ""].filter(Boolean).join(" "),
       actions: i => [
-        hooks.setQty ? btn("−", "One fewer (the last one removes the item)", () => hooks.setQty(i, i.quantity - 1)) : null,
-        hooks.setQty ? btn("+", "One more", () => hooks.setQty(i, i.quantity + 1)) : null,
         hooks.equip && i.canEquip ? btn(isOn(i) ? "Unequip" : "Equip", isOn(i) ? "Take it off: it stops counting" : "Wear or hold it (one belt, one pair of gloves ... the limits are checked)", () => hooks.equip(i, !isOn(i))) : null,
         hooks.attune && i.needsAttune ? btn(i.attuned ? "End attunement" : "Attune", i.attuned ? "End your attunement to it: its bonuses stop" : "Attune to it (3 items at most)", () => hooks.attune(i, !i.attuned)) : null,
         hooks.give ? btn("Give", "Give it to another player", () => hooks.give(i)) : null,
         hooks.remove ? btn("✕", "Remove it from the character", () => hooks.remove(i), "danger") : null,
+        hooks.setQty ? stepper(d => hooks.setQty(i, i.quantity + d), "Take away or add this many (taking away the last one removes the item)") : null,
       ],
-    }));
+    })));
   }
 
   // ---- spells
@@ -115,7 +136,7 @@ const Sheet = (() => {
     }));
   }
 
-  const counts = m => ({ items: m.items.length + m.containers.reduce((n, c) => n + c.items.length, 0), spells: m.spells.length, features: featureRows(m).length });
+  const counts = m => ({ items: m.items.filter(i => !i.coin).length + m.containers.reduce((n, c) => n + c.items.length, 0), spells: m.spells.length, features: featureRows(m).length });
 
   // ---- shared pieces of the Tracker and Skills and Stats pages
   const tile = (label, value, title, ...extra) => h("div", { className: "stat", title: title || "" }, h("div", { className: "muted", textContent: label }), h("b", { textContent: value }), ...extra);
@@ -148,13 +169,13 @@ const Sheet = (() => {
       const now = Conditions.speed(s.speedFeet, fx.speed);
       return changed("Speed", `${now} ft`, s.speed, `${fx.speed.kind === "zero" ? "0" : "halved"} by ${fx.speed.why.join(", ")}`, s.speedNote);
     };
-    const percTile = () => (!fx.perception ? tile("Passive Perception", s.passivePerception, "10 + Perception")
+    const percTile = () => (!fx.perception ? tile("Passive Perception", s.passivePerception, s.passiveWhy || "10 + Perception")
       : changed("Passive Perception", s.passivePerception + fx.perception.delta, s.passivePerception, `-5 (disadvantage on checks) from ${fx.perception.why.join(", ")}`, "10 + Perception"));
     const insp = h("div", { className: "stat", title: "Inspiration" }, h("div", { className: "muted", textContent: "Inspiration" }), h("b", { textContent: m.inspiration }),
       h("div", { className: "row" }, h("button", { className: "tiny", textContent: "−", onclick: () => run({ inspiration: m.inspiration - 1 }) }),
         h("button", { className: "tiny", textContent: "+", onclick: () => run({ inspiration: m.inspiration + 1 }) })));
     return h("div", {}, h("div", { className: "stats" },
-      tile("Armor class", s.ac, s.acNote), tile("Initiative", sgn(s.initiative), "Dexterity modifier"), speedTile(),
+      tile("Armor class", s.ac, s.acNote), tile("Initiative", sgn(s.initiative), `Initiative ${sgn(s.initiative)} = ${s.initiativeWhy || "Dexterity modifier"}`), speedTile(),
       percTile(), tile("Proficiency", sgn(s.profBonus), "Proficiency bonus"), insp),
       // the effects that are not a single number on a tile: no actions, halved hit point maximum, disadvantage on saves
       [fx.noActions.length ? "Can't take actions or reactions" + ` (${fx.noActions.join(", ")})` : "", fx.hpMax.length ? `Hit point maximum halved (${fx.hpMax.join(", ")})` : "",
@@ -188,16 +209,22 @@ const Sheet = (() => {
   // ---- the Skills and Stats page: Abilities and saving throws, and every Skill (the Statistics are on the Tracker page).
   function stats(m, patch) {
     return panel(m, patch, run => {
-      const abilities = card("Abilities and saving throws", h("div", { className: "stats" }, m.abilities.map((a, i) => {
+      const grid = h("div", { className: "stats" }, m.abilities.map((a, i) => {
         const sv = m.saves[i];
-        return h("div", { className: "stat", title: a.why.length ? `Base ${a.base}: ` + a.why.map(w => `${w.value >= 0 ? "+" : ""}${w.value} ${w.source}`).join(", ") : "" }, h("div", { className: "muted", textContent: a.name }), h("b", { textContent: sgn(a.mod) }), h("div", { textContent: a.score }),
+        return h("div", { className: "stat", title: a.why.length ? `Base ${a.base}: ` + a.why.map(w => `${w.value >= 0 ? "+" : ""}${w.value} ${w.source}`).join(", ") : "" }, h("div", { className: "muted", textContent: a.name }), h("b", { className: "hint", textContent: sgn(a.mod), title: `Modifier ${sgn(a.mod)} = (score ${a.score} − 10) ÷ 2, rounded down` }), h("div", { textContent: a.score }),
           a.score !== a.base ? h("div", { className: "muted", textContent: `base ${a.base}` }) : null,
-          h("div", { className: "muted" + (sv.proficient ? " prof" : ""), textContent: `Save ${sgn(sv.mod)}${sv.proficient ? " ●" : ""}`, title: sv.proficient ? "Proficient" : "" }));
-      })));
+          h("div", { className: "muted hint" + (sv.proficient ? " prof" : ""), textContent: `Save ${sgn(sv.mod)}${sv.proficient ? " ●" : ""}`, title: `Saving throw ${sgn(sv.mod)} = ${sv.why}` }));
+      }));
+      // The spellcasting numbers, one line per class that casts: its ability modifier, the spell attack bonus and the spell save DC (hover for where they come from).
+      const casting = (m.spellcasting || []).map(c => h("div", { className: "spellcast", title: `${c.class}: ${c.why}` },
+        h("b", { textContent: `${c.class} spellcasting` }), h("span", { className: "hint", title: `Spellcasting modifier = the ${c.ability} modifier`, textContent: ` ${c.ability} ${sgn(c.mod)}` }),
+        h("span", { className: "hint", title: `Spell attack bonus = proficiency + ${c.ability} modifier (${c.why})`, textContent: ` · Spell attack ${sgn(c.attack)}` }),
+        h("span", { className: "hint", title: `Spell save DC = 8 + proficiency + ${c.ability} modifier (8, ${c.why})`, textContent: ` · Spell save DC ${c.dc}` })));
+      const abilities = card("Abilities and saving throws", grid, ...casting);
       const skills = card("Skills", dataTable({
         key: `sheet.${m.id}.skills`, rows: m.skills, empty: "No skills.",
         columns: [{ label: "Skill", text: k => k.name }, { label: "Ability", text: k => k.ability, filter: true },
-          { label: "Modifier", text: k => sgn(k.mod) }, { label: "Proficient", text: k => (k.proficient ? "Proficient" : ""), filter: true }],
+          { label: "Modifier", text: k => sgn(k.mod), show: k => h("span", { className: "hint", title: `${k.name} ${sgn(k.mod)} = ${k.why}` }, sgn(k.mod)) }, { label: "Proficient", text: k => (k.proficient ? "Proficient" : ""), filter: true }],
         rowClass: k => (k.proficient ? "equipped" : ""),
       }));
       return h("div", { className: "sheetstats" }, abilities, skills);
@@ -256,5 +283,5 @@ const Sheet = (() => {
     }), addCompanion ? h("div", { className: "row addbar" }, h("button", { className: "primary", textContent: "+ Add companion", onclick: addCompanion })) : null);
   }
 
-  return { stats, trackerExtras, inventory, spells, features, counts };
+  return { stats, trackerExtras, inventory, stepper, spells, features, counts };
 })();

@@ -130,6 +130,17 @@ def set_refs(presets: Path, name, **changes):
     return True
 
 
+def set_party(presets: Path, name, party):
+    """Replace the `party` list inside an existing campaign file, leaving everything else in it alone (so changing the party saves into the campaign at
+    once, without a Save). A missing file is left alone (returns False)."""
+    data = read_campaign(presets, name)
+    if data is None:
+        return False
+    data["party"] = json.loads(json.dumps(party))
+    atomic_write(presets / f"{safe_name(name)}.json", data)
+    return True
+
+
 def campaigns_using(presets: Path, board):
     """The campaigns whose default or last soundboard is `board` (a soundboard that is still in use must not be deleted)."""
     out = []

@@ -153,6 +153,7 @@
 
   // window.mountTracker(host, opts) - the public entry point.
   //   opts.only       : a character id. Show just that one character (used on a character's page).
+  //   opts.nameExtra  : a function (character) -> element shown right after the name on each card.
   //   opts.onChange   : called after this widget saved a change or redrew from the server (the character's page uses it to refresh the parts below the tracker: hit dice ...).
   //   opts.initiative : false = leave out the Initiative tab and its tab bar (default: show both tabs).
   //   opts.conditions : false = leave out the conditions chips;  opts.inspiration : false = leave out the Insp counter (a page that shows them elsewhere).
@@ -191,15 +192,31 @@
     // edit as an outside change and needlessly redraw.
     // One extra rule: raising a character from 0 HP to above 0 also clears their death saves
     // (a character who is conscious again starts fresh next time they fall).
+    // The change shows on screen AT ONCE (Vitals.predict), and goes to the server in the background, one change at a time per character so they arrive in
+    // order. When the last one is answered the server's reply replaces the prediction; if the server refuses, the character goes back to what it was and
+    // the message is shown.
+    const sending = {};   // character id -> { chain: promise of the last queued save, n: saves not answered yet }
     async function patch(m, body) {
       if (body.hpCurrent > 0 && m.hp === 0 && m.deaths && (m.deaths.s || m.deaths.f)) body.deaths = { s: 0, f: 0 };
-      try {
-        const u = await call("/api/party/" + m.id, "PATCH", body);
-        Object.assign(m, u);
-        lastJson = JSON.stringify(members);
-        draw();
-        opts.onChange?.();
-      } catch (e) { alert(e.message); }
+      const q = sending[m.id] || (sending[m.id] = { chain: Promise.resolve(), n: 0 });
+      const before = JSON.parse(JSON.stringify(m));
+      Vitals.predict(m, body);
+      lastJson = JSON.stringify(members);
+      draw();
+      q.n++;
+      q.chain = q.chain.then(async () => {
+        try {
+          const u = await call("/api/party/" + m.id, "PATCH", body);
+          if (q.n === 1) { Object.assign(m, u); lastJson = JSON.stringify(members); draw(); }
+          opts.onChange?.();
+        } catch (e) {
+          for (const k of Object.keys(m)) delete m[k];
+          Object.assign(m, before);
+          lastJson = JSON.stringify(members);
+          draw();
+          alert(e.message);
+        } finally { q.n--; }
+      });
     }
 
     // hpBar(m) - the HP row for character `m`: the shared Vitals.hp (vitals.js, also used on the character sheet), with every change
@@ -359,6 +376,7 @@
         root.append(h("article", { className: "pc" },
           h("header", {},
             h("a", { href: "/party/" + m.id, target: "_blank", textContent: m.name, title: "Open full character page", onclick: ev => openParty(ev, m.id) }),
+            opts.nameExtra ? opts.nameExtra(m) : null,   // (the character's own page puts its Edit character button here)
             // the class, and the Short rest / Long rest buttons inline on the right (Vitals.rest, vitals.js)
             h("span", { className: "right" }, h("span", { className: "muted", textContent: m.class }), Vitals.rest(m, body => patch(m, body)))),
           ...(Vitals.restNote[m.id] ? [h("div", { className: "muted restnote", textContent: Vitals.restNote[m.id] })] : []),

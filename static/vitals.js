@@ -14,6 +14,7 @@
 //   Vitals.conditions(m, patch)  the condition chips (✕ removes one), an "+ Add" button that opens a menu of the 5e conditions plus a box for anything
 //                                else, and under them what each condition does (conditions.js).   patch({ conditions: "Prone, Poisoned" })
 //   Vitals.slots(m, patch)       the spell-slot rows (one per level, a clickable pip per slot); [] for a non-caster.   patch({ slotsCurrent })
+//   Vitals.predict(m, body)      shows a PATCH's counters on `m` at once (see the function)
 //   Vitals.rest(m, patch)        the Short rest and Long rest buttons (the tracker puts them by the character's name); Vitals.restNote[id] is the
 //                                line saying what the last rest did.   patch({ hpCurrent, hitDice, slotsCurrent, conditions, trackers, deaths })
 //   Vitals.CONDITIONS            the standard condition names (conditions.js has the rules; Conditions.parse reads the stored text).
@@ -184,5 +185,20 @@ const Vitals = (() => {
     return rows;
   }
 
-  return { hp, hitDice, conditions, slots, rest, restNote, CONDITIONS };
+  // predict(m, body): what the server will answer to PATCH /api/party/<id> `body`, worked out here so the page can show the change AT ONCE instead of after the
+  // round trip to the server. Only the plain counters are predicted (hit points, spell slots, inspiration, hit dice, trackers, death saves, conditions, class
+  // counters); anything else (a name, a score ...) waits for the server. When the server answers, its reply replaces the prediction.
+  function predict(m, body) {
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+    if ("hpCurrent" in body) m.hp = clamp(Math.floor(+body.hpCurrent) || 0, 0, m.hpMax || 1e6);
+    if ("slotsCurrent" in body) m.slotsCurrent = body.slotsCurrent.map((v, i) => clamp(Math.floor(+v) || 0, 0, (m.slots || [])[i] ?? 0));
+    if ("inspiration" in body) m.inspiration = Math.max(0, Math.floor(+body.inspiration) || 0);
+    if ("hitDice" in body) (m.hitDice || []).forEach((d, i) => { if (i < body.hitDice.length) d.left = clamp(Math.floor(+body.hitDice[i]) || 0, 0, d.level); });
+    if ("trackers" in body) m.trackers = body.trackers.map(t => ({ ...t, cur: clamp(+t.cur || 0, 0, +t.max || 0) }));
+    if ("deaths" in body) m.deaths = body.deaths;
+    if ("conditions" in body) m.conditions = body.conditions;
+    if ("classTrackers" in body) body.classTrackers.forEach(c => { const t = (m.classTrackers || []).find(x => x.label === c.label); if (t) t.cur = t.max != null ? clamp(c.cur, 0, t.max) : Math.max(0, c.cur); });
+  }
+
+  return { hp, hitDice, conditions, slots, rest, restNote, predict, CONDITIONS };
 })();

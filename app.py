@@ -867,7 +867,7 @@ def active_party():
         f = party._path(ref["id"])
         if f.exists():
             ex = party._extra().get(ref["id"], {})
-            out.append({"id": ref["id"], "name": party._t(party._load(ref["id"]), "name") or ref.get("name", ""),
+            out.append({"id": ref["id"], "name": party._t(party._peek(ref["id"]), "name") or ref.get("name", ""),
                         "owner": ex.get("owner", ref.get("owner", "")), "present": True})
         else:
             out.append({**ref, "present": False})
@@ -892,8 +892,7 @@ def put_active_party():
 
     Only characters that exist, or that were already in the list (so a missing player's slot is not lost
     when somebody else is toggled), are accepted. The name and owner are copied into the reference so the
-    saved campaign still says who it was for. Saved with the rest of the state, hence in every campaign
-    saved afterwards. Response: same as GET.
+    saved campaign still says who it was for. Saved with the rest of the state AND straight into the loaded campaign's file (savefiles.set_party). Response: same as GET.
     """
     ids = (request.get_json(force=True, silent=True) or {}).get("ids")
     if not isinstance(ids, list):
@@ -906,7 +905,7 @@ def put_active_party():
                 continue
             if party._path(cid).exists():
                 ex = party._extra().get(cid, {})
-                refs.append({"id": cid, "name": party._t(party._load(cid), "name"), "owner": ex.get("owner", "")})
+                refs.append({"id": cid, "name": party._t(party._peek(cid), "name"), "owner": ex.get("owner", "")})
             elif cid in old:
                 refs.append(old[cid])
         state["party"] = refs
@@ -917,6 +916,8 @@ def put_active_party():
                 auth.add_membership(ref["owner"], state.get("campaignName", ""))
         state["revision"] = state.get("revision", 0) + 1
         save_live()
+        if state.get("campaignName"):   # the party is part of the campaign file: it is saved there now, not only when Save is pressed
+            savefiles.set_party(PRESETS, state["campaignName"], refs)
         return jsonify(campaign=state.get("campaignName", ""), party=active_party())
 
 

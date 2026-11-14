@@ -45,19 +45,19 @@
   window.alert = message => { if (recent(30000)) show(String(message), last); else nativeAlert(message); };
 
   // The character download comes in two formats: "Fight Club 5e" (the plain backup, what the Fight Club app reads) and "Gloan5e" (the same backup plus this
-  // app's extras in one file; see gloan5e.py). formatPicker() is the drop-down (the choice is remembered); fmtUrl(url) adds the choice to a character
-  // download address.
+  // app's extras in one file; see gloan5e.py). downloadCharacters(url, what) opens the pop-up that asks which (Nodes.form, nodes.js; the choice is remembered)
+  // and then downloads `url` in that format. The Characters page and Home both call it, so there is one pop-up.
   const FORMATS = [["fightclub5e", "Fight Club 5e"], ["gloan5e", "Gloan5e"]];
   const fmtGet = () => { try { const v = localStorage.getItem("dl.format"); return FORMATS.some(f => f[0] === v) ? v : "fightclub5e"; } catch (_) { return "fightclub5e"; } };
-  window.fmtUrl = url => url + (url.includes("?") ? "&" : "?") + "as=" + fmtGet();
-  window.formatPicker = () => {
-    const s = document.createElement("select");
-    s.title = "File format for character downloads: Fight Club 5e is the plain backup; Gloan5e also carries this app's extras (worn items, attunement, conditions, trackers)";
-    FORMATS.forEach(([v, l]) => s.append(Object.assign(document.createElement("option"), { value: v, textContent: l })));
-    s.value = fmtGet();
-    s.onchange = () => { try { localStorage.setItem("dl.format", s.value); } catch (_) { /* not remembered */ } };
-    return s;
-  };
+  window.downloadCharacters = (url, what) => Nodes.form({
+    title: `Download ${what}`, saveLabel: "Download",
+    note: "Fight Club 5e is the plain backup the Fight Club app reads. Gloan5e is the same backup plus this app's extras (worn items, attunement, conditions, trackers, death saves) in one file, so nothing is lost moving between servers.",
+    fields: [{ key: "as", label: "Format", type: "select", value: fmtGet(), options: FORMATS.map(([value, label]) => ({ value, label })) }],
+    save: v => {
+      try { localStorage.setItem("dl.format", v.as); } catch (_) { /* not remembered */ }
+      window.safeDownload(url + (url.includes("?") ? "&" : "?") + "as=" + v.as).catch(e => alert(e.message));
+    },
+  });
 
   window.safeDownload = async url => {
     const ctl = new AbortController();

@@ -2862,3 +2862,18 @@ hr.thin { border: 0; border-top: 1px solid #ffffff22; margin: 1rem 0 0; }
    pager or the next section. */
 .addbar { margin: .7rem 0; padding: .15rem 0; gap: .5rem; }
 .addbar button.primary { padding: .4rem .9rem; }
+
+/* inventory: the "- [n] +" control, the currency box, and an item that is worn but not attuned (it gives nothing yet) */
+.stepper { display: inline-flex; align-items: center; gap: .2rem; margin-left: .5rem; vertical-align: middle; }
+.stepper .stepbox { width: 3.2rem; text-align: center; padding: .15rem .25rem; }
+.currency { border: 1px solid var(--line, #444); border-radius: 8px; padding: .4rem .7rem .6rem; margin: .6rem 0; display: inline-block; max-width: 100%; }
+.currency h3 { margin: 0 0 .3rem; font-size: .9rem; }
+.coins { display: flex; flex-wrap: wrap; gap: .5rem 1.2rem; }
+.coin { display: flex; align-items: center; gap: .4rem; }
+.coin b { min-width: 2.5rem; text-align: right; }
+.dtable tr.unattuned > td { background: #f0b4291f; }
+.dtable tr.unattuned > td:first-child { border-left: 3px solid var(--warn); }
+.attunenote { color: var(--warn); font-size: .8rem; margin-top: .15rem; }
+.editbtn { margin-left: .6rem; }
+.hint { cursor: help; text-decoration: underline dotted; text-decoration-color: var(--muted, #888); text-underline-offset: 3px; }
+.spellcast { margin-top: .6rem; }

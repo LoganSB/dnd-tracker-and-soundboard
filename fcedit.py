@@ -94,6 +94,42 @@ def set_quantity(root, ref, n):
     return False
 
 
+COINS = {"pp": ("Platinum", 10.0), "gp": ("Gold", 1.0), "ep": ("Electrum", 0.5), "sp": ("Silver", 0.1), "cp": ("Copper", 0.01)}   # abbreviation -> (name, value in gp)
+
+
+def coin_of(it):
+    """The coin an item is ("pp", "gp", "ep", "sp", "cp") when its name is "Gold (gp)" and so on (that is how Fight Club keeps money: as items), else None."""
+    m = re.fullmatch(r"\s*(\w+)\s*\((pp|gp|ep|sp|cp)\)\s*", _t(it, "name"), re.I)
+    return m.group(2).lower() if m else None
+
+
+def change_coin(root, coin, delta):
+    """Add `delta` (negative to spend) to the loose coin item of that kind, making it when there is none and removing it at zero. Refuses spending more than
+    there is. Returns the new amount."""
+    if coin not in COINS:
+        raise ValueError("Unknown coin")
+    it = next((i for i in root.findall("item") if coin_of(i) == coin), None)
+    have = quantity(it) if it is not None and _t(it, "quantity") != "0" else 0
+    new = have + int(delta)
+    if new < 0:
+        raise ValueError(f"Only {have} {coin} to spend")
+    new = min(new, 999999)
+    if it is None:
+        name, value = COINS[coin]
+        it = ET.Element("item")
+        put(it, "name", f"{name} ({coin})")
+        put(it, "type", "15")
+        put(it, "quantity", new)
+        put(it, "value", value)
+        put(it, "weight", 0.02)
+        append_after(root, it, ("item", "container"), ("feat", "note", "monster", "slots", "slotsCurrent", "money"))
+    elif new == 0:
+        root.remove(it)
+    else:
+        put(it, "quantity", new)
+    return new
+
+
 def remove_item(root, ref):
     parent, it = item_at(root, ref)
     parent.remove(it)

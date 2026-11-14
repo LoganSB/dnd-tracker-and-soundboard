@@ -44,7 +44,9 @@ write of the XML files and party_extra.json. Flask may handle several requests a
 different threads; without it two edits could read the same file, each change a different
 field, and the later write would silently undo the earlier one.
 """
+import atexit
 import base64
+import copy
 import io
 import json
 import os
@@ -110,16 +112,81 @@ SCHOOLS = {"1": "Abjuration", "2": "Conjuration", "3": "Divination", "4": "Encha
 
 
 # ------------------------------------------------------------------ storage
+# ---- the cache in front of the files
+# The data folder is a Cloud Storage bucket when deployed, where every read and write of a file takes a good fraction of a second (a character file
+# is over a megabyte). So the characters and the extras record are kept in memory: a read is served from memory (the file is looked at again only
+# when its modified time changed from outside), and a change is applied in memory at once and written to the file a few seconds later (FLUSH_AFTER),
+# many changes in a row becoming one write. The files are also written when the server stops (atexit), so only a crash loses the last few seconds.
+# A character that does not have a file yet is written at once, so the file listing (_ids) never lies.
+FLUSH_AFTER = 3.0   # seconds between a change and its write to the file
+_chars = {}         # character id -> [root element, file modified time (ns) when read; 0 = not on disk yet]
+_dirty = set()      # character ids whose memory is newer than their file
+_extra_cache = [None, 0]   # [extras dict, file modified time]
+_extra_dirty = [False]
+_timer = [None]
+_flush_lock = threading.Lock()
+
+
+def _mtime(p):
+    try:
+        return p.stat().st_mtime_ns
+    except OSError:
+        return 0
+
+
+def _schedule():
+    """Arrange for flush() to run FLUSH_AFTER seconds from now unless a run is already waiting."""
+    if _timer[0] is None:
+        t = threading.Timer(FLUSH_AFTER, flush)
+        t.daemon = True
+        _timer[0] = t
+        t.start()
+
+
+def flush():
+    """Write everything changed in memory to its file now (atomic: temp file, then rename). Runs on a timer after a change, at exit, and before anything
+    that reads the files directly."""
+    with _flush_lock:
+        _timer[0] = None
+        with lock:
+            ids, extra = sorted(_dirty), _extra_dirty[0]
+            roots = {c: _chars[c][0] for c in ids if c in _chars}
+            ex = copy.deepcopy(_extra_cache[0]) if extra else None
+            _dirty.clear()
+            _extra_dirty[0] = False
+        for cid, root in roots.items():
+            p = _path(cid)
+            tmp = p.with_suffix(".tmp")
+            ET.ElementTree(root).write(tmp, encoding="utf-8", xml_declaration=True)
+            os.replace(tmp, p)
+            with lock:
+                if cid in _chars and _chars[cid][0] is root:
+                    _chars[cid][1] = _mtime(p)
+        if ex is not None:
+            tmp = EXTRA.with_suffix(".tmp")
+            tmp.write_text(json.dumps(ex, indent=2))
+            os.replace(tmp, EXTRA)
+            with lock:
+                _extra_cache[1] = _mtime(EXTRA)
+
+
+atexit.register(flush)
+
+
 def _extra():
-    """Load data/party_extra.json as a dict ({} if missing or unreadable).
+    """Load data/party_extra.json as a dict ({} if missing or unreadable): a COPY, so a caller can change it and hand it to _save_extra.
 
     Shape: {"<character id>": {"trackers": [{"id", "label", "cur", "max"}], "conditions": "text", "deaths": {"s", "f"}}}.
     (A leading underscore on a name is just a Python convention for "internal helper".)
     """
-    try:
-        return json.loads(EXTRA.read_text())
-    except Exception:
-        return {}
+    with lock:
+        if _extra_cache[0] is None or (not _extra_dirty[0] and _mtime(EXTRA) != _extra_cache[1]):
+            try:
+                _extra_cache[0] = json.loads(EXTRA.read_text())
+            except Exception:
+                _extra_cache[0] = {}
+            _extra_cache[1] = _mtime(EXTRA)
+        return copy.deepcopy(_extra_cache[0])
 
 
 def _trackers(ex):
@@ -145,11 +212,11 @@ def _gifts(cid, root):
 
 
 def _save_extra(d):
-    """Write the sidecar dict atomically: write "<name>.tmp", then os.replace() it over the
-    real file (~ write temp file then rename()), so a crash cannot leave a truncated file."""
-    tmp = EXTRA.with_suffix(".tmp")
-    tmp.write_text(json.dumps(d, indent=2))
-    os.replace(tmp, EXTRA)
+    """Keep the sidecar dict in memory and have it written to data/party_extra.json shortly (see the cache above)."""
+    with lock:
+        _extra_cache[0] = d
+        _extra_dirty[0] = True
+        _schedule()
 
 
 def _path(cid):
@@ -165,30 +232,52 @@ def _path(cid):
     return DIR / f"{cid}.xml"
 
 
-def _load(cid):
-    """Parse a character's XML file and return its root <character> element.
-    404 (Not Found) if there is no such character. Uses the hardened parser."""
+def _peek(cid):
+    """A character's <character> element straight from the cache, to READ only: nobody may change it (use _load for that). 404 if there is no such
+    character. Uses the hardened parser the first time and whenever the file changed from outside."""
     p = _path(cid)
-    if not p.exists():
-        abort(404)
-    return SafeET.parse(p).getroot()
+    with lock:
+        hit = _chars.get(cid)
+        if hit and (cid in _dirty or hit[1] == _mtime(p) != 0):
+            return hit[0]
+        if not p.exists():
+            _chars.pop(cid, None)
+            abort(404)
+        root = SafeET.parse(p).getroot()
+        _chars[cid] = [root, _mtime(p)]
+        return root
+
+
+def _load(cid):
+    """A character's <character> element to CHANGE: a private copy, so a change that fails half way never leaves the cached one damaged. Save it with
+    _write. 404 if there is no such character."""
+    return copy.deepcopy(_peek(cid))
 
 
 def _write(cid, root):
-    """Save a <character> element to data/party/<cid>.xml atomically (temp file + rename).
-
-    ElementTree(root).write(...) serialises the tree back to text, adding the
-    <?xml ...?> declaration line at the top.
-    """
+    """Save a <character> element: into the cache now, to data/party/<cid>.xml a few seconds later (a character with no file yet: at once)."""
     p = _path(cid)
-    tmp = p.with_suffix(".tmp")
-    ET.ElementTree(root).write(tmp, encoding="utf-8", xml_declaration=True)
-    os.replace(tmp, p)
+    with lock:
+        _chars[cid] = [root, 0]
+        if p.exists():
+            _dirty.add(cid)
+            _schedule()
+        else:
+            tmp = p.with_suffix(".tmp")
+            ET.ElementTree(root).write(tmp, encoding="utf-8", xml_declaration=True)
+            os.replace(tmp, p)
+            _chars[cid][1] = _mtime(p)
 
 
 def _class_line(root):
     """"Wizard 5 / Cleric 1": a multiclassed character has several <class> elements."""
     return " / ".join(f"{_t(c, 'name')} {_t(c, 'level', '?')}" for c in root.findall("class"))
+
+
+def _has_image(cid, root):
+    """Does the character have a portrait? Without reading it: the picture is megabytes of text, and the party list asks every few seconds."""
+    f = IMG / f"{cid}.b64"
+    return (f.exists() and f.stat().st_size > 0) or bool((root.findtext("imageData") or "").strip())
 
 
 def _image_b64(cid, root):
@@ -284,7 +373,7 @@ def _item(it, ref="", st=None):
         # attunement and is attuned, and whether its own bonuses (score, armor class) count
         "key": st["key"] if st else "", "kind": st["kind"] if st else None, "worn": st["worn"] if st else "",
         "needsAttune": st["needs"] if st else False, "attuned": st["attuned"] if st else False, "active": st["active"] if st else fcedit.is_equipped(it),
-        "fcSlot": _t(it, "type") in gear.FC_SLOT_TYPES,
+        "fcSlot": _t(it, "type") in gear.FC_SLOT_TYPES, "coin": fcedit.coin_of(it) or "",
         # where the item is in the file ("i3", "c1.2"): how the page names it when it changes, equips, gives or removes it (see fcedit.py)
         "ref": ref,
         # whether Equip / Unequip makes sense for it: loose armor, shields and weapons, rings, wondrous items, and anything whose name says what it is
@@ -361,7 +450,7 @@ def summary(cid, root):
         # 1st-level slots). slots = maximum, slotsCurrent = how many are still unspent.
         "slots": _ints(_t(root, "slots")), "slotsCurrent": _ints(_t(root, "slotsCurrent")),
         "inspiration": int(_num(_t(root, "inspiration"))),
-        "hasImage": bool(_image_b64(cid, root)),
+        "hasImage": _has_image(cid, root),
         "trackers": _trackers(ex),
         "conditions": ex.get("conditions", ""),
         # hit dice per class: the die size, the class level (= the most there can be) and how many are left (all of them when the
@@ -416,6 +505,7 @@ def detail(cid, root):
             # hd = hit die size (e.g. 8), hdCurrent = hit dice still unspent.
             "hd": _t(c, "hd"), "hdCurrent": _t(c, "hdCurrent"),
             "armor": _t(c, "armor"), "weapons": _t(c, "weapons"), "tools": _t(c, "tools"),
+            "spellAbility": _t(c, "spellAbility"),   # the casting ability's index (0 = STR ... 5 = CHA); 6 = none
             "feats": feats,
         })
         for s in c.findall("spell"):
@@ -642,7 +732,7 @@ def list_party():
     list); the party tracker panel asks for it this way."""
     keep = active_ids() if request.args.get("active") and auth.is_dm() else None
     with lock:
-        return jsonify([summary(i, _load(i)) for i in _ids() if _may_use(i) and (keep is None or i in keep)])
+        return jsonify([summary(i, _peek(i)) for i in _ids() if _may_use(i) and (keep is None or i in keep)])
 
 
 @bp.get("/api/party/<cid>")
@@ -651,7 +741,7 @@ def get_member(cid):
     id has illegal characters. <cid> in the URL is passed in as the `cid` argument."""
     _guard(cid)
     with lock:
-        return jsonify(detail(cid, _load(cid)))
+        return jsonify(detail(cid, _peek(cid)))
 
 
 @bp.get("/api/party/<cid>/portrait")
@@ -664,7 +754,7 @@ def portrait(cid):
     JPEG. 404 if there is no image. Cached by the browser for 60 s.
     """
     _guard(cid)
-    data = _image_b64(cid, _load(cid))
+    data = _image_b64(cid, _peek(cid))
     if not data:
         abort(404)
     raw = base64.b64decode(data)
@@ -818,6 +908,7 @@ def add_item(cid):
       from the magic item search {name, type (Open5e's: "Wondrous item"), rarity, text, attunement}
       from the Add item form      {name, typeCode, detail, text, quantity, weight, value, magic, ac, damage, damageType}
       a bag                       {name, bag: true, weight, value, text}   (a <container>; 2 at most)
+    Either may carry quantity (the search kind: how many) and givenBy (the DM only: it is loot given to that character, noted on their sheet like a gift).
     """
     _guard(cid)
     b = request.get_json(force=True, silent=True) or {}
@@ -832,7 +923,7 @@ def add_item(cid):
             except ValueError as err:
                 return jsonify(error=str(err)), 400
             _write(cid, root)
-            return jsonify(ok=True, name=name)
+            return jsonify(ok=True, name=name, character=detail(cid, root))
         if "typeCode" in b:
             try:
                 it = fcedit.make_item(b, ITEM_TYPES)
@@ -849,9 +940,16 @@ def add_item(cid):
             _sub(it, "weight", "0.0")
             _sub(it, "value", "0.0")
             _sub(it, "quantity", "1")
+        if "typeCode" not in b and b.get("quantity"):   # (the Add item form's own quantity is read by make_item)
+            fcedit.put(it, "quantity", max(1, min(9999, int(_num(b["quantity"], 1)))))
+        qty = fcedit.quantity(it)
         fcedit.add_to(root, it)
         _write(cid, root)
-    return jsonify(ok=True, name=name)
+        if b.get("givenBy") and auth.is_dm():   # loot handed over by the DM: the player's sheet highlights it until they acknowledge it
+            ex = _extra()
+            _note_gift(ex, cid, name, qty, "the DM")
+            _save_extra(ex)
+        return jsonify(ok=True, name=name, character=detail(cid, root))
 
 
 def _forget(mine, key):
@@ -886,12 +984,16 @@ def change_item(cid, ref):
             if "equip" in b:
                 if st["fc"]:
                     fcedit.equip(root, ref, bool(b["equip"]))
+                    if b["equip"] and st["needs"]:
+                        mine.setdefault("attuned", {}).setdefault(st["key"], False)
                 elif parent is not root:
                     raise ValueError("Take it out of the bag first: only loose items can be worn")
                 elif b["equip"]:
                     kind = str(b.get("kind") or st["kind"] or "")
                     gear.can_wear(sts, it, kind)
                     mine.setdefault("worn", {})[st["key"]] = kind
+                    if st["needs"]:
+                        mine.setdefault("attuned", {}).setdefault(st["key"], False)   # worn is not attuned: it gives nothing until the player attunes
                     if not _t(it, "slot"):
                         fcedit.put(it, "slot", "1")   # Fight Club's own rule counts an item with a slot as carried and active
                 else:
@@ -906,7 +1008,23 @@ def change_item(cid, ref):
             return jsonify(error=str(err)), 400
         _write(cid, root)
         _save_extra(ex)
-    return jsonify(ok=True, removed=removed)
+    return jsonify(ok=True, removed=removed, character=detail(cid, root))
+
+
+@bp.patch("/api/party/<cid>/coins")
+def change_coins(cid):
+    """PATCH /api/party/<id>/coins {coin: "gp", delta: -5} -> {"ok": true, "amount": n}: spend or add coins. Coins are the character's own items ("Gold (gp)" ...)
+    so Fight Club shows them; this makes the item when there is none and removes it at zero."""
+    _guard(cid)
+    b = request.get_json(force=True, silent=True) or {}
+    with lock:
+        root = _load(cid)
+        try:
+            amount = fcedit.change_coin(root, str(b.get("coin") or ""), int(_num(b.get("delta"))))
+        except ValueError as err:
+            return jsonify(error=str(err)), 400
+        _write(cid, root)
+    return jsonify(ok=True, amount=amount, character=detail(cid, root))
 
 
 @bp.delete("/api/party/<cid>/items/<ref>")
@@ -928,21 +1046,32 @@ def delete_item(cid, ref):
 
 # ---- giving an item to another player. The item moves between the two characters' files (a stack is split); the receiver's sheet highlights it
 # "Given to you by <player>" until they acknowledge it. The note lives in the sidecar file under the receiver (gifts), not in the Fight Club file.
-def _recipients():
-    """The characters the signed-in user may give items to: the DM, any other character; a player, the other players' characters in the loaded
-    campaign's party (never their own). [{id, name, owner}]"""
-    user = auth.current_user()
-    if not user:
+def _recipients(giver):
+    """Who the character `giver` can give items to: the OTHER characters in the loaded campaign's party, and only when `giver` is in that party
+    too (the DM and players alike). [{id, name, owner}]"""
+    if not auth.current_user():
         return []
-    ids = _ids() if user["role"] == "dm" else [i for i in (active_ids() or []) if (DIR / f"{i}.xml").exists() and not _may_use(i)]
+    party_ids = active_ids() or []
+    if giver not in party_ids:
+        return []
     ex = _extra()
-    return [{"id": i, "name": _t(_load(i), "name"), "owner": ex.get(i, {}).get("owner", "")} for i in ids]
+    return [{"id": i, "name": _t(_peek(i), "name"), "owner": ex.get(i, {}).get("owner", "")} for i in party_ids if i != giver and (DIR / f"{i}.xml").exists()]
+
+
+def _note_gift(ex, to, name, qty, giver):
+    """Record in the extras `ex` that character `to` was given `qty` of `name` by `giver` (a note on their sheet until acknowledged; the last 50 are kept)."""
+    gifts = ex.setdefault(to, {}).setdefault("gifts", [])
+    gifts.append({"id": uuid.uuid4().hex[:8], "name": name, "qty": max(1, int(qty)), "from": giver, "at": int(time.time())})
+    del gifts[:-50]
 
 
 @bp.get("/api/party/recipients")
 def list_recipients():
-    """GET /api/party/recipients -> [{id, name, owner}]: who the signed-in user can give an item to (see _recipients)."""
-    return jsonify(_recipients())
+    """GET /api/party/recipients?from=<character id> -> [{id, name, owner}]: who that character can give an item to (see _recipients). The caller must be
+    allowed to use the character."""
+    giver = request.args.get("from", "")
+    _guard(giver)
+    return jsonify(_recipients(giver))
 
 
 @bp.post("/api/party/<cid>/items/<ref>/give")
@@ -952,8 +1081,8 @@ def give_item(cid, ref):
     _guard(cid)
     b = request.get_json(force=True, silent=True) or {}
     to = str(b.get("to") or "")
-    if to == cid or to not in {r["id"] for r in _recipients()}:
-        return jsonify(error="You cannot give items to that character"), 400
+    if to == cid or to not in {r["id"] for r in _recipients(cid)}:
+        return jsonify(error="You can only give items to the other characters in the campaign party you are in"), 400
     user = auth.current_user()
     with lock:
         src, dst = _load(cid), _load(to)
@@ -969,9 +1098,7 @@ def give_item(cid, ref):
         _write(cid, src)
         _write(to, dst)
         giver = user["name"] if user["name"] != "local" else (ex.get(cid, {}).get("owner") or _t(src, "name"))
-        gifts = ex.setdefault(to, {}).setdefault("gifts", [])
-        gifts.append({"id": uuid.uuid4().hex[:8], "name": name, "qty": max(1, int(_num(b.get("quantity"), 1))), "from": giver, "at": int(time.time())})
-        del gifts[:-50]
+        _note_gift(ex, to, name, int(_num(b.get("quantity"), 1)), giver)
         _save_extra(ex)
     return jsonify(ok=True, name=name)
 
@@ -1073,6 +1200,8 @@ def delete_member(cid):
         _guard(cid)
     with lock:
         p = _path(cid)
+        _chars.pop(cid, None)
+        _dirty.discard(cid)
         if p.exists():
             p.unlink()  # delete the file
         (IMG / f"{cid}.b64").unlink(missing_ok=True)
@@ -1118,7 +1247,7 @@ def _backup_download(ids, download_name):
     that file STRIPPED back to the Fight Club backup inside it (gloan5e.strip): plain XML named <something>.backup (see fcformat.py), byte for byte what
     Fight Club reads. "?format=zip" (Fight Club only) gives the same backup inside a zip. The caller has already checked the user may use every id."""
     with lock:
-        chars = [_load(i) for i in ids]
+        chars = [_peek(i) for i in ids]
         images, extras, ex = {}, {}, _extra()
         for cid, ch in zip(ids, chars):
             ref = (ch.findtext("imageData/uid") or "").strip()
@@ -1160,7 +1289,7 @@ def export_member(cid):
     _guard). Add ?format=zip for a zipped copy."""
     _guard(cid)
     with lock:
-        name = _t(_load(cid), "name") or cid
+        name = _t(_peek(cid), "name") or cid
     return _backup_download([cid], "FightClub5-" + re.sub(r"[^\w.-]+", "_", name).strip("_"))
 
 

@@ -587,20 +587,10 @@ function createEntries(secId, at) {
   ];
 }
 
-// addSection(parentId, at): ask for a name and add an empty section inside `parentId` (or at the top level). Its (empty) frame goes where the canvas
-// was clicked (`at`), or in the free spot nearest to its siblings.
+// addSection(parentId, at): add an empty section inside `parentId` (or at the top level), through the same settings pop-up as editing one (openSectionDlg:
+// nothing is added until Save). Its (empty) frame goes where the canvas was clicked (`at`), or in the free spot nearest to its siblings.
 function addSection(parentId, at) {
-  const name = prompt(parentId ? "New section name (it goes inside this one)" : "New section name (e.g. 'The Sunken Temple')");
-  if (!name) return;
-  const sec = { id: uid(), name, parent: parentId || "" };
-  const grow = (r, m) => ({ l: r.l - m, t: r.t - m, r: r.r + m, b: r.b + m });
-  const obstacles = Object.values(frames).map(r => grow(r, 24));
-  const near = C().sections.filter(s => s.parent === sec.parent).map(s => frames[`sec:${s.id}`]).filter(Boolean);
-  Object.assign(sec, at ? { x: Math.round(at.x), y: Math.round(at.y) } : Canvas.freeSpot(obstacles, 340, 120, near));
-  edits.record("added a section");
-  C().sections.push(sec);
-  save();
-  render();
+  openSectionDlg({ id: uid(), name: "", parent: parentId || "" }, at || true);
 }
 
 // deleteSection(sec): delete a section WITHOUT deleting anything in it: its child sections and its cards move up to its own parent.
@@ -614,20 +604,30 @@ function deleteSection(sec) {
   render();
 }
 
-// openSectionDlg(sec): the section's settings (the shared Nodes.form dialog): its name and the section it sits in.
-function openSectionDlg(sec) {
+// openSectionDlg(sec, adding): the section's settings (the shared Nodes.form dialog): its name and the section it sits in. `adding` is set for a NEW section
+// that is not on the board yet (a position {x, y}, or true for "a free spot"): Save then places and adds it.
+function openSectionDlg(sec, adding = false) {
   Nodes.form({
-    title: "Section settings",
+    title: adding ? "New section" : "Section settings",
+    saveLabel: adding ? "Add section" : undefined,
     fields: [
       { key: "name", label: "Name", value: sec.name },
       { key: "parent", label: "Inside", type: "select", value: sec.parent || "", options: nst().options(sec), hint: "(it can only move into a section it may enter; ⤴ moves it up)" },
     ],
     save: v => {
-      edits.record("edited a section");
+      if (adding && !v.name.trim()) return "Give the section a name";
+      edits.record(adding ? "added a section" : "edited a section");
       sec.name = v.name.trim() || sec.name;
-      Nodes.reparent(C().sections, sec.id, v.parent);
+      if (adding) {
+        sec.parent = v.parent || "";
+        const grow = (r, m) => ({ l: r.l - m, t: r.t - m, r: r.r + m, b: r.b + m });
+        const obstacles = Object.values(frames).map(r => grow(r, 24));
+        const near = C().sections.filter(s => s.parent === sec.parent).map(s => frames[`sec:${s.id}`]).filter(Boolean);
+        Object.assign(sec, adding === true ? Canvas.freeSpot(obstacles, 340, 120, near) : { x: Math.round(adding.x), y: Math.round(adding.y) });
+        C().sections.push(sec);
+      } else Nodes.reparent(C().sections, sec.id, v.parent);
       save();
-      render(true);
+      render(adding ? false : true);
     },
   });
 }
@@ -944,7 +944,7 @@ function drawLoot() {
       el("td", {}, wbox),
       el("td", { textContent: ((w / total) * 100).toFixed(w / total < 0.1 ? 1 : 0) + "%" }),
       el("td", { className: "muted", textContent: entry.note || "" }),
-      el("td", {}, entry.readonly ? "" : el("button", { className: "danger tiny", textContent: "✕", title: "Remove this reward", onclick: () => {
+      el("td", {}, LootTables.giveButton(entry), entry.readonly ? "" : el("button", { className: "danger tiny", textContent: "✕", title: "Remove this reward", onclick: () => {
         lootItem.loot.entries = lootItem.loot.entries.filter(x => x !== entry);
         save();
         drawLoot();
@@ -952,7 +952,8 @@ function drawLoot() {
   });
   if (!rows.length) table.append(el("tr", {}, el("td", { colSpan: 6, className: "muted", textContent: own ? "No rewards yet. Add some below." : "This table has no entries yet." })));
   $("#lootResult").textContent = "";
-  lastRolls.forEach(t => $("#lootResult").append(el("div", { textContent: t })));
+  // a roll result is { text, entry }: the line and the reward it landed on, which can be given to a character (a plain string is a message)
+  lastRolls.forEach(t => $("#lootResult").append(typeof t === "string" ? el("div", { textContent: t }) : el("div", {}, t.text + " ", LootTables.giveButton(t.entry))));
   const log = $("#lootLog");
   log.textContent = "";
   lootItem.loot.log.forEach(l => log.append(el("li", {}, el("span", { textContent: l.text }), el("span", { className: "muted", textContent: timeText(l.at) }))));
@@ -998,13 +999,13 @@ $("#rollLootBtn").onclick = async () => {
   const src = sourceOf(lootItem);
   const count = Math.max(1, Math.min(20, Math.floor(+$("#lootCount").value || 1)));
   lastRolls = [];
-  const note = text => { lastRolls.push(text); lootItem.loot.log.unshift({ text, at: Date.now() }); };   // unshift = insert at the front
+  const note = (text, entry) => { lastRolls.push({ text, entry }); lootItem.loot.log.unshift({ text, at: Date.now() }); };   // unshift = insert at the front
   if (src.startsWith("rarity:")) {
     const rarity = src.slice(7), { rows } = await LootTables.items();
     for (let k = 0; k < count; k++) {
       const m = LootTables.pickRarity(rows, rarity);
       if (!m) { lastRolls = [`No ${rarity} items in the list.`]; break; }
-      note(`🎲 ${rarity}: ${m.name} (${m.type})`);
+      note(`🎲 ${rarity}: ${m.name} (${m.type})`, m);
     }
   } else {
     const { rows, total } = lootRanges(lootEntries(lootItem));
@@ -1012,7 +1013,7 @@ $("#rollLootBtn").onclick = async () => {
     for (let k = 0; k < count; k++) {
       const r = 1 + Math.floor(Math.random() * total);
       const hit = rows.find(row => r >= row.lo && r <= row.hi);
-      note(`🎲 d${total} → ${r}: ${hit.entry.name}${hit.entry.note ? " (" + hit.entry.note + ")" : ""}`);
+      note(`🎲 d${total} → ${r}: ${hit.entry.name}${hit.entry.note ? " (" + hit.entry.note + ")" : ""}`, hit.entry);
     }
   }
   lootItem.loot.log.length = Math.min(lootItem.loot.log.length, 30);   // keep only the newest 30

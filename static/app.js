@@ -1600,20 +1600,10 @@ function createEntries(secId, at) {
   ];
 }
 
-// addSection(parentId, at): ask for a name and add an empty section inside `parentId` (or at the top level). Its (empty) frame goes where the canvas
-// was clicked (`at`), or in the free spot nearest to its siblings.
+// addSection(parentId, at): add an empty section inside `parentId` (or at the top level), through the same settings pop-up as editing one (openSectionDlg:
+// nothing is added until Save). Its (empty) frame goes where the canvas was clicked (`at`), or in the free spot nearest to its siblings.
 function addSection(parentId, at) {
-  const name = prompt(parentId ? "New section name (it goes inside this one)" : "New section name (e.g. 'Boss Phase 2')");
-  if (!name) return;
-  const sec = { id: uid(), name, parent: parentId || "", volume: 1, fade: { on: true, secs: 1 }, linkFade: 2 };
-  const grow = (r, m) => ({ l: r.l - m, t: r.t - m, r: r.r + m, b: r.b + m });
-  const obstacles = Object.values(frames).map(r => grow(r, 24));
-  const near = S.sections.filter(x => x.parent === sec.parent).map(x => frames[`sec:${x.id}`]).filter(Boolean);
-  Object.assign(sec, at ? { x: Math.round(at.x), y: Math.round(at.y) } : Canvas.freeSpot(obstacles, 340, 120, near));
-  edits.record("added a section");
-  S.sections.push(sec);
-  save();
-  render();
+  openSectionDlg({ id: uid(), name: "", parent: parentId || "", volume: 1, fade: { on: true, secs: 1 }, linkFade: 2 }, at || true);
 }
 
 // deleteSection(sec): delete a section WITHOUT deleting anything in it: its child sections, sounds and timers move up to its own parent.
@@ -1629,10 +1619,12 @@ function deleteSection(sec) {
   render();
 }
 
-// openSectionDlg(sec): the section's settings (the shared Nodes.form dialog): name, the section it sits in, and the fade lengths.
-function openSectionDlg(sec) {
+// openSectionDlg(sec, adding): the section's settings (the shared Nodes.form dialog): name, the section it sits in, and the fade lengths. `adding` is set
+// for a NEW section that is not on the board yet (a position {x, y}, or true for "a free spot"): Save then places and adds it.
+function openSectionDlg(sec, adding = false) {
   Nodes.form({
-    title: "Section settings",
+    title: adding ? "New section" : "Section settings",
+    saveLabel: adding ? "Add section" : undefined,
     fields: [
       { key: "name", label: "Name", value: sec.name },
       { key: "parent", label: "Inside", type: "select", value: sec.parent || "", options: nst().options(sec), hint: "(it can only move into a section it may enter; ⤴ moves it up)" },
@@ -1641,14 +1633,22 @@ function openSectionDlg(sec) {
       { key: "linkSecs", label: "Crossfade seconds when a chain moves on", type: "number", min: 0, step: 0.1, value: sec.linkFade ?? 2 },
     ],
     save: v => {
-      edits.record("edited a section");
+      if (adding && !v.name.trim()) return "Give the section a name";
+      edits.record(adding ? "added a section" : "edited a section");
       sec.name = v.name.trim() || sec.name;
       sec.fade = { on: v.fadeOn, secs: Math.max(0.1, v.fadeSecs || 1) };
       sec.linkFade = Math.max(0, v.linkSecs ?? 2);
-      Nodes.reparent(S.sections, sec.id, v.parent);
+      if (adding) {
+        sec.parent = v.parent || "";
+        const grow = (r, m) => ({ l: r.l - m, t: r.t - m, r: r.r + m, b: r.b + m });
+        const obstacles = Object.values(frames).map(r => grow(r, 24));
+        const near = S.sections.filter(x => x.parent === sec.parent).map(x => frames[`sec:${x.id}`]).filter(Boolean);
+        Object.assign(sec, adding === true ? Canvas.freeSpot(obstacles, 340, 120, near) : { x: Math.round(adding.x), y: Math.round(adding.y) });
+        S.sections.push(sec);
+      } else Nodes.reparent(S.sections, sec.id, v.parent);
       if (buses.has(sec.id)) busFor(sec);
       save();
-      render(true);
+      render(adding ? false : true);
     },
   });
 }

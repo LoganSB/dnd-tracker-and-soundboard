@@ -16,6 +16,7 @@
 //   cfg.list        key of the entries array in a record ("monsters" / "entries")      cfg.box    storage key prefix
 //   cfg.head        column titles                                  cfg.row(entry, ctx) -> array of cells (nodes or text)
 //   cfg.preview(entry)  optional: opens details for an entry (adds a 📖 button)
+//   cfg.rowActions(entry, ctx)  optional: more buttons at the end of each entry's row (the Loot tab adds 🎁 Give)
 //   cfg.finder(add) -> a Finder.panel whose "+" calls add(rowFromTheList)               cfg.addEntry(record, row)
 //   cfg.custom      optional { placeholder, make(name) -> entry } for adding an entry by hand
 //   cfg.summary(record, ctx) -> node (redrawn after every edit)           cfg.actions(record, ctx) -> array of buttons
@@ -94,7 +95,7 @@ const Builder = (() => {
       const notes = h("textarea", { rows: 2, placeholder: "Notes", value: rec.notes || "", maxLength: NOTE_MAX_CHARS, className: "notebox", oninput: () => { limitLines(notes); rec.notes = notes.value; fit(notes); save(); } });
       const rows = rec[cfg.list].map(entry => h("tr", {},
         cfg.row(entry, ctx).map(c => h("td", { textContent: typeof c === "string" ? c : undefined }, typeof c === "string" ? null : c)),
-        h("td", { className: "acts" }, cfg.preview ? h("button", { textContent: "📖", title: "Details", onclick: () => cfg.preview(entry) }) : null,
+        h("td", { className: "acts" }, ...(cfg.rowActions?.(entry, ctx) || []), cfg.preview ? h("button", { textContent: "📖", title: "Details", onclick: () => cfg.preview(entry) }) : null,
           h("button", { className: "tiny danger", textContent: "✕", onclick: () => { rec[cfg.list] = rec[cfg.list].filter(x => x !== entry); save(); draw(); } }))));
       const custom = cfg.custom && (() => {
         const name = h("input", { placeholder: cfg.custom.placeholder });

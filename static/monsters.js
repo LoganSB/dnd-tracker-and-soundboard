@@ -5,8 +5,8 @@
 // The list is every monster from Open5e (the Kobold Press books included). It is downloaded once from the server (GET /api/monsters/index: the
 // server keeps it on disk and rebuilds it from Open5e at most monthly), so typing makes no API calls.
 //
-// Monsters.panel(add, opts)   a search box with suggestions, filters (type, book, CR range) and a result table with a "+" button per row;
-//                             add(row) gets { slug, name, type, cr, ac, hp, bonus, doc, docTitle, xp }
+// Monsters.panel(add, opts)   a search box with suggestions, filters (type, size, book, CR range) and a result table with a "+" button per row;
+//                             add(row) gets { slug, name, type, size, cr, ac, hp, bonus, doc, docTitle, xp }
 // Monsters.full(slug)         promise of the whole Open5e record (size, ability scores, hit dice ...)
 // Monsters.crText(cr)         0.25 -> "1/4"          Monsters.preview(slug)   open the stat block page
 // Needs ui.js and finder.js loaded first.
@@ -20,20 +20,23 @@ const Monsters = (() => {
     const panel = Finder.panel({
       compact, rows: [], note: () => note, placeholder: "Type any part of a name (typos are fine), or cr 5",
       hint: "Matches while you type, with or without typos, from the Open5e monster list (includes the Kobold Press books). Try: gobln, drag, undead cr 5+, cr 1/2.",
-      label: m => `${m.name} (CR ${crText(m.cr)})`, sub: m => `${m.type} · ${m.docTitle}`,
+      label: m => `${m.name} (CR ${crText(m.cr)})`, sub: m => `${[m.size, m.type].filter(Boolean).join(" ")} · ${m.docTitle}`,
       num: { label: "CR", get: m => m.cr },
-      columns: [{ label: "Monster", text: m => m.name }, { label: "CR", text: m => crText(m.cr) }, { label: "Type", text: m => m.type },
+      columns: [{ label: "Monster", text: m => m.name }, { label: "CR", text: m => crText(m.cr) }, { label: "Size", text: m => m.size }, { label: "Type", text: m => m.type },
         { label: "AC / HP", text: m => `${m.ac ?? "?"} / ${m.hp ?? "?"}` }, { label: "Book", text: m => m.docTitle }],
       onAdd: add, preview: m => preview(m.slug),
       // The type and book menus need the list to know their choices, so the panel is told them when the list arrives.
-      filters: [{ key: "type", label: "Type", all: "Any type", options: [], get: m => m.type }, { key: "doc", label: "Book", all: "Any book", options: [], get: m => m.doc }],
+      filters: [{ key: "type", label: "Type", all: "Any type", options: [], get: m => m.type }, { key: "doc", label: "Book", all: "Any book", options: [], get: m => m.doc },
+        { key: "size", label: "Size", all: "Any size", options: [], get: m => m.size }],
     });
-    Finder.loadIndex("/api/monsters/index", ([slug, name, type, cr, ac, hp, bonus, doc], d) => {
+    Finder.loadIndex("/api/monsters/index", ([slug, name, type, cr, ac, hp, bonus, doc, size = ""], d) => {
       const t = type ? type[0].toUpperCase() + type.slice(1).toLowerCase() : "";
-      return { slug, name, type: t, cr, ac, hp, bonus, doc, docTitle: d.docs[doc] || doc, xp: d.xp[cr] || 0, extraText: `${t} ${d.docs[doc] || ""}` };
+      return { slug, name, type: t, size, cr, ac, hp, bonus, doc, docTitle: d.docs[doc] || doc, xp: d.xp[cr] || 0, extraText: `${size} ${t} ${d.docs[doc] || ""}` };
     }, () => { note = "Downloading the monster list from Open5e (first time only)…"; panel.redraw(); })
       .then(({ rows, d }) => {
         panel.setOptions("type", [...new Set(rows.map(m => m.type).filter(Boolean))].sort().map(t => [t, t]));
+        const order = ["Tiny", "Small", "Medium", "Large", "Huge", "Gargantuan"];
+        panel.setOptions("size", order.filter(s => rows.some(m => m.size === s)).map(s => [s, s]));
         panel.setOptions("doc", Object.entries(d.docs).sort((a, b) => a[1].localeCompare(b[1])));
         panel.setRows(rows);
       })

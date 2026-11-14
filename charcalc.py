@@ -133,9 +133,29 @@ def _speed(d, equipped):
     return base, f"{base} ft base" + (" (Fast Movement is off while in heavy armor)" if fast else "")
 
 
+def _why(ability, mod, prof):
+    """Where a modifier comes from, in words: "STR +3, proficiency +4"."""
+    return f"{ability} {_signed(mod)}" + (f", proficiency {_signed(prof)}" if prof else "")
+
+
+def spellcasting(d, mods, prof):
+    """One entry per class that casts spells: {class, ability, mod, attack, dc, why}. Fight Club's class <spellAbility> is the ability index (0 = STR ... 5 = CHA);
+    6 or blank means the class casts nothing. Spell attack = proficiency + the ability modifier; spell save DC = 8 + that."""
+    out = []
+    for c in d.get("classes", []):
+        try:
+            ab = int(c.get("spellAbility"))
+        except (TypeError, ValueError):
+            continue
+        if 0 <= ab < 6:
+            out.append({"class": c.get("name", ""), "ability": ABILITIES[ab], "mod": mods[ab], "attack": prof + mods[ab], "dc": 8 + prof + mods[ab],
+                        "why": f"{ABILITIES[ab]} {_signed(mods[ab])}, proficiency {_signed(prof)}"})
+    return out
+
+
 def derive(d):
     """The calculated part of a character: {profBonus, stats: {ac, acNote, initiative, speed, passivePerception, profBonus},
-    skills: [{name, ability, mod, proficient}], saves: [{name, mod, proficient}], attacks: [...]}.
+    skills: [{name, ability, mod, proficient, why}], saves: [{name, mod, proficient, why}], spellcasting: [{class, ability, mod, attack, dc, why}], attacks: [...]}.
 
     `d` is the party.detail() record plus d["profs"] = {"saves": [index], "skills": [code]}."""
     mods = _mods(d)
@@ -145,13 +165,16 @@ def derive(d):
     skills = []
     for n, (name, ab) in enumerate(SKILLS):
         p = SKILL_CODE0 + n in profs.get("skills", [])
-        skills.append({"name": name, "ability": ABILITIES[ab], "mod": mods[ab] + (prof if p else 0), "proficient": p})
-    saves = [{"name": ABILITIES[n], "mod": mods[n] + (prof if n in profs.get("saves", []) else 0), "proficient": n in profs.get("saves", [])} for n in range(6)]
+        skills.append({"name": name, "ability": ABILITIES[ab], "mod": mods[ab] + (prof if p else 0), "proficient": p, "why": _why(ABILITIES[ab], mods[ab], prof if p else 0)})
+    saves = [{"name": ABILITIES[n], "mod": mods[n] + (prof if n in profs.get("saves", []) else 0), "proficient": n in profs.get("saves", []),
+              "why": _why(ABILITIES[n], mods[n], prof if n in profs.get("saves", []) else 0)} for n in range(6)]
     ac, how = armor_class(d, mods, equipped)
     speed, speed_note = _speed(d, equipped)
     return {
         "profBonus": prof,
-        "stats": {"ac": ac, "acNote": how, "initiative": mods[1], "speed": f"{speed} ft" if speed else "", "speedFeet": speed, "speedNote": speed_note,
+        "spellcasting": spellcasting(d, mods, prof),
+        "stats": {"ac": ac, "acNote": how, "initiative": mods[1], "initiativeWhy": _why("DEX", mods[1], 0),
+                  "passiveWhy": f"10 + Perception {_signed(skills[PERCEPTION]['mod'])} ({skills[PERCEPTION]['why']})", "speed": f"{speed} ft" if speed else "", "speedFeet": speed, "speedNote": speed_note,
                   "passivePerception": 10 + skills[PERCEPTION]["mod"], "profBonus": prof},
         "skills": skills, "saves": saves, "attacks": attacks(d, mods, prof, equipped),
     }
