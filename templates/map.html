@@ -1,0 +1,21 @@
+<!doctype html>
+<!--
+  map.html - the Map tab (everyone), shown inside the app shell at /_/map. An empty outline: static/mapview.js builds the page into #map. It shows the map the DM
+  loaded (from the Encounters tab: Maps > Load on map page) and follows changes by itself.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Map</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" type="image/jpeg" href="/static/icon.jpeg">
+</head>
+<body class="mappage" data-role="{{ role }}">
+<div id="map"></div>
+<script src="/static/errors.js"></script>
+<script src="/static/tooltip.js"></script>
+<script src="/static/ui.js"></script>
+<script src="/static/mapview.js"></script>
+</body>
+</html>

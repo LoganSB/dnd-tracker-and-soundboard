@@ -33,7 +33,7 @@
 //        condition,                             // set on a CONDITION card: { groups: [ { id, name, tiers: [ { id, need, label } ] } ] }
 //        timer,                                 // set on a TIMER card: { secs, endsAt?, left?, done?, doneAt? } (see timers.js)
 //     } ],
-//     links: [ { id, from, to, group?, when? } ]   // cables between ANY two things (see "campaign links" below)
+//     links: [ { id, from, to, group?, when?, items? } ]   // cables between ANY two things (see "campaign links" below)
 //   }
 //   A link's `from` and `to` are keys: "sec:<id>" (a section), "flag:<id>" (any card), or "chk:<id>" (one checklist entry).
 //   An item can have any number of links in and out.
@@ -1087,8 +1087,18 @@ const visiting = new Set();
 // groupOf(item, link): the group an incoming link counts toward (its own choice, else the first group).
 const groupOf = (item, l) => item.condition.groups.find(g => g.id === l.group) || item.condition.groups[0];
 
-// linkSatisfied(link): is the thing this link waits for done? An ordinary source: isDone. A condition card: the chosen tier is reached.
+// checkItems(link): the checklist entries a link into a condition counts one by one, or null. A link from a flag that has a checklist may be set to "count each checklist item"
+// (link.items, chosen in the condition's settings): the flag's entries are then the nodes of the group, not the flag as one.
+function checkItems(l) {
+  if (!l.items) return null;
+  const src = lookup(l.from);
+  return src && src.kind === "flag" && !isCond(src.obj) && src.obj.checklist?.length ? src.obj.checklist : null;
+}
+
+// linkSatisfied(link): is the thing this link waits for done? An ordinary source: isDone. A condition card: the chosen tier is reached. A link counting a checklist: every entry ticked.
 function linkSatisfied(l) {
+  const list = checkItems(l);
+  if (list) return list.every(x => x.done);
   const src = lookup(l.from)?.obj;
   if (!isCond(src)) return isDone(l.from);
   const g = src.condition.groups.find(x => x.id === l.when?.group) || src.condition.groups[0];
@@ -1102,9 +1112,14 @@ function groupState(item, g) {
   visiting.add(item.id);
   try {
     const mine = C().links.filter(l => l.to === condKey(item) && groupOf(item, l) === g);
-    const done = mine.filter(linkSatisfied).length;
+    // an ordinary link is one node; a link set to count a flag's checklist is one node per entry (ticked = done)
+    let done = 0, total = 0;
+    for (const l of mine) {
+      const list = checkItems(l);
+      if (list) { total += list.length; done += list.filter(x => x.done).length; } else { total += 1; if (linkSatisfied(l)) done += 1; }
+    }
     const best = [...g.tiers].filter(t => done >= t.need).sort((a, b) => b.need - a.need)[0] || null;
-    return { done, total: mine.length, best };
+    return { done, total, best };
   } finally { visiting.delete(item.id); }
 }
 
@@ -1178,6 +1193,7 @@ function openCondDlg(item) {
     name: item.name,
     groups: item.condition.groups.map(g => ({ id: g.id, name: g.name, tiers: g.tiers.map(t => ({ ...t })) })),
     ins: Object.fromEntries(C().links.filter(l => l.to === key).map(l => [l.id, groupOf(item, l)?.id || ""])),
+    items: Object.fromEntries(C().links.filter(l => l.to === key && l.items).map(l => [l.id, true])),   // links that count the source flag's checklist entry by entry
     outs: Object.fromEntries(C().links.filter(l => l.from === key).map(l => {
       const g = item.condition.groups.find(x => x.id === l.when?.group) || item.condition.groups[0];
       const t = g && (g.tiers.find(x => x.id === l.when?.tier) || topTier(g));
@@ -1222,7 +1238,11 @@ function drawCond() {
     const sel = el("select", {}, ...gopts());
     sel.value = draft.ins[l.id] || draft.groups[0]?.id || "";
     sel.onchange = () => (draft.ins[l.id] = sel.value);
-    body.append(el("div", { className: "row subrow" }, el("span", { className: "grow", textContent: lookup(l.from)?.name || "?" }), sel));
+    // a flag with a checklist can count its entries one by one (3 of its 8 entries ticked = 3 toward the group) instead of counting as one node
+    const src = lookup(l.from), n = src && src.kind === "flag" && !isCond(src.obj) ? src.obj.checklist?.length || 0 : 0;
+    const each = n ? el("label", { className: "check", title: "Each ticked entry of this flag's checklist counts as one toward the group, instead of the flag counting as one when it is triggered" },
+      el("input", { type: "checkbox", checked: !!draft.items[l.id], onchange: ev => (draft.items[l.id] = ev.target.checked) }), ` count its ${n} checklist items one by one`) : null;
+    body.append(el("div", { className: "row subrow" }, el("span", { className: "grow", textContent: lookup(l.from)?.name || "?" }), sel), each);
   });
   const outs = C().links.filter(l => l.from === key);
   body.append(el("h3", { textContent: "Outputs: what unlocks each linked node" }));
@@ -1246,6 +1266,7 @@ $("#condForm").addEventListener("submit", ev => {
   item.condition.groups = draft.groups.map(g => ({ id: g.id, name: g.name.trim() || "Conditions", tiers: g.tiers.map(t => ({ id: t.id, need: Math.max(1, Math.floor(+t.need || 1)), label: t.label.trim() || `${t.need} met` })) }));
   C().links.forEach(l => {
     if (l.id in draft.ins) l.group = draft.ins[l.id];
+    if (l.id in draft.ins) { if (draft.items[l.id]) l.items = true; else delete l.items; }
     if (l.id in draft.outs && draft.outs[l.id]) { const [group, tier] = draft.outs[l.id].split(":"); l.when = { group, tier }; }
   });
   cdlg.close();

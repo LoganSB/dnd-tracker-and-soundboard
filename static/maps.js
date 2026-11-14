@@ -11,7 +11,7 @@
 //               every part of the page that holds the record sees the change
 //     onChange  called after an upload or a delete
 //   The panel shows the maps as a UI.dataTable (search, filters, size buttons like every other list; click a row to preview a picture),
-//   with View (new browser tab), Download (safeDownload, errors.js: a failure is printed beside the button) and Delete buttons, and an
+//   with 📍 Load (puts the map on the Map page: PUT /api/map {enc, map}, see mapview.js), View (new browser tab), Download (safeDownload, errors.js: a failure is printed beside the button) and Delete buttons, and an
 //   upload row. Files are png, jpg, gif, webp or pdf, 25 MB at most, 20 per encounter; the server enforces it (encounters.py).
 //
 // SERVER ROUTES   POST /api/encounters/<id>/maps (form field "file")    GET /api/encounters/<id>/maps/<map id>[?download=1]
@@ -48,6 +48,13 @@ const Maps = (() => {
       onChange?.();
     }
 
+    // Load: this map becomes THE map on the Map page; the page then switches there to show it (the shell hears "goto").
+    async function load(m) {
+      await UI.api("/api/map", "PUT", { enc: enc.id, map: m.id });
+      msg.say(`"${m.name}" is on the Map page`);
+      parent.postMessage({ type: "goto", page: "map" }, location.origin);
+    }
+
     function draw(note) {
       const maps = enc.maps || [];
       const file = h("input", { type: "file", accept: ".png,.jpg,.jpeg,.gif,.webp,.pdf,image/*,application/pdf" });
@@ -64,7 +71,8 @@ const Maps = (() => {
           columns: [{ label: "Map", text: m => m.name }, { label: "Type", text: m => m.ext.slice(1).toUpperCase(), filter: true }, { label: "Size", text: m => size(m.size) }],
           // A picture opens under its row; a PDF has nothing to preview, so it only has the View button.
           detail: m => (m.ext === ".pdf" ? null : h("img", { src: href(enc, m), alt: m.name, loading: "lazy", className: "mapthumb" })),
-          actions: m => [h("a", { className: "btn tiny", href: href(enc, m), target: "_blank", rel: "noopener", textContent: "View", title: "Open in a new tab" }),
+          actions: m => [h("button", { className: "tiny primary", textContent: "📍 Load", title: "Show this map on the Map page (everybody sees it)", onclick: () => load(m).catch(failed) }),
+            h("a", { className: "btn tiny", href: href(enc, m), target: "_blank", rel: "noopener", textContent: "View", title: "Open in a new tab" }),
             h("button", { className: "tiny", textContent: "⬇", title: "Download", onclick: () => safeDownload(href(enc, m, true)) }),
             h("button", { className: "tiny danger", textContent: "✕", title: "Delete this map", onclick: () => remove(m).catch(failed) })],
         }),

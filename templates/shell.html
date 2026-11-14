@@ -23,6 +23,7 @@
   MESSAGES (window.postMessage is how pages in different frames talk to each other):
     from a page to the shell:  { type: "goto", page: "party", path: "/_/party/<id>" }  show that tab and
                                load that address in its frame (used by the tracker's character links)
+                               { type: "mapFull", on }  hide / show the header so the Map page fills the window (its full screen)
                                { type: "reloadPages" }  reload the Soundboard and Campaign pages (Home sends
                                it after loading a different campaign)
                                { type: "flashTab", page: "sound" | "campaign" }  make that tab's link flash until the tab is
@@ -91,6 +92,7 @@
   <iframe id="f-encounters" data-page="encounters" title="Encounters" src="/_/encounters"></iframe>
   <iframe id="f-loot" data-page="loot" title="Loot" src="/_/loot"></iframe>
   {% endif %}
+  <iframe id="f-map" data-page="map" title="Map" allow="fullscreen" allowfullscreen src="/_/map"></iframe>
   <iframe id="f-party" data-page="party" title="Characters" allow="autoplay" src="{{ party_path }}"></iframe>
 </div>
 
@@ -102,7 +104,7 @@
   // frames: page name -> its <iframe>. urls: the address shown in the browser's address bar for each tab.
   const frames = {};
   document.querySelectorAll("#frames iframe").forEach(f => (frames[f.dataset.page] = f));
-  const urls = { home: "/", sound: "/sound", campaign: "/campaign", encounters: "/encounters", loot: "/loot", party: "/party" };
+  const urls = { home: "/", sound: "/sound", campaign: "/campaign", encounters: "/encounters", loot: "/loot", map: "/map", party: "/party" };
   let current = {{ active|tojson }};   // tojson writes the Python value as a JavaScript string literal
 
   // The phone menu (hamburger): opens and closes the list of page links. A phone shows no Party button in the header, so the menu
@@ -185,7 +187,7 @@
   // Back / Forward buttons: show the tab recorded in that history entry (or work it out from the address).
   addEventListener("popstate", ev => {
     const p = location.pathname;
-    show(ev.state?.page || (p.startsWith("/campaign") ? "campaign" : p === "/encounters" ? "encounters" : p === "/loot" ? "loot" : p.startsWith("/party") ? "party" : p === "/sound" ? "sound" : "home"), false);
+    show(ev.state?.page || (p.startsWith("/campaign") ? "campaign" : p === "/encounters" ? "encounters" : p === "/loot" ? "loot" : p === "/map" ? "map" : p.startsWith("/party") ? "party" : p === "/sound" ? "sound" : "home"), false);
   });
   // goto(page, path, sound): switch to a tab, optionally loading `path` in its frame first and, for the
   // soundboard, asking it to centre on the sound with id `sound` (see revealSound in app.js).
@@ -212,6 +214,9 @@
       // A timer finished on a page: flash its tab link, unless that tab is the one being looked at.
       const a = document.querySelector(`.appnav-links a[data-page="${CSS.escape(String(ev.data.page))}"]`);
       if (a && ev.data.page !== current) { a.classList.add("flash"); menuBtn.classList.add("flash"); }
+    } else if (ev.data?.type === "mapFull") {
+      // The Map page's full screen where the browser will not do a real one (an iPhone): hide the header and the party panel so the frame fills the window (style.css, body.mapfull).
+      document.body.classList.toggle("mapfull", !!ev.data.on);
     } else if (ev.data?.type === "goto") {
       goto(ev.data.page, ev.data.path, ev.data.sound, ev.data.node);
     }

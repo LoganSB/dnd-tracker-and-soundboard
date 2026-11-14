@@ -51,6 +51,7 @@ import io
 import json
 import os
 import re
+import shutil
 import threading
 import time
 import uuid
@@ -728,6 +729,8 @@ def import_party():
 # Set by app.py: a function giving the ids in the loaded campaign's party (a list, possibly empty).
 # Used by "?active=1" below.
 active_ids = lambda: None  # noqa: E731
+# Set by app.py: called with a character's id after it is deleted, so the loaded campaign's party and the combat forget it.
+on_deleted = lambda cid: None  # noqa: E731
 
 
 @bp.get("/api/party")
@@ -1273,11 +1276,19 @@ def delete_feature(cid, ref):
 def delete_member(cid):
     """DELETE /api/party/<cid> : remove a character's XML file and sidecar entry.
     Response {"ok": true}; deleting an unknown (but well-formed) id is not an error. A player may delete
-    only their own characters (someone else's is "not found")."""
+    only their own characters (someone else's is "not found"). A copy of the file is kept in data/deleted/ first (a safety net: it is not shown anywhere in the app; put it back in
+    data/party/ to restore the character). The character also leaves the loaded campaign's party and the combat (on_deleted, set by app.py)."""
     if _path(cid).exists():
         _guard(cid)
     with lock:
         p = _path(cid)
+        existed = p.exists()
+        if existed:
+            if cid in _dirty:
+                flush()   # (so the copy is the character as it is now)
+            gone = DIR.parent / "deleted"
+            gone.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(p, gone / f"{cid}-{time.strftime('%Y%m%d-%H%M%S')}.xml")
         _chars.pop(cid, None)
         _dirty.discard(cid)
         if p.exists():
@@ -1286,6 +1297,8 @@ def delete_member(cid):
         ex = _extra()
         if ex.pop(cid, None) is not None:  # pop returns the removed value, or None if absent
             _save_extra(ex)
+    if existed:
+        on_deleted(cid)
     return jsonify(ok=True)
 
 

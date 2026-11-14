@@ -71,6 +71,12 @@ async function renderDetail(id) {
   const isDM = document.body.dataset.role === "dm";
   bar.append(picker, h("button", { className: "btn", onclick: () => Creator.open({ isDM, onCreated: cid => { store("party.last", cid); location.href = "/_/party/" + cid; } }), textContent: "＋ New character" }),
     h("button", { className: "btn", onclick: () => downloadCharacters(`/api/party/${id}/export.zip`, "this character"), textContent: "⬇ Download this character" }),
+    h("button", { className: "btn danger", textContent: "🗑 Delete", title: "Delete this character", onclick: async () => {
+      if (!confirm(`Delete ${m.name} for good?\n\nIt leaves the party and the combat too. Download it first if you may want it back.`)) return;
+      try { await api("/api/party/" + id, "DELETE"); } catch (e) { alert(e.message); return; }
+      store("party.last", "");
+      location.href = "/_/party";   // the next character (or the empty page)
+    } }),
     h("button", { className: "btn", onclick: () => downloadCharacters("/api/party/export.zip", isDM ? "all characters" : "all your characters"), textContent: isDM ? "⬇ Download all characters" : "⬇ Download all my characters",
       title: "One Fight Club backup file holding " + (isDM ? "every character" : "every character assigned to you") }));
   fillPicker(picker, id);

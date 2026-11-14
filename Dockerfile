@@ -24,7 +24,10 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PORT=8080 \
-    DND_DATA_ROOT=/data
+    DND_DATA_ROOT=/data \
+    DENO_DIR=/tmp/deno \
+    XDG_CACHE_HOME=/tmp/cache
+# (DENO_DIR and XDG_CACHE_HOME: the JavaScript runtime and yt-dlp keep caches; /tmp is writable on Cloud Run wherever the home folder is not.)
 
 WORKDIR /app
 

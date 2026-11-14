@@ -70,6 +70,7 @@ import os
 import re
 import select
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -535,13 +536,41 @@ def check_cookies(text):
     return text if text.endswith("\n") else text + "\n"
 
 
+youtube_diag = {"error": "", "at": 0}   # the last YouTube download's own error text (whole), shown to the DM under Home > YouTube cookies
+
+
+def youtube_environment():
+    """What this server has for YouTube downloads: the yt-dlp version, whether its challenge solver is installed, and whether a JavaScript runtime (deno) runs. Read-only checks."""
+    out = {"ytdlp": "", "solver": False, "runtime": ""}
+    try:
+        import yt_dlp
+        out["ytdlp"] = yt_dlp.version.__version__
+    except Exception as e:
+        out["ytdlp"] = f"not installed ({e.__class__.__name__})"
+    try:
+        import yt_dlp_ejs  # noqa: F401
+        out["solver"] = True
+    except Exception:
+        pass
+    exe = shutil.which("deno")
+    if exe:
+        try:
+            r = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=10)
+            out["runtime"] = (r.stdout.splitlines() or [r.stderr.strip()[:80] or "found, but printed nothing"])[0]
+        except Exception as e:
+            out["runtime"] = f"found at {exe} but would not run: {e.__class__.__name__}: {str(e)[:100]}"
+    return out
+
+
 @app.get("/api/cookies")
 def cookies_status():
-    """GET /api/cookies -> {present, bytes, updated (seconds since 1970), browser}: whether YouTube cookies are set up. The DM only; the cookies themselves are never sent."""
+    """GET /api/cookies -> {present, bytes, updated (seconds since 1970), browser, ytdlp, solver, runtime, lastError, lastErrorAt}: whether YouTube cookies are set up, what the server has for
+    YouTube downloads, and the last YouTube error as yt-dlp wrote it. The DM only; the cookies themselves are never sent."""
+    info = {"present": False, "browser": os.environ.get("DND_COOKIES_FROM_BROWSER", ""), **youtube_environment(), "lastError": youtube_diag["error"], "lastErrorAt": youtube_diag["at"]}
     if COOKIES.exists():
         st = COOKIES.stat()
-        return jsonify(present=True, bytes=st.st_size, updated=int(st.st_mtime), browser=os.environ.get("DND_COOKIES_FROM_BROWSER", ""))
-    return jsonify(present=False, browser=os.environ.get("DND_COOKIES_FROM_BROWSER", ""))
+        info.update(present=True, bytes=st.st_size, updated=int(st.st_mtime))
+    return jsonify(info)
 
 
 @app.post("/api/cookies")
@@ -647,6 +676,8 @@ def do_fetch(key, kind, url):
     except Exception as e:  # report to UI rather than die in a thread
         log.exception("download failed after %.0fs: %s (%s)", time.time() - started, url, key)
         msg = str(e)
+        if kind == "youtube":
+            youtube_diag.update(error=re.sub(r"\x1b\[[0-9;]*m", "", msg)[:1500], at=int(time.time()))   # (the whole text, without colour codes)
         if re.search(r"no video formats found|javascript runtime|n challenge|signature solving", msg, re.I):   # yt-dlp cannot unscramble YouTube's links without these
             msg = "yt-dlp could not read YouTube's formats: it needs a JavaScript runtime and its challenge solver. Install them with: pip install -U \"yt-dlp[default]\" deno (the Docker image does this)."
         elif re.search(r"sign in to confirm|not a bot|cookies", msg, re.I):   # YouTube's bot check: say what to do about it
@@ -818,6 +849,7 @@ app.register_blueprint(encounters.bp)
 @app.get("/campaign")
 @app.get("/encounters")
 @app.get("/loot")
+@app.get("/map")
 @app.get("/party")
 @app.get("/party/<cid>")
 def shell(cid=None):
@@ -831,7 +863,7 @@ def shell(cid=None):
     if not user:
         return render_template("landing.html")
     path = request.path
-    active = "campaign" if path == "/campaign" else "encounters" if path == "/encounters" else "loot" if path == "/loot" else "party" if path.startswith("/party") else \
+    active = "campaign" if path == "/campaign" else "encounters" if path == "/encounters" else "loot" if path == "/loot" else "map" if path == "/map" else "party" if path.startswith("/party") else \
         "sound" if path == "/sound" else "home"
     return render_template("shell.html", active=active, user=user, role=user["role"],
                            party_path="/_/party" + (f"/{cid}" if cid else ""))
@@ -867,6 +899,12 @@ def inner_encounters():
 def inner_loot():
     """GET /_/loot : the loot table builder page (the shell's Loot tab)."""
     return render_template("loot.html")
+
+
+@app.get("/_/map")
+def inner_map():
+    """GET /_/map : the Map page (the shell's Map tab, for everyone): shows the map the DM loaded."""
+    return render_template("map.html", role=auth.current_user()["role"])
 
 
 @app.get("/_/party")
@@ -969,6 +1007,23 @@ def active_party():
 
 # party.py asks this (through party.active_ids) when the tracker wants only the active party.
 party.active_ids = lambda: [r["id"] for r in state.get("party", [])]
+
+
+def _character_deleted(cid):
+    """A character was deleted: take it out of the loaded campaign's party (and that campaign's file), and out of the combat."""
+    with lock:
+        left = [r for r in state.get("party", []) if r["id"] != cid]
+        if len(left) == len(state.get("party", [])):
+            return
+        state["party"] = left
+        encounters.forget_characters({r["id"] for r in left})
+        state["revision"] = state.get("revision", 0) + 1
+        save_live()
+        if state.get("campaignName"):
+            savefiles.set_party(PRESETS, state["campaignName"], left)
+
+
+party.on_deleted = _character_deleted
 
 
 @app.get("/api/active-party")

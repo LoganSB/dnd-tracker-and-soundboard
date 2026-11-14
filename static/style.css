@@ -2942,3 +2942,21 @@ body.canvaspage #stage { touch-action: none; }   /* without this the phone scrol
   .creator input, .creator select, .creator textarea { font-size: 16px; }
   .creator .efgrid { grid-template-columns: 1fr; }
 }
+
+/* the Map page (static/mapview.js) */
+body.mappage { margin: 0; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+body.mappage #map { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.maphead { padding: .4rem .8rem; display: flex; gap: .6rem; align-items: center; flex: none; }
+.mapscroll { flex: 1; min-height: 0; overflow: auto; text-align: center; }
+.mapimg { cursor: zoom-in; }
+.mapimg.fit { max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; }
+.mapscroll:has(.mapimg.fit) { display: flex; align-items: center; justify-content: center; }
+.mapimg:not(.fit) { cursor: zoom-out; max-width: none; }
+.mappdf { flex: 1; width: 100%; border: 0; background: #fff; }
+.mapempty { margin: 20vh auto 0; text-align: center; padding: 0 1rem; }
+
+/* full screen on the Map page (static/mapview.js): the name bar floats over the corner; where the browser cannot do a real full screen the shell hides its header (body.mapfull) */
+body.mappage.full .maphead { position: absolute; top: .5rem; right: .5rem; z-index: 5; background: #000b; border-radius: 8px; opacity: .55; transition: opacity .2s; }
+body.mappage.full .maphead:hover, body.mappage.full .maphead:focus-within { opacity: 1; }
+body.mappage.full .mapscroll, body.mappage.full .mappdf { position: absolute; inset: 0; }
+body.shell.mapfull > header.appnav, body.shell.mapfull > #trackerPanel, body.shell.mapfull > #ptr { display: none; }

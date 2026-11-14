@@ -57,8 +57,18 @@ function characterTable(key, rows, { users, buttons, empty }) {
       { label: "HP", text: r => (r.present === false ? "waiting for upload" : `${r.hp}/${r.hpMax}`) },
     ],
     // Every row that has a sheet here also gets a download (a Fight Club zip of just that character).
-    actions: r => [...buttons(r), r.present === false ? null : h("button", { className: "btn", onclick: () => downloadCharacters(`/api/party/${r.id}/export.zip`, r.name || r.id), textContent: "⬇", title: "Download this character (you choose the format)" })],
+    actions: r => [...buttons(r), r.present === false ? null : h("button", { className: "btn", onclick: () => downloadCharacters(`/api/party/${r.id}/export.zip`, r.name || r.id), textContent: "⬇", title: "Download this character (you choose the format)" }),
+      r.present === false ? null : h("button", { className: "btn danger", textContent: "🗑", title: "Delete this character", onclick: () => deleteCharacter(r) })],
   });
+}
+
+// deleteCharacter(r): delete a character after asking (it leaves its campaign's party too). The server keeps a copy in data/deleted/ as a safety net.
+async function deleteCharacter(r) {
+  if (!confirm(`Delete ${r.name || r.id} for good?\n\nIt leaves the party and the combat too. Download it first if you may want it back.`)) return;
+  try { await api(`/api/party/${encodeURIComponent(r.id)}`, "DELETE"); } catch (e) { alert(e.message); return; }
+  parent.postMessage({ type: "reloadPages" }, location.origin);   // the other pages hold the old party
+  parent.document.getElementById("f-party")?.contentWindow.location.reload();
+  boot();
 }
 
 // ruleBookNote(): one line on where character creation gets its rule book (the compendium of an imported Fight Club backup; see codex.py), filled in when the answer arrives.
@@ -123,14 +133,18 @@ function linkFooter(me) {
 // browser answers it. The file is kept on the server (data/cookies.txt) and never shown again.
 function cookiesBox() {
   const msg = status(), state = h("p", { className: "muted", textContent: "Checking…" }), file = h("input", { type: "file", accept: ".txt,text/plain" });
-  const show = c => { state.textContent = c.present ? `Cookies are set up (${Math.round(c.bytes / 1024)} KB, saved ${new Date(c.updated * 1000).toLocaleString()}).` : c.browser ? `No cookies file; the server reads them from ${c.browser} on this computer.` : "No cookies yet."; };
+  const diag = h("pre", { className: "muted", style: "white-space: pre-wrap; font-size: .8rem" });
+  const show = c => {
+    diag.textContent = [`yt-dlp ${c.ytdlp || "?"}`, `challenge solver (yt-dlp-ejs): ${c.solver ? "installed" : "NOT installed"}`, `JavaScript runtime (deno): ${c.runtime || "NOT FOUND"}`,
+      c.lastError ? `last YouTube error (${new Date(c.lastErrorAt * 1000).toLocaleString()}):\n${c.lastError}` : "no YouTube error since the server started"].join("\n");
+    state.textContent = c.present ? `Cookies are set up (${Math.round(c.bytes / 1024)} KB, saved ${new Date(c.updated * 1000).toLocaleString()}).` : c.browser ? `No cookies file; the server reads them from ${c.browser} on this computer.` : "No cookies yet."; };
   api("/api/cookies").then(show).catch(() => { state.textContent = ""; });
   return box("cookies", "YouTube cookies", h("p", { className: "muted", textContent: "Some YouTube links fail with \"Sign in to confirm you're not a bot\". Fix: upload a cookies.txt from a signed-in YouTube (an account you do not mind risking); the failed sounds then try again." }),
     h("details", {}, h("summary", { textContent: "How to get a cookies.txt" }),
       h("p", { className: "muted", textContent: "A. A separate browser profile (best): make a new Chrome profile, install the extension \"Get cookies.txt LOCALLY\" in it, sign in to youtube.com, export the cookies, then do not open YouTube in that profile again (YouTube changes the cookies of a session that stays open). A private window works only if you allow the extension there (Chrome: chrome://extensions > Details > Allow in Incognito; Firefox: the add-on's page > Run in Private Windows)." }),
       h("p", { className: "muted", textContent: "B. With no extension, on your own computer, in a terminal: yt-dlp --cookies-from-browser chrome --cookies cookies.txt --skip-download \"https://www.youtube.com/\"  (use firefox or safari for those browsers). It reads that browser's cookies, so use a browser signed in with the spare account." }),
       h("p", { className: "muted", textContent: "C. Running the server on your own computer, you can skip the file: start it with DND_COOKIES_FROM_BROWSER=chrome (or firefox, safari ...)." })),
-    state, h("div", { className: "row" }, file, h("button", { className: "primary", textContent: "Upload cookies.txt", onclick: async () => {
+    state, diag, h("div", { className: "row" }, file, h("button", { className: "primary", textContent: "Upload cookies.txt", onclick: async () => {
       if (!file.files[0]) return msg.say("Choose a cookies.txt first", true);
       const f = new FormData(); f.append("file", file.files[0]);
       try { const r = await fetch("/api/cookies", { method: "POST", body: f }); const j = await r.json(); if (!r.ok) throw new Error(j.error || r.statusText); show(await api("/api/cookies")); msg.say("Saved: YouTube downloads will use them"); file.value = ""; } catch (e) { msg.say(e.message, true); }

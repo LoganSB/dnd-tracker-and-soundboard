@@ -452,6 +452,68 @@ def get_map(eid, mid):
     return send_file(path, mimetype=MAP_TYPES[m["ext"]], as_attachment=bool(request.args.get("download")), download_name=m["name"], max_age=0)
 
 
+# ---- THE LOADED MAP: one map (an encounter's picture or PDF) is shown on the Map page to everyone. It is kept as a small reference in data/loaded_map.json
+# {enc, map, at}; the file itself stays with its encounter. If the encounter or the map is deleted, nothing is loaded any more (checked each time it is asked for).
+LOADED_MAP = ROOT / "data" / "loaded_map.json"
+
+
+def _loaded_map():
+    """-> (encounter, map, reference) of the loaded map, or None when none is loaded or it no longer exists."""
+    try:
+        ref = json.loads(LOADED_MAP.read_text())
+    except Exception:
+        return None
+    e = next((x for x in _lib("encounters") if x["id"] == ref.get("enc")), None)
+    m = next((x for x in (e or {}).get("maps", []) if x["id"] == ref.get("map")), None)
+    return (e, m, ref) if e and m and _map_file(e, m).exists() else None
+
+
+@bp.get("/api/map")
+def get_loaded_map():
+    """GET /api/map -> {loaded, name, ext, encounter, at} (everyone signed in: the Map page asks every few seconds; `at` changes when a different map is loaded)."""
+    hit = _loaded_map()
+    if not hit:
+        return jsonify(loaded=False)
+    e, m, ref = hit
+    return jsonify(loaded=True, name=m["name"], ext=m["ext"], encounter=e["name"], at=ref.get("at", 0))
+
+
+@bp.get("/api/map/file")
+def get_loaded_map_file():
+    """GET /api/map/file : the loaded map's picture or PDF (everyone signed in); 404 when none is loaded."""
+    hit = _loaded_map()
+    if not hit:
+        abort(404)
+    e, m, _ = hit
+    return send_file(_map_file(e, m), mimetype=MAP_TYPES[m["ext"]], download_name=m["name"], max_age=0)
+
+
+@bp.put("/api/map")
+def load_map():
+    """PUT /api/map {enc, map} (DM) -> {loaded: true, name}: show that map of that encounter on the Map page."""
+    if not auth.is_dm():
+        return _fail("The DM only", 403)
+    b = request.get_json(force=True, silent=True) or {}
+    e = next((x for x in _lib("encounters") if x["id"] == b.get("enc")), None)
+    m = next((x for x in (e or {}).get("maps", []) if x["id"] == b.get("map")), None)
+    if not m or not _map_file(e, m).exists():
+        return _fail("No such map", 404)
+    LOADED_MAP.parent.mkdir(parents=True, exist_ok=True)
+    tmp = LOADED_MAP.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"enc": e["id"], "map": m["id"], "at": int(time.time() * 1000)}))
+    tmp.replace(LOADED_MAP)
+    return jsonify(loaded=True, name=m["name"])
+
+
+@bp.delete("/api/map")
+def clear_loaded_map():
+    """DELETE /api/map (DM): the Map page shows nothing."""
+    if not auth.is_dm():
+        return _fail("The DM only", 403)
+    LOADED_MAP.unlink(missing_ok=True)
+    return jsonify(loaded=False)
+
+
 @bp.delete("/api/encounters/<eid>/maps/<mid>")
 def delete_map(eid, mid):
     """DELETE /api/encounters/<id>/maps/<map id> : remove the map and its file."""
