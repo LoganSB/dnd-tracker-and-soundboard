@@ -13,7 +13,7 @@
 //                               then redraws itself.
 //   Sheet.inventory(m, hooks)   every item, carried or in a bag, as one searchable table (click an item for its description) with count -/+, Equip, Give,
 //                               remove and the Add buttons (hooks: see inventory below; the page decides what each does)
-//   Sheet.spells(m, add, patch) the spell slots (pips, with a long-rest button) above every spell as one table (filter by level, school; click for the text)
+//   Sheet.spells(m, add, patch, ready) the spell slots (pips, with a long-rest button) above every spell as one table (filter by level, school; click for the text)
 //   Sheet.features(m, add)      race / background / class features, feats and notes as one table (filter by source)
 //                               `add` (each of the three, optional): called by the + Add loot / + Add spell / + Add note button above the table;
 //                               the page decides what it does (party.js opens the search pop-up or the note form)
@@ -69,10 +69,11 @@ const Sheet = (() => {
 
   // inventory(m, hooks): every item as one table. hooks (all optional, the page decides what they do): addLoot() and addItem() open the two Add
   // pop-ups; coin(coin, delta) changes a coin; setQty(item, n) changes the count (0 removes it); equip(item, on); attune(item, on); give(item); remove(item); ack(gift) acknowledges a gift.
-  // An item another player gave this character is highlighted with "Given to you by <player>" and an Acknowledge button until it is acknowledged.
+  // An item another player gave this character is listed first and highlighted with "Given to you by <player>" and an Acknowledge button until it is acknowledged.
   function inventory(m, hooks = {}) {
     const gifts = new Map((m.gifts || []).map(g => [g.name, g]));   // item name -> the pending gift of that name
-    const rows = flatItems(m).map(i => ({ ...i, gift: i.ref.startsWith("i") ? gifts.get(i.name) : undefined }));   // a gift always lands among the loose items
+    const rows = flatItems(m).map(i => ({ ...i, gift: i.ref.startsWith("i") ? gifts.get(i.name) : undefined }))   // a gift always lands among the loose items
+      .map((r, n) => [r, n]).sort((a, b) => !!b[0].gift - !!a[0].gift || a[1] - b[1]).map(x => x[0]);   // items not yet acknowledged first, whatever they are, then the usual order
     const btn = (label, title, fn, cls = "") => h("button", { className: "tiny " + cls, textContent: label, title, onclick: fn });
     const unattuned = i => isOn(i) && i.needsAttune && !i.attuned;   // worn or held but not attuned: it gives nothing yet
     return h("div", {}, currency(m, hooks), withAdd([["+ Add loot", hooks.addLoot], ["+ Custom item", hooks.addItem]], dataTable({
@@ -101,7 +102,8 @@ const Sheet = (() => {
   }
 
   // ---- spells
-  function spells(m, add, patch) {
+  // spells(m, add, patch, ready): `ready(spell, on)` is called when a spell's Ready box is ticked or cleared (a cantrip is always ready: its box is ticked and fixed).
+  function spells(m, add, patch, ready) {
     const rows = [...m.spells].sort((a, b) => a.level - b.level || b.prepared - a.prepared || a.name.localeCompare(b.name));
     // The spell slot tracker (the same pips as the Tracker page: Vitals.slots), above the list; nothing for a character with no slots.
     const slots = patch && panel(m, patch, run => { const pips = Vitals.slots(m, run); return pips.length ? h("div", { className: "spellslots" }, h("h3", { textContent: "Spell slots" }), ...pips) : h("span"); });
@@ -111,7 +113,9 @@ const Sheet = (() => {
         { label: "Spell", text: s => s.name },
         { label: "Level", text: s => (s.level === 0 ? "Cantrip" : String(s.level)), filter: true },
         { label: "School", text: s => s.school, filter: true, wide: true },
-        { label: "Prepared", text: s => (s.prepared ? "Prepared" : ""), filter: true, wide: true },
+        { label: "Ready", text: s => (s.prepared ? "Ready" : ""), filter: true,
+          show: s => h("input", { type: "checkbox", checked: s.prepared, disabled: s.level === 0 || !ready, title: s.level === 0 ? "A cantrip is always ready" : "Ready (prepared) this spell",
+            onchange: ev => ready(s, ev.target.checked) }) },
         { label: "Cast", text: s => s.time, wide: true },
         { label: "Range", text: s => s.range, wide: true },
         { label: "Duration", text: s => s.duration, wide: true },

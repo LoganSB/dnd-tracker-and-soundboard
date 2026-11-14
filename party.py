@@ -510,6 +510,7 @@ def detail(cid, root):
         })
         for s in c.findall("spell"):
             d["spells"].append({
+                "ref": len(d["spells"]),   # the spell's place among all the character's spells (PATCH .../spells/<ref>)
                 "name": _t(s, "name"), "level": int(_num(_t(s, "level"))),
                 "school": SCHOOLS.get(_t(s, "school"), ""),
                 "time": _t(s, "time"), "range": _t(s, "range"), "duration": _t(s, "duration"),
@@ -517,7 +518,7 @@ def detail(cid, root):
                 # when required; join the letters of the ones that are.
                 "components": "".join(k for k, f in (("V", "v"), ("S", "s"), ("M", "m")) if _t(s, f) == "1"),
                 "materials": _t(s, "materials"), "text": _t(s, "text"),
-                "prepared": _t(s, "prepared") == "1",
+                "prepared": _t(s, "prepared") == "1" or int(_num(_t(s, "level"))) == 0,   # a cantrip is always ready
                 "class": _t(s, "sclass") or _t(c, "name"),
             })
     # Fight Club companions (<monster>): everything the file holds for each (fcmonster.parse): size, hit points, AC, speed, saves, skills, resistances,
@@ -1142,13 +1143,32 @@ def add_spell(cid):
         _sub(sp, "materials", _text(b.get("materials"), 300))
         _sub(sp, "duration", _text(b.get("duration"), 60))
         _sub(sp, "text", _text(b.get("text"), 6000))
-        _sub(sp, "prepared", "0")
+        _sub(sp, "prepared", "1" if int(_num(b.get("level"))) == 0 else "0")   # a cantrip is always ready
         _sub(sp, "sclass", _t(cls, "name"))
         if b.get("ritual"):
             _sub(sp, "ritual", "1")
         _append(root, cls, sp, ("spell",), ())
         _write(cid, root)
     return jsonify(ok=True, name=name)
+
+
+@bp.patch("/api/party/<cid>/spells/<int:ref>")
+def change_spell(cid, ref):
+    """PATCH /api/party/<id>/spells/<ref> {prepared: true|false} -> {"ok": true, "character"}: ready or un-ready a spell (ref = its place in the character's spell list,
+    `spells[].ref`). A cantrip is always ready, so it cannot be changed."""
+    _guard(cid)
+    b = request.get_json(force=True, silent=True) or {}
+    with lock:
+        root = _load(cid)
+        spells = [s for c in root.findall("class") for s in c.findall("spell")]
+        if not 0 <= ref < len(spells):
+            return jsonify(error="No such spell"), 404
+        sp = spells[ref]
+        if int(_num(_t(sp, "level"))) == 0:
+            return jsonify(error="A cantrip is always ready"), 400
+        fcedit.put(sp, "prepared", "1" if b.get("prepared") else "0")
+        _write(cid, root)
+    return jsonify(ok=True, character=detail(cid, root))
 
 
 @bp.post("/api/party/<cid>/companions")

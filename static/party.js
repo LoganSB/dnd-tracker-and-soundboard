@@ -124,7 +124,7 @@ async function renderDetail(id) {
   // The Spells page is rebuilt every time it is opened too: its slot pips may have been changed on the Tracker page meanwhile.
   const spellsPanel = () => {
     const box = h("div");
-    get("/api/party/" + id).then(fresh => { Object.assign(m, fresh); box.replaceChildren(Sheet.spells(m, addSpell, patch)); })
+    get("/api/party/" + id).then(fresh => { Object.assign(m, fresh); box.replaceChildren(Sheet.spells(m, addSpell, patch, readySpell)); })
       .catch(e => box.append(h("p", { className: "bad", textContent: "Error: " + e.message })));
     return box;
   };
@@ -246,6 +246,11 @@ async function renderDetail(id) {
     remove: i => { if (confirm(`Remove ${i.quantity > 1 ? i.quantity + "× " : ""}${i.name.trim()} from ${m.name}?`)) itemCall("DELETE", i.ref); },
     give: giveItem,
     ack: g => call("DELETE", `gifts/${g.id}`).then(changed).catch(e => alert(e.message)),
+  };
+  // Ticking a spell's Ready box shows at once and is saved in the background (a refusal puts the sheet back to what the server has).
+  const readySpell = (s, on) => {
+    s.prepared = on;
+    call("PATCH", `spells/${s.ref}`, { prepared: on }).catch(async e => { alert(e.message); Object.assign(m, await get("/api/party/" + id)); sheet.show("spells"); });
   };
   const addSpell = () => {
     let add;
