@@ -2,7 +2,7 @@
 // builder.js - the editor shared by the Encounters tab and the Loot tab (and the small loot editor inside the campaign
 // tracker's loot pop-up). The two differ only in a configuration object; everything else is here:
 //
-//   [ picker: choose one ] [+ New] [Rename] [Delete]        <- hidden when `lockId` is given (the pop-up edits one table)
+//   [ picker: choose one ] [+ New] [cfg.topButtons] [Rename] [Delete]        <- hidden when `lockId` is given (the pop-up edits one table)
 //   notes
 //   table of entries (one row per monster / item, each with its own number boxes and a remove button)
 //   summary (difficulty / chances)       action buttons       status line
@@ -21,6 +21,7 @@
 //   cfg.custom      optional { placeholder, make(name) -> entry } for adding an entry by hand
 //   cfg.summary(record, ctx) -> node (redrawn after every edit)           cfg.actions(record, ctx) -> array of buttons
 //   cfg.attach(record, ctx) -> node shown under the buttons (optional; the Encounters tab puts the map uploads here)
+//   cfg.topButtons(created) -> array of buttons beside + New (the Loot tab's Generate); a button that makes a record calls created(record) to open it
 //   cfg.compact     smaller layout for pop-ups                  cfg.lockId   edit only this record, no picker
 //   cfg.initialId   which record to open first                  cfg.onChange(record)  called after each saved edit, create, rename or delete
 // ctx = { num(entry, key, title), save, flush, msg, reload, select, refresh, record }
@@ -63,16 +64,16 @@ const Builder = (() => {
 
     function draw() {
       const rec = cur();
+      const created = n => { items.push(n); current = n.id; draw(); changed(n); };   // a new record becomes the one being edited
       const make = h("button", { textContent: `+ New ${cfg.noun}`, onclick: async () => {
         const name = prompt(`Name for the new ${cfg.noun}`, `New ${cfg.noun}`);
         if (!name) return;
-        const n = await api(cfg.api, "POST", { name });
-        items.push(n); current = n.id; draw(); changed(n);
+        created(await api(cfg.api, "POST", { name }));
       } });
       const picker = h("select", {}, items.map(x => h("option", { value: x.id, textContent: x.name })));
       picker.value = current || "";
       picker.onchange = () => select(picker.value);
-      const top = cfg.lockId ? null : h("div", { className: "row" }, picker, make,
+      const top = cfg.lockId ? null : h("div", { className: "row" }, picker, make, ...(cfg.topButtons?.(created) || []),
         rec ? h("button", { textContent: "Rename", onclick: async () => {
           const name = prompt("New name", rec.name);
           if (!name) return;

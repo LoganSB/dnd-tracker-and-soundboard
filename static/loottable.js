@@ -8,11 +8,10 @@
 //
 // LootTables.items()                promise of { rows, d } the prepared item list (downloaded once, then remembered)
 // LootTables.itemPanel(add, compact, give) the magic item search (also the character sheet's Add loot pop-up): add(row) is called by the + buttons or a click on the row; give adds a 🎁 Give button per row
-// LootTables.config(opts)           the Builder configuration: opts.sections() -> campaign sections (for "Put on campaign tracker"),
+// LootTables.config(opts)           the Builder configuration (with the 🎲 Generate… button beside the table picker, see generate): opts.sections() -> campaign sections (for "Put on campaign tracker"),
 //                                   opts.compact, opts.lockId, opts.onChange, opts.extraActions(record, ctx)
 // LootTables.pick(entries)          weighted random choice: { entry, roll, total }
 // LootTables.pickRarity(rows, r)    random item of that rarity (every item equally likely)
-// LootTables.randomPanel(onSaved)   the "Random loot" box: roll X distinct magic items from the ticked rarities, give them out or save them as a loot table; onSaved(table) after a save
 // LootTables.giveButton(entry, done) the 🎁 Give button for one loot entry (give.js): used by a roll here, the item search and the campaign's loot pop-up (rolled results)
 // A loot table record: { id, name, notes, entries: [{ slug, name, type, rarity, weight, note }] }
 const LootTables = (() => {
@@ -65,48 +64,35 @@ const LootTables = (() => {
     return h("span", { className: "nowrap" }, Give.button(() => entry, (e, who) => { said.textContent = ` ✓ ${e.name} given to ${who}`; done?.(e, who); }), said);
   };
 
-  // randomPanel(onSaved): a box with a count, one checkbox per rarity ("tier"), a Roll button, and the result: a list of items (each with 🎁 Give), a Reroll and "Save as loot table".
-  // Items are drawn without repeats, every item of the ticked rarities equally likely; if fewer exist than asked for, you get all of them and it says so. "varies" items (no single rarity) are left out.
-  function randomPanel(onSaved) {
-    const TIERS = [["common", true], ["uncommon", true], ["rare", true], ["very rare", false], ["legendary", false], ["artifact", false]];
-    const count = h("input", { type: "number", min: 1, max: 50, value: 5, style: "width:4rem" });
-    const boxes = TIERS.map(([t, on]) => ({ t, el: h("input", { type: "checkbox", checked: on }) }));
-    const out = h("div", { className: "lootresult" });
-    let picked = [];
-    const draw = (said) => {
-      out.replaceChildren(...(said ? [h("p", { className: "muted", textContent: said })] : []),
-        ...(picked.length ? [h("ul", {}, picked.map(m => h("li", {}, h("span", { textContent: `${label(m)} · ${m.type || "item"} ` }), giveButton(m)))),
-          h("div", { className: "row" }, h("button", { textContent: "🎲 Reroll", onclick: roll }), h("button", { textContent: "💾 Save as loot table", onclick: save }))] : []));
-    };
-    async function roll() {
-      const tiers = boxes.filter(b => b.el.checked).map(b => b.t);
-      if (!tiers.length) { picked = []; draw("Tick at least one tier."); return; }
-      const n = Math.max(1, Math.min(50, Math.floor(+count.value) || 1));
-      let rows;
-      try { rows = (await items()).rows; } catch (e) { draw("Could not load the item list: " + e.message); return; }
-      const pool = rows.filter(m => tiers.includes(m.rarity));
-      for (let i = pool.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [pool[i], pool[j]] = [pool[j], pool[i]]; }   // shuffle, then take the first n: no repeats
-      picked = pool.slice(0, n);
-      draw(!pool.length ? "No items of those tiers." : pool.length < n ? `Only ${pool.length} items exist in those tiers, so that is all of them.` : "");
-    }
-    async function save() {
-      try {
+  // generate(created): the "🎲 Generate…" pop-up: how many items and which rarities (tiers) to include, then it makes a NEW loot table of that many different items (every
+  // item of the ticked rarities equally likely; fewer if fewer exist) and calls created(table), which makes it the table being edited. "varies" items (no single rarity) are left out.
+  const TIERS = [["common", true], ["uncommon", true], ["rare", true], ["very rare", false], ["legendary", false], ["artifact", false]];
+  function generate(created) {
+    Nodes.form({
+      title: "Generate a loot table", saveLabel: "Generate",
+      note: "Makes a new loot table of different magic items picked at random from the rarities you tick.",
+      fields: [{ key: "count", label: "Number of items", type: "number", value: 5, min: 1, max: 50 },
+        ...TIERS.map(([t, on]) => ({ key: t, label: t, type: "checkbox", value: on }))],
+      save: async v => {
+        const tiers = TIERS.map(([t]) => t).filter(t => v[t]);
+        if (!tiers.length) return "Tick at least one rarity.";
+        let rows;
+        try { rows = (await items()).rows; } catch (e) { return "Could not load the item list: " + e.message; }
+        const pool = rows.filter(m => tiers.includes(m.rarity));
+        if (!pool.length) return "No items have those rarities.";
+        for (let i = pool.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [pool[i], pool[j]] = [pool[j], pool[i]]; }   // shuffle, take the first n: no repeats
+        const picked = pool.slice(0, Math.max(1, Math.min(50, Math.floor(+v.count) || 1)));
         const t = await api("/api/loots", "POST", { name: `Random loot (${picked.length} items)` });
-        const r = await api(`/api/loots/${t.id}`, "PUT", { name: t.name, notes: "Rolled: " + boxes.filter(b => b.el.checked).map(b => b.t).join(", "),
-          entries: picked.map(m => ({ slug: m.slug, name: m.name, type: m.type, rarity: m.rarity, weight: 1, note: "" })) });
-        UI.libraryChanged?.();
-        onSaved?.(r);
-        draw(`Saved as "${t.name}" in the list below.`);
-      } catch (e) { alert(e.message); }
-    }
-    return h("details", { className: "randomloot", open: true }, h("summary", { textContent: "🎲 Random loot" }),
-      h("div", { className: "row" }, h("label", { textContent: "Items " }, count), ...boxes.map(b => h("label", { className: "nowrap" }, b.el, ` ${b.t}`)),
-        h("button", { className: "primary", textContent: "🎲 Roll", onclick: roll })), out);
+        created(await api(`/api/loots/${t.id}`, "PUT", { name: t.name, notes: "Generated from: " + tiers.join(", "),
+          entries: picked.map(m => ({ slug: m.slug, name: m.name, type: m.type, rarity: m.rarity, weight: 1, note: "" })) }));
+      },
+    });
   }
 
   function config(opts = {}) {
     return {
       api: "/api/loots", noun: "loot table", list: "entries", box: "loot", title: "Loot table", finderTitle: "Find magic items",
+      topButtons: created => [h("button", { textContent: "🎲 Generate…", title: "Make a new loot table of random items by rarity", onclick: () => generate(created) })],
       compact: opts.compact, lockId: opts.lockId, initialId: opts.initialId, onChange: opts.onChange,
       head: ["Item", "Type", "Rarity", "Weight"],
       row: (e, ctx) => [e.name, e.type || "", rarityText(e.rarity), ctx.num(e, "weight")],
@@ -148,5 +134,5 @@ const LootTables = (() => {
     };
   }
 
-  return { items, itemPanel, randomPanel, config, pick, pickRarity, label, giveButton };
+  return { items, itemPanel, config, pick, pickRarity, label, giveButton };
 })();
