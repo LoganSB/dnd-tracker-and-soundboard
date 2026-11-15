@@ -15,7 +15,7 @@ const { h, api } = UI;
 const root = document.getElementById("map");
 const isDM = document.body.dataset.role === "dm";
 let full = false;   // full screen: the browser's own (when it allows it) or, failing that, the shell's header hidden
-let grid = { kind: "off", size: 70, color: "#ffffff" };   // kind: off | square | hex; size = pixels of the picture itself (hex: flat side to flat side)
+let grid = { kind: "off", size: 70, color: "#ffffff", opacity: 50 };   // kind: off | square | hex; size = pixels of the picture itself (hex: flat side to flat side)
 try { Object.assign(grid, JSON.parse(localStorage.getItem("map.grid") || "{}")); } catch (_) { /* storage blocked or damaged: defaults */ }
 const saveGrid = () => { try { localStorage.setItem("map.grid", JSON.stringify(grid)); } catch (_) { /* storage blocked: it just is not remembered */ } };
 const KINDS = { off: "▦ Grid: off", square: "▦ Grid: squares", hex: "⬢ Grid: hexes" };
@@ -51,15 +51,17 @@ function draw(info) {
 // gridControls(head, redraw): the Grid button, the cell-size slider and the colour box in the bar; the last two only show while a grid is on.
 function gridControls(head, redraw) {
   const size = h("input", { type: "range", min: 20, max: 400, value: grid.size, title: "Cell size" });
+  const opac = h("input", { type: "range", min: 0, max: 100, value: grid.opacity, title: "Line opacity (0 = invisible, 100 = solid)" });
   const color = h("input", { type: "color", value: grid.color, title: "Line colour" });
   const btn = h("button", { className: "tiny", textContent: KINDS[grid.kind] || KINDS.off, title: "Lay a square or hex grid over the map (off / squares / hexes)" });
-  const sync = () => { size.hidden = color.hidden = grid.kind === "off"; btn.textContent = KINDS[grid.kind]; };
+  const sync = () => { size.hidden = opac.hidden = color.hidden = grid.kind === "off"; btn.textContent = KINDS[grid.kind]; };
   btn.onclick = () => { grid.kind = grid.kind === "off" ? "square" : grid.kind === "square" ? "hex" : "off"; sync(); saveGrid(); redraw(); };
   size.oninput = () => { grid.size = +size.value; saveGrid(); redraw(); };
+  opac.oninput = () => { grid.opacity = +opac.value; saveGrid(); redraw(); };
   color.oninput = () => { grid.color = color.value; saveGrid(); redraw(); };
   if (!KINDS[grid.kind]) grid.kind = "off";
   sync();
-  head.insertBefore(h("span", { className: "gridctl" }, btn, size, color), document.getElementById("fsBtn"));
+  head.insertBefore(h("span", { className: "gridctl" }, btn, size, opac, color), document.getElementById("fsBtn"));
 }
 
 // drawGrid(svg, img, view): put the grid exactly over the picture (wherever it sits in the scroll area) as an SVG pattern in the picture's own pixel units.
@@ -72,10 +74,10 @@ function drawGrid(svg, img, view) {
   svg.setAttribute("preserveAspectRatio", "none");
   const n = Math.max(8, grid.size), sw = Math.max(1, Math.round(W / 700));   // line width stays readable on big pictures
   let pat;
-  if (grid.kind === "square") pat = `<pattern id="g" stroke="${grid.color}" stroke-width="${sw}" stroke-opacity=".7" width="${n}" height="${n}" patternUnits="userSpaceOnUse"><path d="M${n} 0V${n}M0 ${n}H${n}" fill="none"/></pattern>`;
+  if (grid.kind === "square") pat = `<pattern id="g" stroke="${grid.color}" stroke-width="${sw}" stroke-opacity="${Math.max(0, Math.min(100, +grid.opacity)) / 100}" width="${n}" height="${n}" patternUnits="userSpaceOnUse"><path d="M${n} 0V${n}M0 ${n}H${n}" fill="none"/></pattern>`;
   else {   // pointy-top hexes: n = flat to flat width, r = corner to centre; the tile is two rows (3r high) of the honeycomb
     const w = n, r = n / Math.sqrt(3);
-    pat = `<pattern id="g" stroke="${grid.color}" stroke-width="${sw}" stroke-opacity=".7" width="${w}" height="${3 * r}" patternUnits="userSpaceOnUse"><path fill="none" d="M${w / 2} 0L${w} ${r / 2}L${w} ${1.5 * r}L${w / 2} ${2 * r}L0 ${1.5 * r}L0 ${r / 2}ZM${w / 2} ${2 * r}V${3 * r}"/></pattern>`;
+    pat = `<pattern id="g" stroke="${grid.color}" stroke-width="${sw}" stroke-opacity="${Math.max(0, Math.min(100, +grid.opacity)) / 100}" width="${w}" height="${3 * r}" patternUnits="userSpaceOnUse"><path fill="none" d="M${w / 2} 0L${w} ${r / 2}L${w} ${1.5 * r}L${w / 2} ${2 * r}L0 ${1.5 * r}L0 ${r / 2}ZM${w / 2} ${2 * r}V${3 * r}"/></pattern>`;
   }
   svg.innerHTML = `<defs>${pat}</defs><rect width="${W}" height="${H}" fill="url(#g)"/>`;
 }
